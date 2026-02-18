@@ -1,0 +1,20 @@
+# Build artifacts
+/_build/
+/deps/
+
+# Generated on crash or test coverage
+/cover/
+/doc/
+
+# Mix lock (keep mix.lock if it exists)
+# /mix.lock
+
+# Dialyzer PLTs
+/priv/plts/
+
+# Editor/OS
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
