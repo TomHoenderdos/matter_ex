@@ -178,7 +178,8 @@ defmodule Matterlix.PASE do
             session = Session.new(
               local_session_id: pase.local_session_id,
               peer_session_id: pase.peer_session_id,
-              encryption_key: pase.keys.ke
+              encryption_key: pase.keys.ke,
+              role: :responder
             )
 
             {:established, :status_report, sr_payload, session,
@@ -267,7 +268,8 @@ defmodule Matterlix.PASE do
         session = Session.new(
           local_session_id: pase.local_session_id,
           peer_session_id: pase.peer_session_id,
-          encryption_key: pase.keys.ke
+          encryption_key: pase.keys.ke,
+          role: :initiator
         )
 
         {:established, session, %{pase | state: :established}}

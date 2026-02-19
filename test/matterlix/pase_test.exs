@@ -55,15 +55,18 @@ defmodule Matterlix.PASETest do
       assert session.counter != nil
     end
 
-    test "fields stored correctly" do
-      key = :crypto.strong_rand_bytes(16)
+    test "derives directional keys from Ke" do
+      ke = :crypto.strong_rand_bytes(16)
       session = Session.new(
         local_session_id: 100,
         peer_session_id: 200,
-        encryption_key: key
+        encryption_key: ke
       )
 
-      assert session.encryption_key == key
+      assert byte_size(session.encrypt_key) == 16
+      assert byte_size(session.decrypt_key) == 16
+      assert byte_size(session.attestation_challenge) == 16
+      assert session.encrypt_key != session.decrypt_key
     end
   end
 
@@ -210,9 +213,10 @@ defmodule Matterlix.PASETest do
       {:established, comm_session, _comm} =
         PASE.handle(comm, :status_report, sr_payload)
 
-      # Both sessions have the same encryption key
-      assert device_session.encryption_key == comm_session.encryption_key
-      assert byte_size(device_session.encryption_key) == 16
+      # Device encrypt_key == Commissioner decrypt_key (and vice versa)
+      assert device_session.encrypt_key == comm_session.decrypt_key
+      assert device_session.decrypt_key == comm_session.encrypt_key
+      assert byte_size(device_session.encrypt_key) == 16
 
       # Session IDs are crossed
       assert device_session.local_session_id == 1
@@ -264,7 +268,7 @@ defmodule Matterlix.PASETest do
       session2 = run_full_handshake(comm2, device2)
 
       # Different random values mean different keys
-      assert session1.encryption_key != session2.encryption_key
+      assert session1.encrypt_key != session2.encrypt_key
     end
   end
 

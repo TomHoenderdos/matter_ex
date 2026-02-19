@@ -2,35 +2,85 @@ defmodule Matterlix.Session do
   @moduledoc """
   Represents an established secure session after PASE or CASE completes.
 
-  Holds session IDs, the encryption key (Ke), and an outgoing message counter.
+  Derives directional encryption keys from the raw session key (Ke) using
+  HKDF-SHA256 per Matter spec section 4.13.2.6.1:
+
+      keys = HKDF(salt="", ikm=Ke, info="SessionKeys", length=48)
+      I2R_Key = keys[0:16]              # Initiator → Responder
+      R2I_Key = keys[16:32]             # Responder → Initiator
+      AttestationChallenge = keys[32:48] # Used in CASE
   """
 
+  alias Matterlix.Crypto.KDF
   alias Matterlix.Protocol.Counter
 
   defstruct [
     :local_session_id,
     :peer_session_id,
-    :encryption_key,
+    :encrypt_key,
+    :decrypt_key,
+    :attestation_challenge,
+    :local_node_id,
+    :peer_node_id,
     :counter
   ]
 
   @type t :: %__MODULE__{
     local_session_id: non_neg_integer(),
     peer_session_id: non_neg_integer(),
-    encryption_key: binary(),
+    encrypt_key: binary(),
+    decrypt_key: binary(),
+    attestation_challenge: binary(),
+    local_node_id: non_neg_integer(),
+    peer_node_id: non_neg_integer(),
     counter: Counter.t()
   }
 
   @doc """
-  Create a new session with a fresh message counter.
+  Create a new session with derived directional keys and a fresh message counter.
+
+  Required opts: `:local_session_id`, `:peer_session_id`, `:encryption_key`
+
+  Optional opts:
+  - `:role` — `:initiator` or `:responder` (default `:responder`).
+    Determines which derived key is used for encrypt vs decrypt.
+  - `:local_node_id` — source node ID for nonce construction (default 0)
+  - `:peer_node_id` — peer node ID for nonce construction (default 0)
   """
   @spec new(keyword()) :: t()
   def new(opts) do
+    ke = Keyword.fetch!(opts, :encryption_key)
+    role = Keyword.get(opts, :role, :responder)
+
+    {i2r, r2i, challenge} = derive_session_keys(ke)
+
+    {encrypt_key, decrypt_key} =
+      case role do
+        :initiator -> {i2r, r2i}
+        :responder -> {r2i, i2r}
+      end
+
     %__MODULE__{
       local_session_id: Keyword.fetch!(opts, :local_session_id),
       peer_session_id: Keyword.fetch!(opts, :peer_session_id),
-      encryption_key: Keyword.fetch!(opts, :encryption_key),
+      encrypt_key: encrypt_key,
+      decrypt_key: decrypt_key,
+      attestation_challenge: challenge,
+      local_node_id: Keyword.get(opts, :local_node_id, 0),
+      peer_node_id: Keyword.get(opts, :peer_node_id, 0),
       counter: Counter.new()
     }
+  end
+
+  @doc """
+  Derive I2R_Key, R2I_Key, and AttestationChallenge from session Ke.
+  """
+  @spec derive_session_keys(binary()) :: {binary(), binary(), binary()}
+  def derive_session_keys(ke) when byte_size(ke) == 16 do
+    keys = KDF.hkdf(<<>>, ke, "SessionKeys", 48)
+    i2r = binary_part(keys, 0, 16)
+    r2i = binary_part(keys, 16, 16)
+    challenge = binary_part(keys, 32, 16)
+    {i2r, r2i, challenge}
   end
 end
