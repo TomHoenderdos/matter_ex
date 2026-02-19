@@ -26,6 +26,20 @@ defmodule Matterlix.MessageHandlerTest do
 
   # ── Helpers ──────────────────────────────────────────────────────
 
+  defp seed_acl(device, subject, privilege \\ 5) do
+    acl_name = device.__process_name__(0, :access_control)
+
+    entry = %{
+      privilege: privilege,
+      auth_mode: 2,
+      subjects: [subject],
+      targets: nil,
+      fabric_index: 1
+    }
+
+    GenServer.call(acl_name, {:write_attribute, :acl, [entry]})
+  end
+
   defp new_handler(opts \\ []) do
     device = Keyword.get(opts, :device)
 
@@ -606,9 +620,12 @@ defmodule Matterlix.MessageHandlerTest do
       assert entry.session.local_session_id == session_id
     end
 
-    test "encrypted IM after CASE session" do
+    test "encrypted IM after CASE session with ACL" do
       {handler, ipk} = new_handler_with_case(device: TestLight)
       {init_session, handler, _session_id} = run_case_handshake(handler, ipk)
+
+      # Seed admin ACL entry for the CASE initiator (node_id=2, fabric=1)
+      seed_acl(TestLight, 2)
 
       # Read on_off via CASE-established session
       read_req = IM.encode(%IM.ReadRequest{
@@ -635,7 +652,7 @@ defmodule Matterlix.MessageHandlerTest do
       assert msg.proto.opcode == ProtocolID.opcode(:interaction_model, :report_data)
 
       {:ok, report} = IM.decode(:report_data, msg.proto.payload)
-      assert length(report.attribute_reports) == 1
+      assert [{:data, _data}] = report.attribute_reports
     end
 
     test "PASE and CASE can coexist" do
@@ -819,6 +836,162 @@ defmodule Matterlix.MessageHandlerTest do
       # Verify the session node_id matches commissioned id
       session = handler.sessions[case_session_id].session
       assert session.local_node_id == 42
+    end
+  end
+
+  # ── ACL enforcement ─────────────────────────────────────────────
+
+  describe "ACL enforcement" do
+    setup do
+      start_supervised!(TestLight)
+      :ok
+    end
+
+    test "PASE session bypasses ACL (empty ACL still allows read)" do
+      handler = new_handler(device: TestLight)
+      {comm_session, handler} = run_pase_handshake(handler)
+
+      read_req = IM.encode(%IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
+      })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :read_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: read_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      {actions, _handler} = MessageHandler.handle_frame(handler, frame)
+
+      [{:send, resp_frame} | _] = actions
+      {:ok, msg, _comm_session} = SecureChannel.open(comm_session, resp_frame)
+      {:ok, report} = IM.decode(:report_data, msg.proto.payload)
+
+      # PASE bypasses ACL — should get data, not status error
+      assert [{:data, data}] = report.attribute_reports
+      assert data.value == false
+    end
+
+    test "CASE session denied when no ACL entries" do
+      {handler, ipk} = new_handler_with_case(device: TestLight)
+      {init_session, handler, _session_id} = run_case_handshake(handler, ipk)
+
+      # No ACL entries seeded — CASE read should be denied
+      read_req = IM.encode(%IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
+      })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :read_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: read_req
+      }
+
+      {frame, init_session} = SecureChannel.seal(init_session, proto)
+      {actions, _handler} = MessageHandler.handle_frame(handler, frame)
+
+      [{:send, resp_frame} | _] = actions
+      {:ok, msg, _init_session} = SecureChannel.open(init_session, resp_frame)
+      {:ok, report} = IM.decode(:report_data, msg.proto.payload)
+
+      # CASE without ACL → denied (status error, not data)
+      assert [{:status, status}] = report.attribute_reports
+      assert status.status == Matterlix.IM.Status.status_code(:unsupported_access)
+    end
+
+    test "CASE session allowed with admin ACL entry" do
+      {handler, ipk} = new_handler_with_case(device: TestLight)
+      {init_session, handler, _session_id} = run_case_handshake(handler, ipk)
+
+      # Seed admin ACL for the CASE initiator (node_id=2)
+      seed_acl(TestLight, 2)
+
+      read_req = IM.encode(%IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
+      })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :read_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: read_req
+      }
+
+      {frame, init_session} = SecureChannel.seal(init_session, proto)
+      {actions, _handler} = MessageHandler.handle_frame(handler, frame)
+
+      [{:send, resp_frame} | _] = actions
+      {:ok, msg, _init_session} = SecureChannel.open(init_session, resp_frame)
+      {:ok, report} = IM.decode(:report_data, msg.proto.payload)
+
+      # Admin ACL → allowed (data, not status error)
+      assert [{:data, data}] = report.attribute_reports
+      assert data.value == false
+    end
+
+    test "CASE session with View privilege can read but not invoke" do
+      {handler, ipk} = new_handler_with_case(device: TestLight)
+      {init_session, handler, _session_id} = run_case_handshake(handler, ipk)
+
+      # Seed View-only ACL (privilege=1) for initiator
+      seed_acl(TestLight, 2, 1)
+
+      # Read should succeed (requires View)
+      read_req = IM.encode(%IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
+      })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :read_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: read_req
+      }
+
+      {frame, init_session} = SecureChannel.seal(init_session, proto)
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
+
+      [{:send, resp_frame} | _] = actions
+      {:ok, msg, init_session} = SecureChannel.open(init_session, resp_frame)
+      {:ok, report} = IM.decode(:report_data, msg.proto.payload)
+      assert [{:data, _}] = report.attribute_reports
+
+      # Invoke should be denied (requires Operate, we only have View)
+      invoke_req = IM.encode(%IM.InvokeRequest{
+        invoke_requests: [
+          %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
+        ]
+      })
+
+      proto2 = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :invoke_request),
+        exchange_id: 2,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: invoke_req
+      }
+
+      {frame2, init_session} = SecureChannel.seal(init_session, proto2)
+      {actions2, _handler} = MessageHandler.handle_frame(handler, frame2)
+
+      [{:send, resp_frame2} | _] = actions2
+      {:ok, msg2, _init_session} = SecureChannel.open(init_session, resp_frame2)
+      {:ok, invoke_resp} = IM.decode(:invoke_response, msg2.proto.payload)
+
+      [{:status, status}] = invoke_resp.invoke_responses
+      assert status.status == Matterlix.IM.Status.status_code(:unsupported_access)
     end
   end
 

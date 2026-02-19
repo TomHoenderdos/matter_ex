@@ -6,18 +6,23 @@ defmodule Matterlix.IM.Router do
   All functions are pure — the router itself has no state.
   """
 
-  alias Matterlix.IM
+  alias Matterlix.{ACL, IM}
   alias Matterlix.IM.Status
 
   @doc """
   Dispatch an IM message to the appropriate cluster(s) and return the response.
-  """
-  @spec handle(module(), atom(), struct()) :: struct()
-  def handle(device, :read_request, %IM.ReadRequest{} = req), do: handle_read(device, req)
-  def handle(device, :write_request, %IM.WriteRequest{} = req), do: handle_write(device, req)
-  def handle(device, :invoke_request, %IM.InvokeRequest{} = req), do: handle_invoke(device, req)
 
-  def handle(_device, :subscribe_request, %IM.SubscribeRequest{} = req) do
+  The optional `context` parameter carries session identity for ACL enforcement.
+  Defaults to PASE context (implicit admin, bypasses ACL).
+  """
+  @spec handle(module(), atom(), struct(), map()) :: struct()
+  def handle(device, opcode, request, context \\ %{auth_mode: :pase})
+
+  def handle(device, :read_request, %IM.ReadRequest{} = req, context), do: handle_read(device, req, context)
+  def handle(device, :write_request, %IM.WriteRequest{} = req, context), do: handle_write(device, req, context)
+  def handle(device, :invoke_request, %IM.InvokeRequest{} = req, context), do: handle_invoke(device, req, context)
+
+  def handle(_device, :subscribe_request, %IM.SubscribeRequest{} = req, _context) do
     # Returns SubscribeResponse with negotiated max_interval.
     # The subscription_id is injected by MessageHandler which pre-processes
     # the subscribe request and creates a temporary handler with the correct ID.
@@ -27,23 +32,31 @@ defmodule Matterlix.IM.Router do
     }
   end
 
-  @spec handle_read(module(), IM.ReadRequest.t()) :: IM.ReportData.t()
-  def handle_read(device, %IM.ReadRequest{} = req) do
+  @spec handle_read(module(), IM.ReadRequest.t(), map()) :: IM.ReportData.t()
+  def handle_read(device, %IM.ReadRequest{} = req, context \\ %{auth_mode: :pase}) do
     reports =
       Enum.map(req.attribute_paths, fn path ->
         case resolve_attribute(device, path) do
           {:ok, gen_name, attr_name, attr_type} ->
-            case GenServer.call(gen_name, {:read_attribute, attr_name}) do
-              {:ok, value} ->
-                {:data,
-                 %{
-                   version: 0,
-                   path: path,
-                   value: to_tlv(attr_type, value)
-                 }}
+            target = {path[:endpoint], path[:cluster]}
 
-              {:error, reason} ->
-                {:status, error_status(path, reason)}
+            case check_acl(device, context, :view, target) do
+              :allow ->
+                case GenServer.call(gen_name, {:read_attribute, attr_name}) do
+                  {:ok, value} ->
+                    {:data,
+                     %{
+                       version: 0,
+                       path: path,
+                       value: to_tlv(attr_type, value)
+                     }}
+
+                  {:error, reason} ->
+                    {:status, error_status(path, reason)}
+                end
+
+              :deny ->
+                {:status, error_status(path, :unsupported_access)}
             end
 
           {:error, reason} ->
@@ -54,18 +67,27 @@ defmodule Matterlix.IM.Router do
     %IM.ReportData{attribute_reports: reports}
   end
 
-  @spec handle_write(module(), IM.WriteRequest.t()) :: IM.WriteResponse.t()
-  def handle_write(device, %IM.WriteRequest{} = req) do
+  @spec handle_write(module(), IM.WriteRequest.t(), map()) :: IM.WriteResponse.t()
+  defp handle_write(device, %IM.WriteRequest{} = req, context) do
     responses =
       Enum.map(req.write_requests, fn write ->
         case resolve_attribute(device, write.path) do
           {:ok, gen_name, attr_name, _attr_type} ->
-            case GenServer.call(gen_name, {:write_attribute, attr_name, write.value}) do
-              :ok ->
-                %{path: write.path, status: Status.status_code(:success), cluster_status: nil}
+            target = {write.path[:endpoint], write.path[:cluster]}
+            privilege = ACL.write_privilege(write.path[:cluster])
 
-              {:error, reason} ->
-                error_status(write.path, reason)
+            case check_acl(device, context, privilege, target) do
+              :allow ->
+                case GenServer.call(gen_name, {:write_attribute, attr_name, write.value}) do
+                  :ok ->
+                    %{path: write.path, status: Status.status_code(:success), cluster_status: nil}
+
+                  {:error, reason} ->
+                    error_status(write.path, reason)
+                end
+
+              :deny ->
+                error_status(write.path, :unsupported_access)
             end
 
           {:error, reason} ->
@@ -76,28 +98,36 @@ defmodule Matterlix.IM.Router do
     %IM.WriteResponse{write_responses: responses}
   end
 
-  @spec handle_invoke(module(), IM.InvokeRequest.t()) :: IM.InvokeResponse.t()
-  def handle_invoke(device, %IM.InvokeRequest{} = req) do
+  @spec handle_invoke(module(), IM.InvokeRequest.t(), map()) :: IM.InvokeResponse.t()
+  defp handle_invoke(device, %IM.InvokeRequest{} = req, context) do
     responses =
       Enum.map(req.invoke_requests, fn invoke ->
         case resolve_command(device, invoke.path) do
           {:ok, gen_name, cmd_name, cmd_def} ->
-            params = decode_command_params(invoke.fields, cmd_def)
+            target = {invoke.path[:endpoint], invoke.path[:cluster]}
 
-            case GenServer.call(gen_name, {:invoke_command, cmd_name, params}) do
-              {:ok, nil} ->
-                {:status,
-                 %{
-                   path: invoke.path,
-                   status: Status.status_code(:success),
-                   cluster_status: nil
-                 }}
+            case check_acl(device, context, :operate, target) do
+              :allow ->
+                params = decode_command_params(invoke.fields, cmd_def)
 
-              {:ok, response_fields} ->
-                {:command, %{path: invoke.path, fields: response_fields}}
+                case GenServer.call(gen_name, {:invoke_command, cmd_name, params}) do
+                  {:ok, nil} ->
+                    {:status,
+                     %{
+                       path: invoke.path,
+                       status: Status.status_code(:success),
+                       cluster_status: nil
+                     }}
 
-              {:error, reason} ->
-                {:status, command_error_status(invoke.path, reason)}
+                  {:ok, response_fields} ->
+                    {:command, %{path: invoke.path, fields: response_fields}}
+
+                  {:error, reason} ->
+                    {:status, command_error_status(invoke.path, reason)}
+                end
+
+              :deny ->
+                {:status, command_error_status(invoke.path, :unsupported_access)}
             end
 
           {:error, reason} ->
@@ -219,5 +249,24 @@ defmodule Matterlix.IM.Router do
   defp status_for(:unsupported_attribute), do: Status.status_code(:unsupported_attribute)
   defp status_for(:unsupported_command), do: Status.status_code(:unsupported_command)
   defp status_for(:unsupported_write), do: Status.status_code(:unsupported_write)
+  defp status_for(:unsupported_access), do: Status.status_code(:unsupported_access)
   defp status_for(_), do: Status.status_code(:failure)
+
+  # ── ACL enforcement ─────────────────────────────────────────────
+
+  defp check_acl(device, context, required_privilege, target) do
+    acl_gen_name = device.__process_name__(0, :access_control)
+
+    acl_entries =
+      if acl_gen_name && Process.whereis(acl_gen_name) do
+        case GenServer.call(acl_gen_name, {:read_attribute, :acl}) do
+          {:ok, entries} when is_list(entries) -> entries
+          _ -> []
+        end
+      else
+        []
+      end
+
+    ACL.check(context, acl_entries, required_privilege, target)
+  end
 end

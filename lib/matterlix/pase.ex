@@ -179,7 +179,8 @@ defmodule Matterlix.PASE do
               local_session_id: pase.local_session_id,
               peer_session_id: pase.peer_session_id,
               encryption_key: pase.keys.ke,
-              role: :responder
+              role: :responder,
+              auth_mode: :pase
             )
 
             {:established, :status_report, sr_payload, session,
@@ -269,7 +270,8 @@ defmodule Matterlix.PASE do
           local_session_id: pase.local_session_id,
           peer_session_id: pase.peer_session_id,
           encryption_key: pase.keys.ke,
-          role: :initiator
+          role: :initiator,
+          auth_mode: :pase
         )
 
         {:established, session, %{pase | state: :established}}

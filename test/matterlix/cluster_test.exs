@@ -9,6 +9,7 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.TemperatureMeasurement
   alias Matterlix.Cluster.BooleanState
   alias Matterlix.Cluster.Thermostat
+  alias Matterlix.Cluster.AccessControl
   alias Matterlix.Cluster.GeneralCommissioning
   alias Matterlix.Cluster.OperationalCredentials
   alias Matterlix.Commissioning
@@ -518,6 +519,54 @@ defmodule Matterlix.ClusterTest do
       # Try to raise cooling above abs_max_cool (3200)
       assert {:ok, nil} = GenServer.call(name, {:invoke_command, :setpoint_raise_lower, %{mode: 1, amount: 100}})
       assert {:ok, 3200} = GenServer.call(name, {:read_attribute, :occupied_cooling_setpoint})
+    end
+  end
+
+  # ── AccessControl metadata ────────────────────────────────────
+
+  describe "AccessControl metadata" do
+    test "cluster_id and name" do
+      assert AccessControl.cluster_id() == 0x001F
+      assert AccessControl.cluster_name() == :access_control
+    end
+
+    test "attribute_defs" do
+      defs = AccessControl.attribute_defs()
+      acl_attr = Enum.find(defs, &(&1.name == :acl))
+      assert acl_attr.id == 0x0000
+      assert acl_attr.default == []
+      assert acl_attr.writable == true
+    end
+
+    test "subjects_per_access_control_entry defaults to 4" do
+      defs = AccessControl.attribute_defs()
+      attr = Enum.find(defs, &(&1.name == :subjects_per_access_control_entry))
+      assert attr.default == 4
+    end
+  end
+
+  # ── AccessControl GenServer ──────────────────────────────────
+
+  describe "AccessControl GenServer" do
+    setup do
+      name = :"acl_test_#{System.unique_integer([:positive])}"
+      {:ok, pid} = AccessControl.start_link(name: name)
+      %{pid: pid, name: name}
+    end
+
+    test "default acl is empty list", %{name: name} do
+      assert {:ok, []} = GenServer.call(name, {:read_attribute, :acl})
+    end
+
+    test "acl is writable", %{name: name} do
+      entry = %{privilege: 5, auth_mode: 2, subjects: [1], targets: nil, fabric_index: 1}
+      assert :ok = GenServer.call(name, {:write_attribute, :acl, [entry]})
+      assert {:ok, [^entry]} = GenServer.call(name, {:read_attribute, :acl})
+    end
+
+    test "subjects_per_access_control_entry is read-only", %{name: name} do
+      assert {:error, :unsupported_write} =
+               GenServer.call(name, {:write_attribute, :subjects_per_access_control_entry, 8})
     end
   end
 

@@ -208,7 +208,7 @@ defmodule Matterlix.MessageHandler do
         frame = build_plaintext_frame(state, message, :status_report, sr_payload)
         {_counter_val, counter} = Counter.next(state.plaintext_counter)
 
-        handler = build_im_handler(state.device)
+        handler = build_im_handler(state.device, session)
         mgr = ExchangeManager.new(handler: handler)
 
         entry = %{session: session, exchange_mgr: mgr, subscription_mgr: SubscriptionManager.new()}
@@ -247,7 +247,7 @@ defmodule Matterlix.MessageHandler do
             frame = build_plaintext_frame(state, message, :status_report, sr_payload)
             {_counter_val, counter} = Counter.next(state.plaintext_counter)
 
-            handler = build_im_handler(state.device)
+            handler = build_im_handler(state.device, session)
             mgr = ExchangeManager.new(handler: handler)
 
             entry = %{session: session, exchange_mgr: mgr, subscription_mgr: SubscriptionManager.new()}
@@ -355,7 +355,7 @@ defmodule Matterlix.MessageHandler do
 
             # Restore the original handler after subscribe processing
             mgr = if opcode == :subscribe_request do
-              %{mgr | handler: build_im_handler(state.device)}
+              %{mgr | handler: build_im_handler(state.device, session)}
             else
               mgr
             end
@@ -441,7 +441,7 @@ defmodule Matterlix.MessageHandler do
         entry = state.sessions[session_id]
         sub = SubscriptionManager.get(entry.subscription_mgr, sub_id)
 
-        case build_subscription_report(state.device, sub_id, paths) do
+        case build_subscription_report(state.device, sub_id, paths, entry.session) do
           nil ->
             # No device, skip
             sub_mgr = SubscriptionManager.record_report(entry.subscription_mgr, sub_id, %{}, now)
@@ -487,10 +487,11 @@ defmodule Matterlix.MessageHandler do
     end)
   end
 
-  defp build_subscription_report(nil, _sub_id, _paths), do: nil
+  defp build_subscription_report(nil, _sub_id, _paths, _session), do: nil
 
-  defp build_subscription_report(device, sub_id, paths) do
-    report = Router.handle_read(device, %IM.ReadRequest{attribute_paths: paths})
+  defp build_subscription_report(device, sub_id, paths, session) do
+    context = session_context(session)
+    report = Router.handle_read(device, %IM.ReadRequest{attribute_paths: paths}, context)
 
     current_values =
       Enum.reduce(report.attribute_reports, %{}, fn
@@ -510,9 +511,18 @@ defmodule Matterlix.MessageHandler do
     {report_data, current_values}
   end
 
-  defp build_im_handler(nil), do: fn _opcode, _request -> nil end
+  defp build_im_handler(nil, _session), do: fn _opcode, _request -> nil end
 
-  defp build_im_handler(device) do
-    fn opcode, request -> Router.handle(device, opcode, request) end
+  defp build_im_handler(device, session) do
+    context = session_context(session)
+    fn opcode, request -> Router.handle(device, opcode, request, context) end
+  end
+
+  defp session_context(session) do
+    %{
+      auth_mode: session.auth_mode || :pase,
+      subject: session.peer_node_id || 0,
+      fabric_index: session.fabric_index || 0
+    }
   end
 end

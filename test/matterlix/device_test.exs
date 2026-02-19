@@ -176,9 +176,9 @@ defmodule Matterlix.DeviceTest do
     end
   end
 
-  # ── Router: Write ─────────────────────────────────────────────
+  # ── Router: Write (via handle/3) ─────────────────────────────
 
-  describe "Router.handle_write/2" do
+  describe "Router write dispatch" do
     test "writes attribute successfully" do
       req = %IM.WriteRequest{
         write_requests: [
@@ -190,7 +190,7 @@ defmodule Matterlix.DeviceTest do
         ]
       }
 
-      %IM.WriteResponse{write_responses: responses} = Router.handle_write(TestLight, req)
+      %IM.WriteResponse{write_responses: responses} = Router.handle(TestLight, :write_request, req)
       assert [resp] = responses
       assert resp.status == Status.status_code(:success)
 
@@ -208,7 +208,7 @@ defmodule Matterlix.DeviceTest do
         ]
       }
 
-      %IM.WriteResponse{write_responses: responses} = Router.handle_write(TestLight, req)
+      %IM.WriteResponse{write_responses: responses} = Router.handle(TestLight, :write_request, req)
       assert [resp] = responses
       assert resp.status == Status.status_code(:unsupported_write)
     end
@@ -224,15 +224,15 @@ defmodule Matterlix.DeviceTest do
         ]
       }
 
-      %IM.WriteResponse{write_responses: responses} = Router.handle_write(TestLight, req)
+      %IM.WriteResponse{write_responses: responses} = Router.handle(TestLight, :write_request, req)
       assert [resp] = responses
       assert resp.status == Status.status_code(:unsupported_endpoint)
     end
   end
 
-  # ── Router: Invoke ────────────────────────────────────────────
+  # ── Router: Invoke (via handle/3) ──────────────────────────────
 
-  describe "Router.handle_invoke/2" do
+  describe "Router invoke dispatch" do
     test "invoke on command" do
       req = %IM.InvokeRequest{
         invoke_requests: [
@@ -240,7 +240,7 @@ defmodule Matterlix.DeviceTest do
         ]
       }
 
-      %IM.InvokeResponse{invoke_responses: responses} = Router.handle_invoke(TestLight, req)
+      %IM.InvokeResponse{invoke_responses: responses} = Router.handle(TestLight, :invoke_request, req)
       assert [{:status, resp}] = responses
       assert resp.status == Status.status_code(:success)
 
@@ -254,10 +254,10 @@ defmodule Matterlix.DeviceTest do
         ]
       }
 
-      Router.handle_invoke(TestLight, req)
+      Router.handle(TestLight, :invoke_request, req)
       assert {:ok, true} = TestLight.read_attribute(1, :on_off, :on_off)
 
-      Router.handle_invoke(TestLight, req)
+      Router.handle(TestLight, :invoke_request, req)
       assert {:ok, false} = TestLight.read_attribute(1, :on_off, :on_off)
     end
 
@@ -268,7 +268,7 @@ defmodule Matterlix.DeviceTest do
         ]
       }
 
-      %IM.InvokeResponse{invoke_responses: responses} = Router.handle_invoke(TestLight, req)
+      %IM.InvokeResponse{invoke_responses: responses} = Router.handle(TestLight, :invoke_request, req)
       assert [{:status, resp}] = responses
       assert resp.status == Status.status_code(:unsupported_command)
     end
@@ -280,45 +280,9 @@ defmodule Matterlix.DeviceTest do
         ]
       }
 
-      %IM.InvokeResponse{invoke_responses: responses} = Router.handle_invoke(TestLight, req)
+      %IM.InvokeResponse{invoke_responses: responses} = Router.handle(TestLight, :invoke_request, req)
       assert [{:status, resp}] = responses
       assert resp.status == Status.status_code(:unsupported_endpoint)
-    end
-  end
-
-  # ── Router: handle/3 dispatch ─────────────────────────────────
-
-  describe "Router.handle/3" do
-    test "dispatches read_request" do
-      req = %IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 0x0006, attribute: 0x0000}]
-      }
-
-      assert %IM.ReportData{} = Router.handle(TestLight, :read_request, req)
-    end
-
-    test "dispatches write_request" do
-      req = %IM.WriteRequest{
-        write_requests: [
-          %{
-            version: 0,
-            path: %{endpoint: 1, cluster: 0x0006, attribute: 0x0000},
-            value: true
-          }
-        ]
-      }
-
-      assert %IM.WriteResponse{} = Router.handle(TestLight, :write_request, req)
-    end
-
-    test "dispatches invoke_request" do
-      req = %IM.InvokeRequest{
-        invoke_requests: [
-          %{path: %{endpoint: 1, cluster: 0x0006, command: 0x01}, fields: nil}
-        ]
-      }
-
-      assert %IM.InvokeResponse{} = Router.handle(TestLight, :invoke_request, req)
     end
   end
 
@@ -347,7 +311,7 @@ defmodule Matterlix.DeviceTest do
         ]
       }
 
-      %IM.WriteResponse{write_responses: [resp]} = Router.handle_write(TestLight, write_req)
+      %IM.WriteResponse{write_responses: [resp]} = Router.handle(TestLight, :write_request, write_req)
       assert resp.status == Status.status_code(:success)
 
       # Read to confirm write
@@ -363,7 +327,7 @@ defmodule Matterlix.DeviceTest do
         ]
       }
 
-      Router.handle_invoke(TestLight, invoke_req)
+      Router.handle(TestLight, :invoke_request, invoke_req)
 
       # Read to confirm toggle
       %IM.ReportData{attribute_reports: [{:data, data}]} =

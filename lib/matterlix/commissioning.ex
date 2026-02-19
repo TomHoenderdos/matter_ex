@@ -29,7 +29,8 @@ defmodule Matterlix.Commissioning do
       ipk: nil,
       node_id: nil,
       fabric_id: nil,
-      commissioned: false
+      commissioned: false,
+      case_admin_subject: nil
     }
   end
 
@@ -76,6 +77,16 @@ defmodule Matterlix.Commissioning do
     end)
   end
 
+  @spec store_admin_subject(non_neg_integer(), GenServer.server()) :: :ok
+  def store_admin_subject(subject, name \\ @default_name) do
+    Agent.update(name, &Map.put(&1, :case_admin_subject, subject))
+  end
+
+  @spec get_admin_subject(GenServer.server()) :: non_neg_integer() | nil
+  def get_admin_subject(name \\ @default_name) do
+    Agent.get(name, & &1.case_admin_subject)
+  end
+
   @spec complete(GenServer.server()) :: :ok
   def complete(name \\ @default_name) do
     Agent.update(name, &Map.put(&1, :commissioned, true))
@@ -97,7 +108,8 @@ defmodule Matterlix.Commissioning do
           private_key: priv,
           ipk: state.ipk,
           node_id: state.node_id,
-          fabric_id: state.fabric_id
+          fabric_id: state.fabric_id,
+          case_admin_subject: state.case_admin_subject
         }
       end
     end)

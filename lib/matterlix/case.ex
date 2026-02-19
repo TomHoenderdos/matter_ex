@@ -182,7 +182,9 @@ defmodule Matterlix.CASE do
           encryption_key: cs.shared_secret,
           role: :initiator,
           local_node_id: cs.node_id,
-          peer_node_id: cs.peer_node_id
+          peer_node_id: cs.peer_node_id,
+          auth_mode: :case,
+          fabric_index: 1
         )
 
         {:established, session, %{cs | state: :established}}
@@ -365,7 +367,9 @@ defmodule Matterlix.CASE do
             encryption_key: cs.shared_secret,
             role: :responder,
             local_node_id: cs.node_id,
-            peer_node_id: peer_node_id
+            peer_node_id: peer_node_id,
+            auth_mode: :case,
+            fabric_index: 1
           )
 
           {:established, :status_report, sr_payload, session,

@@ -67,6 +67,13 @@ defmodule Matterlix.Cluster.OperationalCredentials do
         if stored_keypair && elem(stored_keypair, 0) == pub_key do
           if Process.whereis(Commissioning) do
             Commissioning.store_noc(noc_value, ipk_value, node_id, fabric_id)
+
+            # Store the admin subject for ACL seeding
+            case_admin_subject = params[:case_admin_subject]
+
+            if case_admin_subject do
+              Commissioning.store_admin_subject(case_admin_subject)
+            end
           end
 
           state = set_attribute(state, :commissioned_fabrics, 1)

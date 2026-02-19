@@ -203,11 +203,34 @@ defmodule Matterlix.Node do
 
       creds ->
         Logger.info("Commissioning complete — enabling CASE")
-        MessageHandler.update_case(handler, Keyword.new(creds))
+        handler = MessageHandler.update_case(handler, Keyword.new(creds))
+
+        # Write initial admin ACL entry if we have an admin subject
+        if handler.device && creds[:case_admin_subject] do
+          write_initial_acl(handler.device, creds.case_admin_subject)
+        end
+
+        handler
     end
   end
 
   defp maybe_update_case(handler), do: handler
+
+  defp write_initial_acl(device, admin_subject) do
+    acl_name = device.__process_name__(0, :access_control)
+
+    if acl_name && Process.whereis(acl_name) do
+      admin_entry = %{
+        privilege: 5,
+        auth_mode: 2,
+        subjects: [admin_subject],
+        targets: nil,
+        fabric_index: 1
+      }
+
+      GenServer.call(acl_name, {:write_attribute, :acl, [admin_entry]})
+    end
+  end
 
   defp send_to_peer(%State{socket: socket, peer: {ip, port}}, frame) do
     :gen_udp.send(socket, ip, port, frame)
