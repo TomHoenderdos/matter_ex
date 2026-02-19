@@ -22,6 +22,8 @@ defmodule Matterlix.CASE do
       {:established, session, init} = CASE.handle(init, :status_report, sr)
   """
 
+  require Logger
+
   alias Matterlix.CASE.Messages
   alias Matterlix.Crypto.Certificate
   alias Matterlix.Protocol.StatusReport
@@ -134,6 +136,10 @@ defmodule Matterlix.CASE do
   def handle(%__MODULE__{role: :device, state: :idle} = cs, :case_sigma1, payload) do
     case Messages.decode_sigma1(payload) do
       {:ok, msg} ->
+        if msg.resumption_id do
+          Logger.debug("CASE: resumption requested, falling back to full CASE")
+        end
+
         # Verify destination_id
         expected_dest = Messages.compute_destination_id(
           cs.ipk, msg.initiator_random, cs.node_id, cs.fabric_id

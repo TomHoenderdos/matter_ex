@@ -702,6 +702,17 @@ defmodule Matterlix.MessageHandlerTest do
       # Both sessions exist
       assert map_size(handler.sessions) == 2
     end
+
+    test "case_sigma2_resume routed to CASE handler, not PASE" do
+      {handler, _ipk} = new_handler_with_case(device: TestLight)
+
+      # Send a case_sigma2_resume opcode — should go to CASE handler (error),
+      # not crash in PASE
+      frame = build_case_frame(:case_sigma2_resume, <<>>, 99, 0)
+      {actions, _handler} = MessageHandler.handle_frame(handler, frame)
+
+      assert [{:error, :unexpected_message}] = actions
+    end
   end
 
   # ── Commissioning flow ──────────────────────────────────────────

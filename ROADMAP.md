@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-23)
+## Completed Phases (1-24)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -25,19 +25,9 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 21 | Standalone ACK | - |
 | 22 | Real NOC Parsing (X.509 DER with Matter OIDs) | - |
 | 23 | Operational mDNS (`_matter._tcp`) | - |
+| 24 | CASE Session Resumption (graceful fallback to full CASE) | - |
 
-**Current: 700 tests, 0 failures, 0 warnings**
-
----
-
-## P0 — Required for chip-tool interop
-
-### Phase 24: CASE Session Resumption
-
-chip-tool always attempts session resumption (Sigma1Resume) before full CASE. Currently this routes to the PASE handler and crashes. At minimum, respond with an error to force fallback to full CASE. Ideally, implement full resumption.
-
-- `lib/matterlix/case.ex` — handle Sigma1Resume / Sigma2Resume
-- `lib/matterlix/message_handler.ex` — add resume opcodes to CASE dispatch
+**Current: 704 tests, 0 failures, 0 warnings**
 
 ---
 

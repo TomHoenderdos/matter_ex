@@ -33,7 +33,9 @@ defmodule Matterlix.CASE.Messages do
         initiator_random: random,
         initiator_session_id: session_id,
         destination_id: dest_id,
-        initiator_eph_pub: eph_pub
+        initiator_eph_pub: eph_pub,
+        resumption_id: Map.get(decoded, 6),
+        initiator_resume_mic: Map.get(decoded, 7)
       }}
     else
       _ -> {:error, :invalid_message}

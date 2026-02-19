@@ -173,7 +173,7 @@ defmodule Matterlix.MessageHandler do
 
   # ── Plaintext path (PASE / CASE) ──────────────────────────────────
 
-  @case_opcodes [:case_sigma1, :case_sigma3]
+  @case_opcodes [:case_sigma1, :case_sigma3, :case_sigma2_resume]
 
   defp handle_plaintext(state, frame) do
     case MessageCodec.decode(frame) do

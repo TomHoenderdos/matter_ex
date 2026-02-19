@@ -214,5 +214,70 @@ defmodule Matterlix.CASETest do
       init = new_initiator(2, 20, 1)
       assert {:error, :unexpected_message} = CASE.handle(init, :case_sigma2, <<0>>)
     end
+
+    test "device rejects unexpected case_sigma2_resume opcode" do
+      device = new_device(1, 10)
+      assert {:error, :unexpected_message} = CASE.handle(device, :case_sigma2_resume, <<0>>)
+    end
+  end
+
+  # ── Resumption fallback ─────────────────────────────────────
+
+  describe "resumption fallback" do
+    test "Sigma1 with resumption fields succeeds with full CASE" do
+      device = new_device(1, 10)
+      init = new_initiator(2, 20, 1)
+
+      # Initiate normal Sigma1
+      {:send, :case_sigma1, sigma1_payload, init} = CASE.initiate(init)
+
+      # Inject resumption fields into the Sigma1 payload
+      sigma1_with_resume = inject_resumption_fields(sigma1_payload)
+      {:ok, sigma1_resumed} = Messages.decode_sigma1(sigma1_with_resume)
+      assert sigma1_resumed.resumption_id != nil
+
+      # Device processes Sigma1 with resumption → falls back to full Sigma2
+      {:reply, :case_sigma2, sigma2, device} = CASE.handle(device, :case_sigma1, sigma1_with_resume)
+      assert device.state == :sigma2_sent
+
+      # Update initiator transcript to match what the device saw
+      init = %{init | transcript: sigma1_with_resume}
+
+      # Rest of handshake proceeds normally
+      {:send, :case_sigma3, sigma3, _init} = CASE.handle(init, :case_sigma2, sigma2)
+
+      {:established, :status_report, _sr, _session, device} =
+        CASE.handle(device, :case_sigma3, sigma3)
+
+      assert device.state == :established
+    end
+
+    test "decode_sigma1 extracts resumption fields" do
+      init = new_initiator(2, 20, 1)
+      {:send, :case_sigma1, sigma1_payload, _init} = CASE.initiate(init)
+
+      sigma1_with_resume = inject_resumption_fields(sigma1_payload)
+      {:ok, decoded} = Messages.decode_sigma1(sigma1_with_resume)
+
+      assert byte_size(decoded.resumption_id) == 16
+      assert byte_size(decoded.initiator_resume_mic) == 16
+    end
+  end
+
+  # Inject fake resumption fields (tags 6, 7) into an encoded Sigma1 TLV struct.
+  # Insert context-tagged byte strings before the end-of-container marker (0x18).
+  defp inject_resumption_fields(sigma1_payload) do
+    # TLV struct ends with 0x18 (end-of-container)
+    prefix_size = byte_size(sigma1_payload) - 1
+    <<prefix::binary-size(prefix_size), 0x18>> = sigma1_payload
+
+    resumption_id = :crypto.strong_rand_bytes(16)
+    resume_mic = :crypto.strong_rand_bytes(16)
+
+    # Control byte 0x30 = context-specific tag (001) + byte string 1-byte length (10000)
+    field6 = <<0x30, 0x06, 16>> <> resumption_id
+    field7 = <<0x30, 0x07, 16>> <> resume_mic
+
+    prefix <> field6 <> field7 <> <<0x18>>
   end
 end
