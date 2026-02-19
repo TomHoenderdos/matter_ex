@@ -273,6 +273,144 @@ defmodule Matterlix.MessageHandlerTest do
     end
   end
 
+  # ── Subscribe via MessageHandler ───────────────────────────────
+
+  describe "subscribe via MessageHandler" do
+    setup do
+      start_supervised!(TestLight)
+
+      handler = new_handler(device: TestLight)
+      {comm_session, handler} = run_pase_handshake(handler)
+      %{handler: handler, comm_session: comm_session}
+    end
+
+    test "SubscribeRequest → SubscribeResponse with valid subscription_id",
+         %{handler: handler, comm_session: comm_session} do
+      sub_req = IM.encode(%IM.SubscribeRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+        min_interval: 0,
+        max_interval: 60
+      })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: sub_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
+
+      send_actions = Enum.filter(actions, &match?({:send, _}, &1))
+      assert length(send_actions) == 1
+
+      [{:send, resp_frame}] = send_actions
+      {:ok, msg, _comm_session} = SecureChannel.open(comm_session, resp_frame)
+      assert msg.proto.opcode == ProtocolID.opcode(:interaction_model, :subscribe_response)
+
+      {:ok, sub_resp} = IM.decode(:subscribe_response, msg.proto.payload)
+      assert sub_resp.subscription_id == 1
+      assert sub_resp.max_interval == 60
+
+      # Subscription is stored in session entry
+      entry = handler.sessions[1]
+      assert Matterlix.IM.SubscriptionManager.active?(entry.subscription_mgr)
+    end
+
+    test "multiple subscriptions get incrementing IDs",
+         %{handler: handler, comm_session: comm_session} do
+      # First subscription
+      sub_req1 = IM.encode(%IM.SubscribeRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+        min_interval: 0,
+        max_interval: 30
+      })
+
+      proto1 = %ProtoHeader{
+        initiator: true, needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 1, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: sub_req1
+      }
+
+      {frame1, comm_session} = SecureChannel.seal(comm_session, proto1)
+      {actions1, handler} = MessageHandler.handle_frame(handler, frame1)
+      [{:send, resp1} | _] = actions1
+      {:ok, msg1, comm_session} = SecureChannel.open(comm_session, resp1)
+      {:ok, sub_resp1} = IM.decode(:subscribe_response, msg1.proto.payload)
+      assert sub_resp1.subscription_id == 1
+
+      # Second subscription
+      sub_req2 = IM.encode(%IM.SubscribeRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+        min_interval: 5,
+        max_interval: 120
+      })
+
+      proto2 = %ProtoHeader{
+        initiator: true, needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 2, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: sub_req2
+      }
+
+      {frame2, comm_session} = SecureChannel.seal(comm_session, proto2)
+      {actions2, handler} = MessageHandler.handle_frame(handler, frame2)
+      [{:send, resp2} | _] = actions2
+      {:ok, msg2, _comm_session} = SecureChannel.open(comm_session, resp2)
+      {:ok, sub_resp2} = IM.decode(:subscribe_response, msg2.proto.payload)
+      assert sub_resp2.subscription_id == 2
+
+      # Both subscriptions stored
+      entry = handler.sessions[1]
+      subs = Matterlix.IM.SubscriptionManager.subscriptions(entry.subscription_mgr)
+      assert length(subs) == 2
+    end
+
+    test "check_subscriptions sends report when values change",
+         %{handler: handler, comm_session: comm_session} do
+      # Subscribe
+      sub_req = IM.encode(%IM.SubscribeRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+        min_interval: 0,
+        max_interval: 0  # immediately due
+      })
+
+      proto = %ProtoHeader{
+        initiator: true, needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 1, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: sub_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      {_actions, handler} = MessageHandler.handle_frame(handler, frame)
+
+      # First check — initial values (false) differ from empty last_values
+      {actions, handler} = MessageHandler.check_subscriptions(handler)
+      send_actions = Enum.filter(actions, &match?({:send, _}, &1))
+      assert length(send_actions) == 1
+
+      [{:send, report_frame}] = send_actions
+      {:ok, msg, _comm_session} = SecureChannel.open(comm_session, report_frame)
+      assert msg.proto.opcode == ProtocolID.opcode(:interaction_model, :report_data)
+
+      {:ok, report} = IM.decode(:report_data, msg.proto.payload)
+      assert report.subscription_id == 1
+      assert length(report.attribute_reports) == 1
+
+      # Second check — no change, so no report
+      # Wait briefly so max_interval (0) is satisfied
+      Process.sleep(1)
+      {actions2, _handler} = MessageHandler.check_subscriptions(handler)
+      send_actions2 = Enum.filter(actions2, &match?({:send, _}, &1))
+      assert send_actions2 == []
+    end
+  end
+
   # ── Session management ──────────────────────────────────────────
 
   describe "session management" do

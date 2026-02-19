@@ -239,6 +239,37 @@ defmodule Matterlix.NodeTest do
     end
   end
 
+  # ── Subscribe over UDP ─────────────────────────────────────────
+
+  describe "subscribe over UDP" do
+    test "SubscribeRequest → encrypted SubscribeResponse", %{client: client, port: port} do
+      comm_session = run_pase_over_udp(client, port)
+
+      sub_req = IM.encode(%IM.SubscribeRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+        min_interval: 0,
+        max_interval: 60
+      })
+
+      proto = %ProtoHeader{
+        initiator: true, needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 10, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: sub_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      resp = send_and_receive(client, port, frame)
+
+      {:ok, msg, _comm_session} = SecureChannel.open(comm_session, resp)
+      assert msg.proto.opcode == ProtocolID.opcode(:interaction_model, :subscribe_response)
+
+      {:ok, sub_resp} = IM.decode(:subscribe_response, msg.proto.payload)
+      assert sub_resp.subscription_id == 1
+      assert sub_resp.max_interval == 60
+    end
+  end
+
   # ── Error handling ──────────────────────────────────────────────
 
   describe "error handling" do

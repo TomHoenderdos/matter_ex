@@ -17,6 +17,16 @@ defmodule Matterlix.IM.Router do
   def handle(device, :write_request, %IM.WriteRequest{} = req), do: handle_write(device, req)
   def handle(device, :invoke_request, %IM.InvokeRequest{} = req), do: handle_invoke(device, req)
 
+  def handle(_device, :subscribe_request, %IM.SubscribeRequest{} = req) do
+    # Returns SubscribeResponse with negotiated max_interval.
+    # The subscription_id is injected by MessageHandler which pre-processes
+    # the subscribe request and creates a temporary handler with the correct ID.
+    %IM.SubscribeResponse{
+      subscription_id: 0,
+      max_interval: req.max_interval
+    }
+  end
+
   @spec handle_read(module(), IM.ReadRequest.t()) :: IM.ReportData.t()
   def handle_read(device, %IM.ReadRequest{} = req) do
     reports =

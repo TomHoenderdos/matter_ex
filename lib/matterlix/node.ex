@@ -31,6 +31,8 @@ defmodule Matterlix.Node do
 
   alias Matterlix.MessageHandler
 
+  @sub_check_interval 1000
+
   defmodule State do
     @moduledoc false
     defstruct [:handler, :socket, :port, :peer]
@@ -89,6 +91,7 @@ defmodule Matterlix.Node do
         )
 
         Logger.info("Matter node listening on UDP port #{assigned_port}")
+        Process.send_after(self(), :check_subscriptions, @sub_check_interval)
 
         {:ok, %State{
           handler: handler,
@@ -134,6 +137,14 @@ defmodule Matterlix.Node do
           state
       end
 
+    {:noreply, state}
+  end
+
+  def handle_info(:check_subscriptions, state) do
+    {actions, handler} = MessageHandler.check_subscriptions(state.handler)
+    state = %{state | handler: handler}
+    state = process_actions(actions, state)
+    Process.send_after(self(), :check_subscriptions, @sub_check_interval)
     {:noreply, state}
   end
 

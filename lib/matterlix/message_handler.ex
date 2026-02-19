@@ -34,7 +34,8 @@ defmodule Matterlix.MessageHandler do
   require Logger
 
   alias Matterlix.{ExchangeManager, PASE, SecureChannel, Session}
-  alias Matterlix.IM.Router, as: IMRouter
+  alias Matterlix.IM
+  alias Matterlix.IM.{Router, SubscriptionManager}
   alias Matterlix.Protocol.{Counter, MessageCodec, ProtocolID}
   alias Matterlix.Protocol.MessageCodec.{Header, ProtoHeader}
 
@@ -45,7 +46,8 @@ defmodule Matterlix.MessageHandler do
 
   @type session_entry :: %{
     session: Session.t(),
-    exchange_mgr: ExchangeManager.t()
+    exchange_mgr: ExchangeManager.t(),
+    subscription_mgr: SubscriptionManager.t()
   }
 
   @type t :: %__MODULE__{
@@ -182,7 +184,7 @@ defmodule Matterlix.MessageHandler do
         handler = build_im_handler(state.device)
         mgr = ExchangeManager.new(handler: handler)
 
-        entry = %{session: session, exchange_mgr: mgr}
+        entry = %{session: session, exchange_mgr: mgr, subscription_mgr: SubscriptionManager.new()}
         sessions = Map.put(state.sessions, session.local_session_id, entry)
 
         actions = [
@@ -229,15 +231,27 @@ defmodule Matterlix.MessageHandler do
         Logger.warning("Received frame for unknown session #{session_id}")
         {[{:error, :unknown_session}], state}
 
-      %{session: session, exchange_mgr: mgr} = entry ->
+      %{session: session, exchange_mgr: mgr, subscription_mgr: sub_mgr} = entry ->
         case SecureChannel.open(session, frame) do
           {:ok, message, session} ->
+            opcode = ProtocolID.opcode_name(message.proto.protocol_id, message.proto.opcode)
+
+            # Pre-process subscribe_request: register subscription and inject temp handler
+            {mgr, sub_mgr} = maybe_setup_subscription(mgr, sub_mgr, opcode, message.proto)
+
             {em_actions, mgr} = ExchangeManager.handle_message(
               mgr, message.proto, message.header.message_counter
             )
 
+            # Restore the original handler after subscribe processing
+            mgr = if opcode == :subscribe_request do
+              %{mgr | handler: build_im_handler(state.device)}
+            else
+              mgr
+            end
+
             {actions, session} = process_exchange_actions(em_actions, session, session_id)
-            entry = %{entry | session: session, exchange_mgr: mgr}
+            entry = %{entry | session: session, exchange_mgr: mgr, subscription_mgr: sub_mgr}
             sessions = Map.put(state.sessions, session_id, entry)
             {actions, %{state | sessions: sessions}}
 
@@ -271,9 +285,124 @@ defmodule Matterlix.MessageHandler do
 
   # ── Private helpers ────────────────────────────────────────────────
 
+  defp maybe_setup_subscription(mgr, sub_mgr, :subscribe_request, proto) do
+    case IM.decode(:subscribe_request, proto.payload) do
+      {:ok, %IM.SubscribeRequest{} = req} ->
+        {sub_id, sub_mgr} = SubscriptionManager.subscribe(
+          sub_mgr,
+          req.attribute_paths,
+          req.min_interval,
+          req.max_interval
+        )
+
+        # Inject temporary handler that returns SubscribeResponse with correct sub_id
+        temp_handler = fn _opcode, _request ->
+          %IM.SubscribeResponse{
+            subscription_id: sub_id,
+            max_interval: req.max_interval
+          }
+        end
+
+        {%{mgr | handler: temp_handler}, sub_mgr}
+
+      _ ->
+        {mgr, sub_mgr}
+    end
+  end
+
+  defp maybe_setup_subscription(mgr, sub_mgr, _opcode, _proto), do: {mgr, sub_mgr}
+
+  @doc """
+  Check all sessions for subscriptions that are due for periodic reports.
+
+  For each due subscription, reads current attribute values, compares with
+  last reported values, and sends a ReportData if changed.
+
+  Returns `{actions, updated_state}`.
+  """
+  @spec check_subscriptions(t()) :: {[action()], t()}
+  def check_subscriptions(%__MODULE__{} = state) do
+    now = System.monotonic_time(:second)
+
+    Enum.flat_map_reduce(state.sessions, state, fn {session_id, entry}, state ->
+      due = SubscriptionManager.due_reports(entry.subscription_mgr, now)
+
+      Enum.flat_map_reduce(due, state, fn {sub_id, paths}, state ->
+        entry = state.sessions[session_id]
+        sub = SubscriptionManager.get(entry.subscription_mgr, sub_id)
+
+        case build_subscription_report(state.device, sub_id, paths) do
+          nil ->
+            # No device, skip
+            sub_mgr = SubscriptionManager.record_report(entry.subscription_mgr, sub_id, %{}, now)
+            entry = %{entry | subscription_mgr: sub_mgr}
+            sessions = Map.put(state.sessions, session_id, entry)
+            {[], %{state | sessions: sessions}}
+
+          {report_data, current_values} ->
+            # Check if values changed
+            if current_values == sub.last_values do
+              # No change — just update timer
+              sub_mgr = SubscriptionManager.record_report(entry.subscription_mgr, sub_id, current_values, now)
+              entry = %{entry | subscription_mgr: sub_mgr}
+              sessions = Map.put(state.sessions, session_id, entry)
+              {[], %{state | sessions: sessions}}
+            else
+              # Values changed — send report
+              payload = IM.encode(report_data)
+              im_protocol_id = ProtocolID.protocol_id(:interaction_model)
+
+              {proto, mrp_actions, mgr} = ExchangeManager.initiate(
+                entry.exchange_mgr,
+                im_protocol_id,
+                :report_data,
+                payload
+              )
+
+              {frame, session} = SecureChannel.seal(entry.session, proto)
+
+              sub_mgr = SubscriptionManager.record_report(entry.subscription_mgr, sub_id, current_values, now)
+              entry = %{entry | session: session, exchange_mgr: mgr, subscription_mgr: sub_mgr}
+              sessions = Map.put(state.sessions, session_id, entry)
+
+              send_actions = [{:send, frame}]
+              schedule_actions = Enum.map(mrp_actions, fn {:schedule_mrp, eid, attempt, timeout} ->
+                {:schedule_mrp, session_id, eid, attempt, timeout}
+              end)
+
+              {send_actions ++ schedule_actions, %{state | sessions: sessions}}
+            end
+        end
+      end)
+    end)
+  end
+
+  defp build_subscription_report(nil, _sub_id, _paths), do: nil
+
+  defp build_subscription_report(device, sub_id, paths) do
+    report = Router.handle_read(device, %IM.ReadRequest{attribute_paths: paths})
+
+    current_values =
+      Enum.reduce(report.attribute_reports, %{}, fn
+        {:data, data}, acc ->
+          key = {data.path[:endpoint], data.path[:cluster], data.path[:attribute]}
+          Map.put(acc, key, data.value)
+        _, acc ->
+          acc
+      end)
+
+    report_data = %IM.ReportData{
+      subscription_id: sub_id,
+      attribute_reports: report.attribute_reports,
+      suppress_response: true
+    }
+
+    {report_data, current_values}
+  end
+
   defp build_im_handler(nil), do: fn _opcode, _request -> nil end
 
   defp build_im_handler(device) do
-    fn opcode, request -> IMRouter.handle(device, opcode, request) end
+    fn opcode, request -> Router.handle(device, opcode, request) end
   end
 end
