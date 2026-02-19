@@ -33,7 +33,7 @@ defmodule Matterlix.MessageHandler do
 
   require Logger
 
-  alias Matterlix.{ExchangeManager, PASE, SecureChannel, Session}
+  alias Matterlix.{CASE, ExchangeManager, PASE, SecureChannel, Session}
   alias Matterlix.IM
   alias Matterlix.IM.{Router, SubscriptionManager}
   alias Matterlix.Protocol.{Counter, MessageCodec, ProtocolID}
@@ -53,12 +53,14 @@ defmodule Matterlix.MessageHandler do
   @type t :: %__MODULE__{
     device: module() | nil,
     pase: PASE.t() | nil,
+    case_state: CASE.t() | nil,
     sessions: %{non_neg_integer() => session_entry()},
     plaintext_counter: Counter.t()
   }
 
   defstruct device: nil,
             pase: nil,
+            case_state: nil,
             sessions: %{},
             plaintext_counter: Counter.new()
 
@@ -73,6 +75,11 @@ defmodule Matterlix.MessageHandler do
 
   Optional:
   - `:device` — device module for IM routing
+  - `:noc` — Node Operational Certificate (binary, for CASE)
+  - `:private_key` — ECDSA private key (binary, for CASE)
+  - `:ipk` — Identity Protection Key (binary, for CASE)
+  - `:node_id` — node ID (integer, for CASE)
+  - `:fabric_id` — fabric ID (integer, for CASE)
   """
   @spec new(keyword()) :: t()
   def new(opts) do
@@ -83,9 +90,12 @@ defmodule Matterlix.MessageHandler do
       local_session_id: Keyword.fetch!(opts, :local_session_id)
     )
 
+    case_state = maybe_init_case(opts)
+
     %__MODULE__{
       device: Keyword.get(opts, :device),
       pase: pase,
+      case_state: case_state,
       plaintext_counter: Counter.new(0)
     }
   end
@@ -150,7 +160,9 @@ defmodule Matterlix.MessageHandler do
     end
   end
 
-  # ── Plaintext path (PASE) ─────────────────────────────────────────
+  # ── Plaintext path (PASE / CASE) ──────────────────────────────────
+
+  @case_opcodes [:case_sigma1, :case_sigma3]
 
   defp handle_plaintext(state, frame) do
     case MessageCodec.decode(frame) do
@@ -160,7 +172,11 @@ defmodule Matterlix.MessageHandler do
           message.proto.opcode
         )
 
-        handle_pase_message(state, message, opcode_name)
+        if opcode_name in @case_opcodes do
+          handle_case_message(state, message, opcode_name)
+        else
+          handle_pase_message(state, message, opcode_name)
+        end
 
       {:error, reason} ->
         Logger.warning("Failed to decode plaintext frame: #{inspect(reason)}")
@@ -199,6 +215,89 @@ defmodule Matterlix.MessageHandler do
         {[{:error, reason}], state}
     end
   end
+
+  # ── Plaintext path (CASE) ──────────────────────────────────────────
+
+  defp handle_case_message(state, message, opcode_name) do
+    case state.case_state do
+      nil ->
+        Logger.warning("CASE message received but CASE not configured")
+        {[{:error, :case_not_configured}], state}
+
+      case_state ->
+        case CASE.handle(case_state, opcode_name, message.proto.payload) do
+          {:reply, resp_type, resp_payload, case_state} ->
+            frame = build_plaintext_frame(state, message, resp_type, resp_payload)
+            {_counter_val, counter} = Counter.next(state.plaintext_counter)
+            {[{:send, frame}], %{state | case_state: case_state, plaintext_counter: counter}}
+
+          {:established, :status_report, sr_payload, session, _case_state} ->
+            Logger.info("CASE session established: local=#{session.local_session_id} peer=#{session.peer_session_id}")
+            frame = build_plaintext_frame(state, message, :status_report, sr_payload)
+            {_counter_val, counter} = Counter.next(state.plaintext_counter)
+
+            handler = build_im_handler(state.device)
+            mgr = ExchangeManager.new(handler: handler)
+
+            entry = %{session: session, exchange_mgr: mgr, subscription_mgr: SubscriptionManager.new()}
+            sessions = Map.put(state.sessions, session.local_session_id, entry)
+
+            # Reset CASE state for next handshake
+            new_case = reset_case(state.case_state)
+
+            actions = [
+              {:send, frame},
+              {:session_established, session.local_session_id}
+            ]
+
+            {actions, %{state | case_state: new_case, sessions: sessions, plaintext_counter: counter}}
+
+          {:error, reason} ->
+            Logger.warning("CASE error: #{inspect(reason)}")
+            {[{:error, reason}], state}
+        end
+    end
+  end
+
+  defp maybe_init_case(opts) do
+    noc = Keyword.get(opts, :noc)
+    private_key = Keyword.get(opts, :private_key)
+    ipk = Keyword.get(opts, :ipk)
+    node_id = Keyword.get(opts, :node_id)
+    fabric_id = Keyword.get(opts, :fabric_id)
+
+    if noc && private_key && ipk && node_id && fabric_id do
+      # Generate a random CASE session ID different from PASE
+      case_session_id = :rand.uniform(65534)
+
+      CASE.new_device(
+        noc: noc,
+        private_key: private_key,
+        ipk: ipk,
+        node_id: node_id,
+        fabric_id: fabric_id,
+        local_session_id: case_session_id
+      )
+    end
+  end
+
+  defp reset_case(nil), do: nil
+
+  defp reset_case(cs) do
+    case_session_id = :rand.uniform(65534)
+
+    CASE.new_device(
+      noc: cs.noc,
+      icac: cs.icac,
+      private_key: cs.private_key,
+      ipk: cs.ipk,
+      node_id: cs.node_id,
+      fabric_id: cs.fabric_id,
+      local_session_id: case_session_id
+    )
+  end
+
+  # ── Plaintext frame builder ──────────────────────────────────────
 
   defp build_plaintext_frame(state, incoming_message, resp_type, resp_payload) do
     {counter_val, _counter} = Counter.next(state.plaintext_counter)

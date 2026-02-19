@@ -481,6 +481,179 @@ defmodule Matterlix.MessageHandlerTest do
     end
   end
 
+  # ── CASE via MessageHandler ────────────────────────────────────
+
+  describe "CASE via MessageHandler" do
+    setup do
+      start_supervised!(TestLight)
+      :ok
+    end
+
+    defp new_handler_with_case(opts) do
+      device = Keyword.get(opts, :device)
+
+      {pub, priv} = Matterlix.Crypto.Certificate.generate_keypair()
+      noc = Matterlix.CASE.Messages.encode_noc(1, 1, pub)
+      ipk = Keyword.get(opts, :ipk, :crypto.strong_rand_bytes(16))
+
+      handler = MessageHandler.new(
+        device: device,
+        passcode: @passcode,
+        salt: @salt,
+        iterations: @iterations,
+        local_session_id: 1,
+        noc: noc,
+        private_key: priv,
+        ipk: ipk,
+        node_id: 1,
+        fabric_id: 1
+      )
+
+      {handler, ipk}
+    end
+
+    defp new_case_initiator(ipk) do
+      {pub, priv} = Matterlix.Crypto.Certificate.generate_keypair()
+      noc = Matterlix.CASE.Messages.encode_noc(2, 1, pub)
+
+      Matterlix.CASE.new_initiator(
+        noc: noc,
+        private_key: priv,
+        ipk: ipk,
+        node_id: 2,
+        fabric_id: 1,
+        local_session_id: 100,
+        peer_node_id: 1,
+        peer_fabric_id: 1
+      )
+    end
+
+    defp build_case_frame(opcode_name, payload, exchange_id, counter) do
+      header = %Header{
+        session_id: 0,
+        message_counter: counter,
+        privacy: false,
+        session_type: :unicast
+      }
+
+      opcode_num = ProtocolID.opcode(:secure_channel, opcode_name)
+
+      proto = %ProtoHeader{
+        initiator: true,
+        opcode: opcode_num,
+        exchange_id: exchange_id,
+        protocol_id: 0x0000,
+        payload: payload
+      }
+
+      IO.iodata_to_binary(MessageCodec.encode(header, proto))
+    end
+
+    defp run_case_handshake(handler, ipk) do
+      init = new_case_initiator(ipk)
+      exchange_id = 10
+
+      # Step 1: Initiator sends Sigma1
+      {:send, :case_sigma1, sigma1_payload, init} = Matterlix.CASE.initiate(init)
+      frame = build_case_frame(:case_sigma1, sigma1_payload, exchange_id, 0)
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
+      [{:send, sigma2_frame}] = actions
+
+      # Step 2: Initiator processes Sigma2
+      {:ok, sigma2_msg} = MessageCodec.decode(sigma2_frame)
+      {:send, :case_sigma3, sigma3_payload, init} =
+        Matterlix.CASE.handle(init, :case_sigma2, sigma2_msg.proto.payload)
+
+      # Step 3: Initiator sends Sigma3
+      frame = build_case_frame(:case_sigma3, sigma3_payload, exchange_id, 1)
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
+
+      [{:send, sr_frame}, {:session_established, session_id}] = actions
+      assert session_id > 0
+
+      # Step 4: Initiator processes StatusReport
+      {:ok, sr_msg} = MessageCodec.decode(sr_frame)
+      {:established, init_session, _init} =
+        Matterlix.CASE.handle(init, :status_report, sr_msg.proto.payload)
+
+      {init_session, handler, session_id}
+    end
+
+    test "Sigma1 → Sigma2 response via MessageHandler" do
+      {handler, ipk} = new_handler_with_case(device: TestLight)
+      init = new_case_initiator(ipk)
+
+      {:send, :case_sigma1, sigma1_payload, _init} = Matterlix.CASE.initiate(init)
+      frame = build_case_frame(:case_sigma1, sigma1_payload, 10, 0)
+
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
+      assert [{:send, sigma2_frame}] = actions
+
+      {:ok, msg} = MessageCodec.decode(sigma2_frame)
+      assert msg.proto.opcode == ProtocolID.opcode(:secure_channel, :case_sigma2)
+      assert msg.proto.initiator == false
+
+      # CASE state advanced
+      assert handler.case_state.state == :sigma2_sent
+    end
+
+    test "full CASE handshake through MessageHandler → session established" do
+      {handler, ipk} = new_handler_with_case(device: TestLight)
+      {_init_session, handler, session_id} = run_case_handshake(handler, ipk)
+
+      assert Map.has_key?(handler.sessions, session_id)
+      entry = handler.sessions[session_id]
+      assert entry.session.local_session_id == session_id
+    end
+
+    test "encrypted IM after CASE session" do
+      {handler, ipk} = new_handler_with_case(device: TestLight)
+      {init_session, handler, _session_id} = run_case_handshake(handler, ipk)
+
+      # Read on_off via CASE-established session
+      read_req = IM.encode(%IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
+      })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :read_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: read_req
+      }
+
+      {frame, init_session} = SecureChannel.seal(init_session, proto)
+      {actions, _handler} = MessageHandler.handle_frame(handler, frame)
+
+      send_actions = Enum.filter(actions, &match?({:send, _}, &1))
+      assert length(send_actions) == 1
+
+      [{:send, resp_frame}] = send_actions
+      {:ok, msg, _init_session} = SecureChannel.open(init_session, resp_frame)
+      assert msg.proto.opcode == ProtocolID.opcode(:interaction_model, :report_data)
+
+      {:ok, report} = IM.decode(:report_data, msg.proto.payload)
+      assert length(report.attribute_reports) == 1
+    end
+
+    test "PASE and CASE can coexist" do
+      {handler, ipk} = new_handler_with_case(device: TestLight)
+
+      # First: PASE handshake
+      {_pase_session, handler} = run_pase_handshake(handler)
+      assert Map.has_key?(handler.sessions, 1)
+
+      # Then: CASE handshake
+      {_init_session, handler, case_session_id} = run_case_handshake(handler, ipk)
+      assert Map.has_key?(handler.sessions, case_session_id)
+
+      # Both sessions exist
+      assert map_size(handler.sessions) == 2
+    end
+  end
+
   # ── Full end-to-end ─────────────────────────────────────────────
 
   describe "full end-to-end" do

@@ -76,7 +76,7 @@ defmodule Matterlix.Session do
   Derive I2R_Key, R2I_Key, and AttestationChallenge from session Ke.
   """
   @spec derive_session_keys(binary()) :: {binary(), binary(), binary()}
-  def derive_session_keys(ke) when byte_size(ke) == 16 do
+  def derive_session_keys(ke) when is_binary(ke) and byte_size(ke) >= 16 do
     keys = KDF.hkdf(<<>>, ke, "SessionKeys", 48)
     i2r = binary_part(keys, 0, 16)
     r2i = binary_part(keys, 16, 16)

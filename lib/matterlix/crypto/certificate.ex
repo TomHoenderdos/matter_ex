@@ -37,4 +37,12 @@ defmodule Matterlix.Crypto.Certificate do
   def verify(message, signature, public_key) do
     :crypto.verify(:ecdsa, :sha256, message, signature, [public_key, @curve])
   end
+
+  @doc """
+  Compute ECDH shared secret (P-256 x-coordinate, 32 bytes).
+  """
+  @spec ecdh(binary(), binary()) :: binary()
+  def ecdh(peer_public_key, my_private_key) do
+    :crypto.compute_key(:ecdh, peer_public_key, my_private_key, @curve)
+  end
 end
