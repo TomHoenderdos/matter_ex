@@ -28,6 +28,7 @@ defmodule Matterlix.ExchangeManagerTest do
   defp mock_handler(:read_request, %IM.ReadRequest{}), do: @read_response
   defp mock_handler(:write_request, %IM.WriteRequest{}), do: @write_response
   defp mock_handler(:invoke_request, %IM.InvokeRequest{}), do: @invoke_response
+  defp mock_handler(:timed_request, %IM.TimedRequest{}), do: %IM.StatusResponse{status: 0}
 
   defp new_manager do
     ExchangeManager.new(handler: &mock_handler/2)
@@ -293,6 +294,119 @@ defmodule Matterlix.ExchangeManagerTest do
 
       # No content reply, just ACK
       assert [{:ack, 100}] = actions
+    end
+  end
+
+  # ── Timed exchanges ──────────────────────────────────────────────
+
+  describe "timed exchanges" do
+    defp timed_request_proto(exchange_id, timeout_ms \\ 5000) do
+      payload = IM.encode(%IM.TimedRequest{timeout_ms: timeout_ms})
+
+      %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: 0x0A,
+        exchange_id: exchange_id,
+        protocol_id: 0x0001,
+        payload: payload
+      }
+    end
+
+    test "TimedRequest returns StatusResponse and keeps exchange open" do
+      mgr = new_manager()
+      proto = timed_request_proto(10)
+
+      {actions, mgr} = ExchangeManager.handle_message(mgr, proto, 100)
+
+      # Should reply with StatusResponse
+      assert [{:reply, reply}, {:schedule_mrp, 10, 0, _timeout}] = actions
+      assert reply.opcode == 0x01  # status_response
+      assert {:ok, %IM.StatusResponse{status: 0}} = IM.decode(:status_response, reply.payload)
+
+      # Exchange should still be open (timed)
+      assert Map.has_key?(mgr.exchanges, 10)
+      assert Map.has_key?(mgr.timed_exchanges, 10)
+    end
+
+    test "timed exchange records deadline" do
+      mgr = new_manager()
+      proto = timed_request_proto(10, 10_000)
+
+      before = System.monotonic_time(:millisecond)
+      {_actions, mgr} = ExchangeManager.handle_message(mgr, proto, 100)
+      after_time = System.monotonic_time(:millisecond)
+
+      deadline = mgr.timed_exchanges[10]
+      assert deadline >= before + 10_000
+      assert deadline <= after_time + 10_000
+    end
+
+    test "subsequent write on same exchange succeeds" do
+      mgr = new_manager()
+
+      # 1. Send TimedRequest
+      timed_proto = timed_request_proto(10, 30_000)
+      {_actions, mgr} = ExchangeManager.handle_message(mgr, timed_proto, 100)
+
+      # 2. Send WriteRequest on same exchange
+      write_payload = IM.encode(%IM.WriteRequest{
+        write_requests: [
+          %{version: 0, path: %{endpoint: 1, cluster: 6, attribute: 0}, value: {:bool, true}}
+        ],
+        timed_request: true
+      })
+
+      write_proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: 0x06,
+        exchange_id: 10,
+        protocol_id: 0x0001,
+        payload: write_payload
+      }
+
+      {actions, mgr} = ExchangeManager.handle_message(mgr, write_proto, 101)
+
+      # Should get WriteResponse
+      assert [{:reply, reply}, {:schedule_mrp, 10, 0, _timeout}] = actions
+      assert reply.opcode == 0x07  # write_response
+
+      # Exchange and timed state should be cleaned up
+      assert mgr.exchanges == %{}
+      assert mgr.timed_exchanges == %{}
+    end
+
+    test "subsequent invoke on same exchange succeeds" do
+      mgr = new_manager()
+
+      # 1. Send TimedRequest
+      timed_proto = timed_request_proto(10, 30_000)
+      {_actions, mgr} = ExchangeManager.handle_message(mgr, timed_proto, 100)
+
+      # 2. Send InvokeRequest on same exchange
+      invoke_payload = IM.encode(%IM.InvokeRequest{
+        invoke_requests: [
+          %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
+        ],
+        timed_request: true
+      })
+
+      invoke_proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: 0x08,
+        exchange_id: 10,
+        protocol_id: 0x0001,
+        payload: invoke_payload
+      }
+
+      {actions, mgr} = ExchangeManager.handle_message(mgr, invoke_proto, 101)
+
+      assert [{:reply, reply}, {:schedule_mrp, 10, 0, _timeout}] = actions
+      assert reply.opcode == 0x09  # invoke_response
+
+      assert mgr.timed_exchanges == %{}
     end
   end
 

@@ -286,7 +286,14 @@ defmodule Matterlix.DeviceTest do
     end
   end
 
-  # ── Full integration ──────────────────────────────────────────
+  # ── Router: TimedRequest ─────────────────────────────────────
+
+  describe "Router timed_request" do
+    test "returns StatusResponse with success" do
+      result = Router.handle(TestLight, :timed_request, %IM.TimedRequest{timeout_ms: 5000})
+      assert %IM.StatusResponse{status: 0} = result
+    end
+  end
 
   # ── Device __cluster_ids__ ────────────────────────────────────
 

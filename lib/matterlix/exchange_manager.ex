@@ -35,14 +35,16 @@ defmodule Matterlix.ExchangeManager do
     exchanges: %{non_neg_integer() => exchange()},
     mrp: MRP.t(),
     next_exchange_id: non_neg_integer(),
-    pending_acks: [non_neg_integer()]
+    pending_acks: [non_neg_integer()],
+    timed_exchanges: %{non_neg_integer() => integer()}
   }
 
   defstruct handler: nil,
             exchanges: %{},
             mrp: MRP.new(),
             next_exchange_id: 1,
-            pending_acks: []
+            pending_acks: [],
+            timed_exchanges: %{}
 
   @doc """
   Create a new ExchangeManager.
@@ -216,7 +218,14 @@ defmodule Matterlix.ExchangeManager do
     timeout = MRP.backoff_ms(state.mrp, 0, deterministic: true)
     state = %{state | mrp: mrp}
 
-    state = close_exchange(state, proto.exchange_id)
+    # For timed requests, keep exchange open and record deadline
+    state =
+      if opcode == :timed_request do
+        deadline = System.monotonic_time(:millisecond) + request.timeout_ms
+        %{state | timed_exchanges: Map.put(state.timed_exchanges, proto.exchange_id, deadline)}
+      else
+        close_exchange(state, proto.exchange_id)
+      end
 
     {[{:reply, reply_proto}, {:schedule_mrp, proto.exchange_id, 0, timeout}], state}
   end
@@ -237,7 +246,10 @@ defmodule Matterlix.ExchangeManager do
   # ── Private: Exchange lifecycle ───────────────────────────────────
 
   defp close_exchange(state, exchange_id) do
-    %{state | exchanges: Map.delete(state.exchanges, exchange_id)}
+    %{state |
+      exchanges: Map.delete(state.exchanges, exchange_id),
+      timed_exchanges: Map.delete(state.timed_exchanges, exchange_id)
+    }
   end
 
   # ── Private: Opcode mapping ──────────────────────────────────────
