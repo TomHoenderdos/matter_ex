@@ -654,6 +654,174 @@ defmodule Matterlix.MessageHandlerTest do
     end
   end
 
+  # ── Commissioning flow ──────────────────────────────────────────
+
+  describe "commissioning flow" do
+    setup do
+      start_supervised!(TestLight)
+      start_supervised!({Matterlix.Commissioning, name: Matterlix.Commissioning})
+      :ok
+    end
+
+    defp send_invoke(handler, session, endpoint, cluster_id, command_id, fields) do
+      invoke_req = IM.encode(%IM.InvokeRequest{
+        invoke_requests: [
+          %{path: %{endpoint: endpoint, cluster: cluster_id, command: command_id}, fields: fields}
+        ]
+      })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :invoke_request),
+        exchange_id: :rand.uniform(65534),
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: invoke_req
+      }
+
+      {frame, session} = SecureChannel.seal(session, proto)
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
+
+      send_actions = Enum.filter(actions, &match?({:send, _}, &1))
+      [{:send, resp_frame}] = send_actions
+
+      {:ok, msg, session} = SecureChannel.open(session, resp_frame)
+      {:ok, response} = IM.decode(:invoke_response, msg.proto.payload)
+
+      {response, session, handler}
+    end
+
+    test "full PASE → commission → CASE credentials available" do
+      handler = new_handler(device: TestLight)
+      {comm_session, handler} = run_pase_handshake(handler)
+
+      # 1. ArmFailSafe (endpoint 0, cluster 0x0030, command 0x00)
+      {response, comm_session, handler} =
+        send_invoke(handler, comm_session, 0, 0x0030, 0x00,
+          %{0 => {:uint, 900}, 1 => {:uint, 1}})
+
+      [{:command, arm_resp}] = response.invoke_responses
+      assert arm_resp.fields[0] == 0  # ErrorCode=OK
+
+      # 2. CSRRequest (endpoint 0, cluster 0x003E, command 0x04)
+      csr_nonce = :crypto.strong_rand_bytes(32)
+      {response, comm_session, handler} =
+        send_invoke(handler, comm_session, 0, 0x003E, 0x04,
+          %{0 => {:bytes, csr_nonce}})
+
+      [{:command, cmd_data}] = response.invoke_responses
+      nocsr_elements = cmd_data.fields[0]
+
+      # Decode NOCSR to get the public key
+      nocsr_decoded = Matterlix.TLV.decode(nocsr_elements)
+      pub_key = nocsr_decoded[1]
+
+      # 3. AddTrustedRootCert (endpoint 0, cluster 0x003E, command 0x0B)
+      root_cert = :crypto.strong_rand_bytes(200)
+      {_response, comm_session, handler} =
+        send_invoke(handler, comm_session, 0, 0x003E, 0x0B,
+          %{0 => {:bytes, root_cert}})
+
+      # 4. AddNOC (endpoint 0, cluster 0x003E, command 0x06)
+      noc = Matterlix.CASE.Messages.encode_noc(42, 1, pub_key)
+      ipk = :crypto.strong_rand_bytes(16)
+      {response, comm_session, handler} =
+        send_invoke(handler, comm_session, 0, 0x003E, 0x06,
+          %{0 => {:bytes, noc}, 1 => {:bytes, ipk}, 2 => {:uint, 112233}, 3 => {:uint, 0xFFF1}})
+
+      [{:command, noc_resp}] = response.invoke_responses
+      assert noc_resp.fields[0] == 0  # StatusCode=Success
+
+      # 5. CommissioningComplete (endpoint 0, cluster 0x0030, command 0x04)
+      {response, _comm_session, handler} =
+        send_invoke(handler, comm_session, 0, 0x0030, 0x04, nil)
+
+      [{:command, cc_resp}] = response.invoke_responses
+      assert cc_resp.fields[0] == 0  # Success
+
+      # Commissioning Agent should now have credentials
+      assert Matterlix.Commissioning.commissioned?()
+      creds = Matterlix.Commissioning.get_credentials()
+      assert creds.node_id == 42
+      assert creds.fabric_id == 1
+
+      # Update handler with CASE credentials
+      handler = MessageHandler.update_case(handler, Keyword.new(creds))
+      assert handler.case_state != nil
+      assert handler.case_state.node_id == 42
+    end
+
+    test "commissioned credentials produce valid CASE session" do
+      handler = new_handler(device: TestLight)
+      {comm_session, handler} = run_pase_handshake(handler)
+
+      # Quick commission: CSRRequest → AddRoot → AddNOC → CommissioningComplete
+      {_response, comm_session, handler} =
+        send_invoke(handler, comm_session, 0, 0x0030, 0x00, %{0 => {:uint, 900}, 1 => {:uint, 0}})
+
+      csr_nonce = :crypto.strong_rand_bytes(32)
+      {response, comm_session, handler} =
+        send_invoke(handler, comm_session, 0, 0x003E, 0x04, %{0 => {:bytes, csr_nonce}})
+
+      [{:command, cmd_data}] = response.invoke_responses
+      nocsr_decoded = Matterlix.TLV.decode(cmd_data.fields[0])
+      pub_key = nocsr_decoded[1]
+
+      root_cert = :crypto.strong_rand_bytes(200)
+      {_response, comm_session, handler} =
+        send_invoke(handler, comm_session, 0, 0x003E, 0x0B, %{0 => {:bytes, root_cert}})
+
+      ipk = :crypto.strong_rand_bytes(16)
+      noc = Matterlix.CASE.Messages.encode_noc(42, 1, pub_key)
+      {_response, comm_session, handler} =
+        send_invoke(handler, comm_session, 0, 0x003E, 0x06,
+          %{0 => {:bytes, noc}, 1 => {:bytes, ipk}, 2 => {:uint, 112233}, 3 => {:uint, 0xFFF1}})
+
+      {_response, _comm_session, handler} =
+        send_invoke(handler, comm_session, 0, 0x0030, 0x04, nil)
+
+      # Update CASE from commissioning credentials
+      creds = Matterlix.Commissioning.get_credentials()
+      handler = MessageHandler.update_case(handler, Keyword.new(creds))
+
+      # Now do a CASE handshake with the commissioned credentials
+      {init_pub, init_priv} = Matterlix.Crypto.Certificate.generate_keypair()
+      init_noc = Matterlix.CASE.Messages.encode_noc(2, 1, init_pub)
+
+      init = Matterlix.CASE.new_initiator(
+        noc: init_noc,
+        private_key: init_priv,
+        ipk: ipk,
+        node_id: 2,
+        fabric_id: 1,
+        local_session_id: 200,
+        peer_node_id: 42,
+        peer_fabric_id: 1
+      )
+
+      # Sigma1
+      {:send, :case_sigma1, sigma1_payload, init} = Matterlix.CASE.initiate(init)
+      frame = build_pase_frame(:case_sigma1, sigma1_payload, 50, counter: 100)
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
+      [{:send, sigma2_frame}] = actions
+
+      # Sigma2 → Sigma3
+      {:ok, sigma2_msg} = MessageCodec.decode(sigma2_frame)
+      {:send, :case_sigma3, sigma3_payload, _init} =
+        Matterlix.CASE.handle(init, :case_sigma2, sigma2_msg.proto.payload)
+
+      frame = build_pase_frame(:case_sigma3, sigma3_payload, 50, counter: 101)
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
+
+      [{:send, _sr_frame}, {:session_established, case_session_id}] = actions
+      assert Map.has_key?(handler.sessions, case_session_id)
+
+      # Verify the session node_id matches commissioned id
+      session = handler.sessions[case_session_id].session
+      assert session.local_node_id == 42
+    end
+  end
+
   # ── Full end-to-end ─────────────────────────────────────────────
 
   describe "full end-to-end" do

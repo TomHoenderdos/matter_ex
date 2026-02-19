@@ -160,6 +160,17 @@ defmodule Matterlix.MessageHandler do
     end
   end
 
+  @doc """
+  Update CASE state with new credentials (e.g. after commissioning).
+
+  Accepts the same keyword options as `new/1` for CASE:
+  `:noc`, `:private_key`, `:ipk`, `:node_id`, `:fabric_id`.
+  """
+  @spec update_case(t(), keyword()) :: t()
+  def update_case(%__MODULE__{} = state, opts) do
+    %{state | case_state: maybe_init_case(opts)}
+  end
+
   # ── Plaintext path (PASE / CASE) ──────────────────────────────────
 
   @case_opcodes [:case_sigma1, :case_sigma3]

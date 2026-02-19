@@ -60,8 +60,13 @@ defmodule Matterlix.Device do
 
     device_opts = Module.get_attribute(env.module, :device_opts)
 
-    # Build endpoint 0 cluster list: Descriptor + BasicInformation
-    ep0_clusters = [Matterlix.Cluster.Descriptor, Matterlix.Cluster.BasicInformation]
+    # Build endpoint 0 cluster list: Descriptor + BasicInformation + Commissioning
+    ep0_clusters = [
+      Matterlix.Cluster.Descriptor,
+      Matterlix.Cluster.BasicInformation,
+      Matterlix.Cluster.GeneralCommissioning,
+      Matterlix.Cluster.OperationalCredentials
+    ]
 
     # Auto-add Descriptor to user endpoints that don't already have it
     user_endpoints =

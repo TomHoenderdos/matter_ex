@@ -29,7 +29,7 @@ defmodule Matterlix.Node do
 
   require Logger
 
-  alias Matterlix.MessageHandler
+  alias Matterlix.{Commissioning, MessageHandler}
 
   @sub_check_interval 1000
 
@@ -74,6 +74,11 @@ defmodule Matterlix.Node do
   @impl true
   def init(opts) do
     udp_port = Keyword.get(opts, :port, 5540)
+
+    # Start commissioning agent if not already running
+    if !Process.whereis(Commissioning) do
+      Commissioning.start_link()
+    end
 
     case :gen_udp.open(udp_port, [:binary, {:active, true}]) do
       {:ok, socket} ->
@@ -142,6 +147,7 @@ defmodule Matterlix.Node do
 
   def handle_info(:check_subscriptions, state) do
     {actions, handler} = MessageHandler.check_subscriptions(state.handler)
+    handler = maybe_update_case(handler)
     state = %{state | handler: handler}
     state = process_actions(actions, state)
     Process.send_after(self(), :check_subscriptions, @sub_check_interval)
@@ -189,6 +195,19 @@ defmodule Matterlix.Node do
       end
     end)
   end
+
+  defp maybe_update_case(%MessageHandler{case_state: nil} = handler) do
+    case Commissioning.get_credentials() do
+      nil ->
+        handler
+
+      creds ->
+        Logger.info("Commissioning complete — enabling CASE")
+        MessageHandler.update_case(handler, Keyword.new(creds))
+    end
+  end
+
+  defp maybe_update_case(handler), do: handler
 
   defp send_to_peer(%State{socket: socket, peer: {ip, port}}, frame) do
     :gen_udp.send(socket, ip, port, frame)

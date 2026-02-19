@@ -9,6 +9,9 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.TemperatureMeasurement
   alias Matterlix.Cluster.BooleanState
   alias Matterlix.Cluster.Thermostat
+  alias Matterlix.Cluster.GeneralCommissioning
+  alias Matterlix.Cluster.OperationalCredentials
+  alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
 
@@ -154,6 +157,37 @@ defmodule Matterlix.ClusterTest do
       defs = Thermostat.command_defs()
       assert length(defs) == 1
       assert Enum.find(defs, &(&1.name == :setpoint_raise_lower)).id == 0x00
+    end
+
+    test "GeneralCommissioning cluster_id and name" do
+      assert GeneralCommissioning.cluster_id() == 0x0030
+      assert GeneralCommissioning.cluster_name() == :general_commissioning
+    end
+
+    test "GeneralCommissioning command_defs" do
+      defs = GeneralCommissioning.command_defs()
+      assert length(defs) == 2
+      assert Enum.find(defs, &(&1.name == :arm_fail_safe)).id == 0x00
+      assert Enum.find(defs, &(&1.name == :commissioning_complete)).id == 0x04
+    end
+
+    test "OperationalCredentials cluster_id and name" do
+      assert OperationalCredentials.cluster_id() == 0x003E
+      assert OperationalCredentials.cluster_name() == :operational_credentials
+    end
+
+    test "OperationalCredentials command_defs" do
+      defs = OperationalCredentials.command_defs()
+      assert length(defs) == 3
+      assert Enum.find(defs, &(&1.name == :csr_request)).id == 0x04
+      assert Enum.find(defs, &(&1.name == :add_noc)).id == 0x06
+      assert Enum.find(defs, &(&1.name == :add_trusted_root_cert)).id == 0x0B
+    end
+
+    test "OperationalCredentials attribute defaults" do
+      defs = OperationalCredentials.attribute_defs()
+      assert Enum.find(defs, &(&1.name == :supported_fabrics)).default == 1
+      assert Enum.find(defs, &(&1.name == :commissioned_fabrics)).default == 0
     end
   end
 
@@ -484,6 +518,134 @@ defmodule Matterlix.ClusterTest do
       # Try to raise cooling above abs_max_cool (3200)
       assert {:ok, nil} = GenServer.call(name, {:invoke_command, :setpoint_raise_lower, %{mode: 1, amount: 100}})
       assert {:ok, 3200} = GenServer.call(name, {:read_attribute, :occupied_cooling_setpoint})
+    end
+  end
+
+  # ── GeneralCommissioning GenServer ─────────────────────────────
+
+  describe "GeneralCommissioning GenServer" do
+    setup do
+      comm_name = :"comm_agent_gc_#{System.unique_integer([:positive])}"
+      {:ok, _} = Commissioning.start_link(name: comm_name)
+
+      name = :"gen_comm_test_#{System.unique_integer([:positive])}"
+      {:ok, pid} = GeneralCommissioning.start_link(name: name)
+      %{pid: pid, name: name, comm_name: comm_name}
+    end
+
+    test "breadcrumb is writable", %{name: name} do
+      assert :ok = GenServer.call(name, {:write_attribute, :breadcrumb, 42})
+      assert {:ok, 42} = GenServer.call(name, {:read_attribute, :breadcrumb})
+    end
+
+    test "arm_fail_safe returns success response", %{name: name} do
+      assert {:ok, response} =
+               GenServer.call(name, {:invoke_command, :arm_fail_safe, %{expiry_length: 900, breadcrumb: 1}})
+
+      assert response[0] == {:uint, 0}
+      assert response[1] == {:string, ""}
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :breadcrumb})
+    end
+
+    test "commissioning_complete returns success response", %{name: name} do
+      assert {:ok, response} =
+               GenServer.call(name, {:invoke_command, :commissioning_complete, %{}})
+
+      assert response[0] == {:uint, 0}
+    end
+  end
+
+  # ── OperationalCredentials GenServer ───────────────────────────
+
+  describe "OperationalCredentials GenServer" do
+    setup do
+      comm_name = :"comm_agent_oc_#{System.unique_integer([:positive])}"
+      {:ok, _} = Commissioning.start_link(name: comm_name)
+
+      name = :"op_cred_test_#{System.unique_integer([:positive])}"
+      {:ok, pid} = OperationalCredentials.start_link(name: name)
+      %{pid: pid, name: name, comm_name: comm_name}
+    end
+
+    test "csr_request generates keypair and returns NOCSR elements", %{name: name} do
+      nonce = :crypto.strong_rand_bytes(32)
+
+      assert {:ok, response} =
+               GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: nonce}})
+
+      # Response has NOCSR elements (bytes) and attestation signature (bytes)
+      assert {:bytes, nocsr_elements} = response[0]
+      assert {:bytes, _attestation_sig} = response[1]
+      assert is_binary(nocsr_elements)
+      assert byte_size(nocsr_elements) > 0
+    end
+
+    test "add_trusted_root_cert stores cert", %{name: name} do
+      root_cert = :crypto.strong_rand_bytes(200)
+
+      assert {:ok, nil} =
+               GenServer.call(name, {:invoke_command, :add_trusted_root_cert, %{root_ca_cert: root_cert}})
+    end
+
+    test "full CSR → AddRoot → AddNOC flow", %{name: name} do
+      alias Matterlix.CASE.Messages, as: CASEMessages
+
+      # 1. CSRRequest
+      nonce = :crypto.strong_rand_bytes(32)
+      {:ok, csr_response} = GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: nonce}})
+      {:bytes, nocsr_elements} = csr_response[0]
+
+      # Decode NOCSR to get the public key
+      nocsr_decoded = Matterlix.TLV.decode(nocsr_elements)
+      pub_key = nocsr_decoded[1]
+
+      # 2. AddTrustedRootCert
+      root_cert = :crypto.strong_rand_bytes(200)
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :add_trusted_root_cert, %{root_ca_cert: root_cert}})
+
+      # 3. Build NOC using the public key from CSR
+      noc = CASEMessages.encode_noc(42, 1, pub_key)
+      ipk = :crypto.strong_rand_bytes(16)
+
+      {:ok, noc_response} = GenServer.call(name, {:invoke_command, :add_noc, %{
+        noc_value: noc,
+        ipk_value: ipk,
+        case_admin_subject: 112233,
+        admin_vendor_id: 0xFFF1
+      }})
+
+      # StatusCode=Success(0), FabricIndex=1
+      assert {:uint, 0} = noc_response[0]
+      assert {:uint, 1} = noc_response[1]
+
+      # commissioned_fabrics updated
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :commissioned_fabrics})
+    end
+
+    test "add_noc with mismatched key fails", %{name: name} do
+      alias Matterlix.CASE.Messages, as: CASEMessages
+      alias Matterlix.Crypto.Certificate
+
+      # CSRRequest generates a keypair
+      GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: <<0::256>>}})
+
+      # Build NOC with a DIFFERENT public key
+      {different_pub, _priv} = Certificate.generate_keypair()
+      noc = CASEMessages.encode_noc(42, 1, different_pub)
+
+      {:ok, noc_response} = GenServer.call(name, {:invoke_command, :add_noc, %{
+        noc_value: noc,
+        ipk_value: :crypto.strong_rand_bytes(16),
+        case_admin_subject: 112233,
+        admin_vendor_id: 0xFFF1
+      }})
+
+      # StatusCode=InvalidPublicKey(1)
+      assert {:uint, 1} = noc_response[0]
+    end
+
+    test "supported_fabrics defaults to 1", %{name: name} do
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :supported_fabrics})
     end
   end
 end
