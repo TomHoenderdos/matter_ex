@@ -154,6 +154,23 @@ defmodule Matterlix.CASE.Messages do
   end
 
   @doc """
+  Extract the public key from an X.509 DER certificate.
+
+  Returns the raw EC point (65 bytes for P-256 uncompressed) or nil.
+  Works with any X.509 cert (root CA, ICAC, or NOC).
+  """
+  @spec extract_public_key(binary()) :: binary() | nil
+  def extract_public_key(<<0x30, _::binary>> = data) do
+    cert = :public_key.der_decode(:Certificate, data)
+    tbs = elem(cert, 1)
+    elem(tbs, 7) |> elem(2) |> normalize_bitstring()
+  rescue
+    _ -> nil
+  end
+
+  def extract_public_key(_), do: nil
+
+  @doc """
   Decode a NOC. Accepts both X.509 DER certificates (as sent by chip-tool)
   and the simplified TLV format used in internal tests.
   """

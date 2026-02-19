@@ -35,7 +35,7 @@ defmodule Matterlix.Node do
 
   defmodule State do
     @moduledoc false
-    defstruct [:handler, :socket, :port, :peer]
+    defstruct [:handler, :socket, :port, :peer, :mdns, :commissioning_instance]
   end
 
   # ── Public API ───────────────────────────────────────────────────
@@ -102,7 +102,9 @@ defmodule Matterlix.Node do
           handler: handler,
           socket: socket,
           port: assigned_port,
-          peer: nil
+          peer: nil,
+          mdns: Keyword.get(opts, :mdns),
+          commissioning_instance: Keyword.get(opts, :commissioning_instance)
         }}
 
       {:error, reason} ->
@@ -147,7 +149,7 @@ defmodule Matterlix.Node do
 
   def handle_info(:check_subscriptions, state) do
     {actions, handler} = MessageHandler.check_subscriptions(state.handler)
-    handler = maybe_update_case(handler)
+    {handler, state} = maybe_update_case(handler, state)
     state = %{state | handler: handler}
     state = process_actions(actions, state)
     Process.send_after(self(), :check_subscriptions, @sub_check_interval)
@@ -196,10 +198,10 @@ defmodule Matterlix.Node do
     end)
   end
 
-  defp maybe_update_case(%MessageHandler{case_state: nil} = handler) do
+  defp maybe_update_case(%MessageHandler{case_state: nil} = handler, state) do
     case Commissioning.get_credentials() do
       nil ->
-        handler
+        {handler, state}
 
       creds ->
         Logger.info("Commissioning complete — enabling CASE")
@@ -210,11 +212,14 @@ defmodule Matterlix.Node do
           write_initial_acl(handler.device, creds.case_admin_subject)
         end
 
-        handler
+        # Transition mDNS: withdraw commissioning, advertise operational
+        transition_mdns(state, creds)
+
+        {handler, state}
     end
   end
 
-  defp maybe_update_case(handler), do: handler
+  defp maybe_update_case(handler, state), do: {handler, state}
 
   defp write_initial_acl(device, admin_subject) do
     acl_name = device.__process_name__(0, :access_control)
@@ -229,6 +234,32 @@ defmodule Matterlix.Node do
       }
 
       GenServer.call(acl_name, {:write_attribute, :acl, [admin_entry]})
+    end
+  end
+
+  defp transition_mdns(%State{mdns: nil}, _creds), do: :ok
+
+  defp transition_mdns(%State{mdns: mdns, commissioning_instance: inst, port: port}, creds) do
+    alias Matterlix.CASE.Messages, as: CASEMessages
+    alias Matterlix.MDNS
+
+    # Withdraw commissioning advertisement
+    if inst, do: MDNS.withdraw(mdns, inst)
+
+    # Compute compressed fabric ID from root cert
+    root_pub = if creds[:root_cert], do: CASEMessages.extract_public_key(creds.root_cert)
+
+    if root_pub && creds[:fabric_id] && creds[:node_id] do
+      cfid = MDNS.compressed_fabric_id(root_pub, creds.fabric_id)
+
+      service = MDNS.operational_service(
+        port: port,
+        compressed_fabric_id: cfid,
+        node_id: creds.node_id
+      )
+
+      MDNS.advertise(mdns, service)
+      Logger.info("mDNS: transitioned to operational (_matter._tcp)")
     end
   end
 

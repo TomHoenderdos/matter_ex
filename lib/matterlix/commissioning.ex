@@ -70,6 +70,11 @@ defmodule Matterlix.Commissioning do
     Agent.update(name, &Map.put(&1, :root_cert, cert))
   end
 
+  @spec get_root_cert(GenServer.server()) :: binary() | nil
+  def get_root_cert(name \\ @default_name) do
+    Agent.get(name, & &1.root_cert)
+  end
+
   @spec store_noc(binary(), binary(), integer(), integer(), GenServer.server()) :: :ok
   def store_noc(noc, ipk, node_id, fabric_id, name \\ @default_name) do
     Agent.update(name, fn state ->
@@ -109,7 +114,8 @@ defmodule Matterlix.Commissioning do
           ipk: state.ipk,
           node_id: state.node_id,
           fabric_id: state.fabric_id,
-          case_admin_subject: state.case_admin_subject
+          case_admin_subject: state.case_admin_subject,
+          root_cert: state.root_cert
         }
       end
     end)

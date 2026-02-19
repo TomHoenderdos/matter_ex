@@ -165,6 +165,56 @@ defmodule Matterlix.MDNS do
     ]
   end
 
+  @doc """
+  Build service configuration for Matter operational discovery.
+
+  After commissioning, the device advertises on `_matter._tcp.local`
+  with a compressed fabric ID + node ID instance name. chip-tool uses
+  this to find the device for CASE session establishment.
+
+  Options:
+  - `:port` — UDP port the Matter node listens on (required)
+  - `:compressed_fabric_id` — 8-byte compressed fabric identifier (required)
+  - `:node_id` — operational node ID (required)
+  """
+  @spec operational_service(keyword()) :: keyword()
+  def operational_service(opts) do
+    port = Keyword.fetch!(opts, :port)
+    compressed_fabric_id = Keyword.fetch!(opts, :compressed_fabric_id)
+    node_id = Keyword.fetch!(opts, :node_id)
+
+    # Instance name: <compressed-fabric-id-hex>-<node-id-hex>
+    cfid_hex = Base.encode16(compressed_fabric_id)
+    node_hex = node_id |> Integer.to_string(16) |> String.pad_leading(16, "0")
+    instance = "#{cfid_hex}-#{node_hex}"
+
+    txt = [
+      "SII=#{5000}",
+      "SAI=#{300}",
+      "T=0"
+    ]
+
+    [
+      service: "_matter._tcp.local",
+      instance: instance,
+      port: port,
+      txt: txt
+    ]
+  end
+
+  @doc """
+  Compute the Matter compressed fabric identifier.
+
+  Uses HKDF-SHA256 with the fabric root public key as input keying material,
+  the fabric ID (big-endian 64-bit) as salt, and "CompressedFabric" as info.
+  Returns 8 bytes.
+  """
+  @spec compressed_fabric_id(binary(), non_neg_integer()) :: binary()
+  def compressed_fabric_id(root_public_key, fabric_id) do
+    alias Matterlix.Crypto.KDF
+    KDF.hkdf(<<fabric_id::unsigned-big-64>>, root_public_key, "CompressedFabric", 8)
+  end
+
   # ── GenServer Callbacks ─────────────────────────────────────────
 
   @impl true

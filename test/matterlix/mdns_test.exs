@@ -284,4 +284,117 @@ defmodule Matterlix.MDNSTest do
       assert "DN=Test Light" in txt.data
     end
   end
+
+  # ── Operational Discovery ─────────────────────────────────────
+
+  describe "operational discovery" do
+    test "compressed_fabric_id is deterministic and 8 bytes" do
+      {pub, _priv} = :crypto.generate_key(:ecdh, :secp256r1)
+      fabric_id = 1
+
+      cfid1 = MDNS.compressed_fabric_id(pub, fabric_id)
+      cfid2 = MDNS.compressed_fabric_id(pub, fabric_id)
+
+      assert cfid1 == cfid2
+      assert byte_size(cfid1) == 8
+    end
+
+    test "different fabric IDs produce different compressed IDs" do
+      {pub, _priv} = :crypto.generate_key(:ecdh, :secp256r1)
+
+      cfid1 = MDNS.compressed_fabric_id(pub, 1)
+      cfid2 = MDNS.compressed_fabric_id(pub, 2)
+
+      assert cfid1 != cfid2
+    end
+
+    test "operational_service builds correct config" do
+      cfid = :crypto.strong_rand_bytes(8)
+
+      config = MDNS.operational_service(
+        port: 5540,
+        compressed_fabric_id: cfid,
+        node_id: 1
+      )
+
+      assert config[:service] == "_matter._tcp.local"
+      assert config[:port] == 5540
+
+      # Instance name: <CFID-hex>-<node-id-hex>
+      expected_instance = Base.encode16(cfid) <> "-0000000000000001"
+      assert config[:instance] == expected_instance
+
+      txt = config[:txt]
+      assert "T=0" in txt
+    end
+
+    test "operational_service responds to _matter._tcp queries",
+         %{mdns: mdns, client: client, port: port} do
+      cfid = <<0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08>>
+
+      config = MDNS.operational_service(
+        port: 5540,
+        compressed_fabric_id: cfid,
+        node_id: 42
+      )
+
+      MDNS.advertise(mdns, config)
+
+      {:ok, response} = send_query(client, port, [
+        %{name: "_matter._tcp.local", type: :ptr, class: :in}
+      ])
+
+      types = Enum.map(response.answers, & &1.type)
+      assert :ptr in types
+      assert :srv in types
+      assert :txt in types
+
+      ptr = Enum.find(response.answers, &(&1.type == :ptr))
+      assert ptr.data == "0102030405060708-000000000000002A._matter._tcp.local"
+
+      srv = Enum.find(response.answers, &(&1.type == :srv))
+      {_pri, _weight, srv_port, _target} = srv.data
+      assert srv_port == 5540
+    end
+
+    test "mDNS transition: withdraw commissioning, advertise operational",
+         %{mdns: mdns, client: client, port: port} do
+      # Start with commissioning advertisement
+      advertise_test_service(mdns)
+
+      # Verify commissioning responds
+      {:ok, _response} = send_query(client, port, [
+        %{name: "_matterc._udp.local", type: :ptr, class: :in}
+      ])
+
+      # Withdraw commissioning
+      MDNS.withdraw(mdns, "TEST-INST")
+
+      # Advertise operational
+      cfid = <<0xAB, 0xCD, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC>>
+
+      config = MDNS.operational_service(
+        port: 5540,
+        compressed_fabric_id: cfid,
+        node_id: 1
+      )
+
+      MDNS.advertise(mdns, config)
+
+      # Commissioning should no longer respond
+      result = send_query(client, port, [
+        %{name: "_matterc._udp.local", type: :ptr, class: :in}
+      ])
+
+      assert result == :no_response
+
+      # Operational should respond
+      {:ok, response} = send_query(client, port, [
+        %{name: "_matter._tcp.local", type: :ptr, class: :in}
+      ])
+
+      ptr = Enum.find(response.answers, &(&1.type == :ptr))
+      assert String.ends_with?(ptr.data, "._matter._tcp.local")
+    end
+  end
 end

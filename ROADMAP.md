@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-22)
+## Completed Phases (1-23)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -24,19 +24,13 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 20 | TimedRequest Handling | - |
 | 21 | Standalone ACK | - |
 | 22 | Real NOC Parsing (X.509 DER with Matter OIDs) | - |
+| 23 | Operational mDNS (`_matter._tcp`) | - |
 
-**Current: 693 tests, 0 failures, 0 warnings**
+**Current: 700 tests, 0 failures, 0 warnings**
 
 ---
 
 ## P0 — Required for chip-tool interop
-
-### Phase 23: Operational mDNS (`_matter._tcp`)
-
-After commissioning, publish `_matter._tcp.local` with compressed fabric ID and node ID. Withdraw `_matterc._udp` advertisement. Without this, chip-tool cannot discover the device post-commissioning.
-
-- `lib/matterlix/mdns.ex` — add `operational_service/1`
-- `lib/matterlix/node.ex` — trigger mDNS transition after CASE enabled
 
 ### Phase 24: CASE Session Resumption
 

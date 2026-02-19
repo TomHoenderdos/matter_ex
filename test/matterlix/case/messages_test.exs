@@ -165,6 +165,17 @@ defmodule Matterlix.CASE.MessagesTest do
       assert {:Certificate, _tbs, _algo, _sig} = :public_key.der_decode(:Certificate, der)
     end
 
+    test "extract_public_key from X.509 DER cert" do
+      {pub, _priv} = Certificate.generate_keypair()
+      der = build_x509_noc(pub, 1, 1)
+
+      assert Messages.extract_public_key(der) == pub
+    end
+
+    test "extract_public_key returns nil for non-DER" do
+      assert Messages.extract_public_key(<<0x01, 0x02>>) == nil
+    end
+
     test "invalid DER starting with 0x30 returns error" do
       assert {:error, :invalid_message} = Messages.decode_noc(<<0x30, 0x00>>)
     end
