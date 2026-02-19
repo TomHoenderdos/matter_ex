@@ -11,6 +11,8 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.Thermostat
   alias Matterlix.Cluster.AccessControl
   alias Matterlix.Cluster.GeneralCommissioning
+  alias Matterlix.Cluster.GroupKeyManagement
+  alias Matterlix.Cluster.NetworkCommissioning
   alias Matterlix.Cluster.OperationalCredentials
   alias Matterlix.Commissioning
 
@@ -695,6 +697,130 @@ defmodule Matterlix.ClusterTest do
 
     test "supported_fabrics defaults to 1", %{name: name} do
       assert {:ok, 1} = GenServer.call(name, {:read_attribute, :supported_fabrics})
+    end
+  end
+
+  # ── NetworkCommissioning metadata ────────────────────────────
+
+  describe "NetworkCommissioning metadata" do
+    test "cluster_id and name" do
+      assert NetworkCommissioning.cluster_id() == 0x0031
+      assert NetworkCommissioning.cluster_name() == :network_commissioning
+    end
+
+    test "attribute_defs" do
+      defs = NetworkCommissioning.attribute_defs()
+      assert length(defs) == 10
+
+      assert Enum.find(defs, &(&1.name == :max_networks)).default == 1
+      assert Enum.find(defs, &(&1.name == :interface_enabled)).default == true
+      assert Enum.find(defs, &(&1.name == :interface_enabled)).writable == true
+      assert Enum.find(defs, &(&1.name == :feature_map)).default == 0x04
+    end
+
+    test "command_defs" do
+      defs = NetworkCommissioning.command_defs()
+      assert length(defs) == 6
+      assert Enum.find(defs, &(&1.name == :scan_networks)).id == 0x00
+      assert Enum.find(defs, &(&1.name == :connect_network)).id == 0x08
+      assert Enum.find(defs, &(&1.name == :reorder_network)).id == 0x0A
+    end
+  end
+
+  # ── NetworkCommissioning GenServer ──────────────────────────
+
+  describe "NetworkCommissioning GenServer" do
+    setup do
+      name = :"net_comm_test_#{System.unique_integer([:positive])}"
+      {:ok, pid} = NetworkCommissioning.start_link(name: name)
+      %{pid: pid, name: name}
+    end
+
+    test "default attribute values", %{name: name} do
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :max_networks})
+      assert {:ok, []} = GenServer.call(name, {:read_attribute, :networks})
+      assert {:ok, 30} = GenServer.call(name, {:read_attribute, :scan_max_time_seconds})
+      assert {:ok, true} = GenServer.call(name, {:read_attribute, :interface_enabled})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :last_networking_status})
+      assert {:ok, "ethernet"} = GenServer.call(name, {:read_attribute, :last_network_id})
+      assert {:ok, 0x04} = GenServer.call(name, {:read_attribute, :feature_map})
+    end
+
+    test "interface_enabled is writable", %{name: name} do
+      assert :ok = GenServer.call(name, {:write_attribute, :interface_enabled, false})
+      assert {:ok, false} = GenServer.call(name, {:read_attribute, :interface_enabled})
+    end
+
+    test "scan_networks returns success", %{name: name} do
+      assert {:ok, response} =
+               GenServer.call(name, {:invoke_command, :scan_networks, %{}})
+
+      assert response[0] == {:uint, 0}
+      assert response[1] == {:string, ""}
+    end
+
+    test "connect_network returns success", %{name: name} do
+      assert {:ok, response} =
+               GenServer.call(name, {:invoke_command, :connect_network,
+                 %{network_id: "ethernet", breadcrumb: 0}})
+
+      assert response[0] == {:uint, 0}
+      assert response[1] == {:string, ""}
+      assert response[2] == :null
+    end
+
+    test "remove_network returns success", %{name: name} do
+      assert {:ok, response} =
+               GenServer.call(name, {:invoke_command, :remove_network,
+                 %{network_id: "ethernet", breadcrumb: 0}})
+
+      assert response[0] == {:uint, 0}
+    end
+  end
+
+  # ── GroupKeyManagement metadata ─────────────────────────────
+
+  describe "GroupKeyManagement metadata" do
+    test "cluster_id and name" do
+      assert GroupKeyManagement.cluster_id() == 0x003F
+      assert GroupKeyManagement.cluster_name() == :group_key_management
+    end
+
+    test "attribute_defs" do
+      defs = GroupKeyManagement.attribute_defs()
+      assert length(defs) == 6
+
+      assert Enum.find(defs, &(&1.name == :group_key_map)).writable == true
+      assert Enum.find(defs, &(&1.name == :group_table)).writable == false
+      assert Enum.find(defs, &(&1.name == :max_groups_per_fabric)).default == 1
+    end
+  end
+
+  # ── GroupKeyManagement GenServer ────────────────────────────
+
+  describe "GroupKeyManagement GenServer" do
+    setup do
+      name = :"gkm_test_#{System.unique_integer([:positive])}"
+      {:ok, pid} = GroupKeyManagement.start_link(name: name)
+      %{pid: pid, name: name}
+    end
+
+    test "default attributes", %{name: name} do
+      assert {:ok, []} = GenServer.call(name, {:read_attribute, :group_key_map})
+      assert {:ok, []} = GenServer.call(name, {:read_attribute, :group_table})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :max_groups_per_fabric})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :feature_map})
+    end
+
+    test "group_key_map is writable", %{name: name} do
+      entry = %{group_id: 1, group_key_set_id: 0}
+      assert :ok = GenServer.call(name, {:write_attribute, :group_key_map, [entry]})
+      assert {:ok, [^entry]} = GenServer.call(name, {:read_attribute, :group_key_map})
+    end
+
+    test "group_table is read-only", %{name: name} do
+      assert {:error, :unsupported_write} =
+               GenServer.call(name, {:write_attribute, :group_table, []})
     end
   end
 end

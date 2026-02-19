@@ -66,7 +66,9 @@ defmodule Matterlix.Device do
       Matterlix.Cluster.BasicInformation,
       Matterlix.Cluster.GeneralCommissioning,
       Matterlix.Cluster.OperationalCredentials,
-      Matterlix.Cluster.AccessControl
+      Matterlix.Cluster.AccessControl,
+      Matterlix.Cluster.NetworkCommissioning,
+      Matterlix.Cluster.GroupKeyManagement
     ]
 
     # Auto-add Descriptor to user endpoints that don't already have it
