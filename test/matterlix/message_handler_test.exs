@@ -256,6 +256,39 @@ defmodule Matterlix.MessageHandlerTest do
       assert msg.proto.opcode == ProtocolID.opcode(:interaction_model, :invoke_response)
     end
 
+    test "standalone ACK sent for message with no response", %{handler: handler, comm_session: comm_session} do
+      # Send a ReportData (opcode 0x05) — a response-type message with no reply expected
+      # This triggers the :no_response path which produces a standalone ACK
+      report = IM.encode(%IM.ReportData{attribute_reports: []})
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :report_data),
+        exchange_id: 99,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: report
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      {actions, _handler} = MessageHandler.handle_frame(handler, frame)
+
+      # Should get a standalone ACK frame (no content reply)
+      send_actions = Enum.filter(actions, &match?({:send, _}, &1))
+      assert length(send_actions) == 1
+
+      [{:send, ack_frame}] = send_actions
+      {:ok, msg, _comm_session} = SecureChannel.open(comm_session, ack_frame)
+
+      # Verify it's a standalone ACK
+      assert msg.proto.opcode == ProtocolID.opcode(:secure_channel, :standalone_ack)
+      assert msg.proto.protocol_id == ProtocolID.protocol_id(:secure_channel)
+      assert msg.proto.exchange_id == 99
+      assert msg.proto.initiator == false
+      assert msg.proto.needs_ack == false
+      assert msg.proto.payload == <<>>
+    end
+
     test "multiple IM round trips", %{handler: handler, comm_session: comm_session} do
       # Send 3 sequential ReadRequests
       {comm_session, handler} =

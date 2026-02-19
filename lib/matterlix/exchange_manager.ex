@@ -186,13 +186,13 @@ defmodule Matterlix.ExchangeManager do
           :no_response ->
             # No response expected, just ACK if needed
             state = close_exchange(state, proto.exchange_id)
-            actions = if proto.needs_ack, do: [{:ack, message_counter}], else: []
+            actions = if proto.needs_ack, do: [{:ack, build_standalone_ack(proto, message_counter)}], else: []
             {actions, state}
         end
 
       {:error, _reason} ->
         state = close_exchange(state, proto.exchange_id)
-        actions = if proto.needs_ack, do: [{:ack, message_counter}], else: []
+        actions = if proto.needs_ack, do: [{:ack, build_standalone_ack(proto, message_counter)}], else: []
         {[{:error, :decode_failed} | actions], state}
     end
   end
@@ -249,6 +249,20 @@ defmodule Matterlix.ExchangeManager do
     %{state |
       exchanges: Map.delete(state.exchanges, exchange_id),
       timed_exchanges: Map.delete(state.timed_exchanges, exchange_id)
+    }
+  end
+
+  # ── Private: Standalone ACK builder ─────────────────────────────────
+
+  defp build_standalone_ack(incoming_proto, ack_counter) do
+    %ProtoHeader{
+      initiator: !incoming_proto.initiator,
+      needs_ack: false,
+      ack_counter: ack_counter,
+      opcode: ProtocolID.opcode(:secure_channel, :standalone_ack),
+      exchange_id: incoming_proto.exchange_id,
+      protocol_id: ProtocolID.protocol_id(:secure_channel),
+      payload: <<>>
     }
   end
 

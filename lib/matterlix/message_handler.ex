@@ -382,10 +382,9 @@ defmodule Matterlix.MessageHandler do
         {:schedule_mrp, exchange_id, attempt, timeout_ms} ->
           {[{:schedule_mrp, session_id, exchange_id, attempt, timeout_ms}], session}
 
-        {:ack, _counter} ->
-          # Standalone ACK — build and send
-          # For now, we don't send standalone ACKs (responses piggyback them)
-          {[], session}
+        {:ack, proto} ->
+          {frame, session} = SecureChannel.seal(session, proto)
+          {[{:send, frame}], session}
 
         {:error, _reason} = err ->
           {[err], session}

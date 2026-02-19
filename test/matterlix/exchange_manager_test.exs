@@ -279,7 +279,7 @@ defmodule Matterlix.ExchangeManagerTest do
       assert [{:error, :unsupported_protocol}] = actions
     end
 
-    test "response opcode with no handler match produces ACK" do
+    test "response opcode with no handler match produces standalone ACK" do
       mgr = new_manager()
 
       # report_data (0x05) is a response, not a request — no response_opcode mapping
@@ -292,8 +292,16 @@ defmodule Matterlix.ExchangeManagerTest do
 
       {actions, _mgr} = ExchangeManager.handle_message(mgr, proto, 100)
 
-      # No content reply, just ACK
-      assert [{:ack, 100}] = actions
+      # Standalone ACK ProtoHeader
+      assert [{:ack, ack_proto}] = actions
+      assert %ProtoHeader{} = ack_proto
+      assert ack_proto.opcode == 0x10          # standalone_ack
+      assert ack_proto.protocol_id == 0x0000   # secure_channel
+      assert ack_proto.ack_counter == 100
+      assert ack_proto.exchange_id == 1
+      assert ack_proto.initiator == false       # responder side
+      assert ack_proto.needs_ack == false
+      assert ack_proto.payload == <<>>
     end
   end
 

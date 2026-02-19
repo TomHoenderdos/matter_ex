@@ -22,18 +22,13 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 18 | Wildcard Path Expansion | - |
 | 19 | Network Commissioning + Group Key Management clusters | - |
 | 20 | TimedRequest Handling | - |
+| 21 | Standalone ACK | - |
 
-**Current: 688 tests, 0 failures, 0 warnings**
+**Current: 689 tests, 0 failures, 0 warnings**
 
 ---
 
 ## P0 — Required for chip-tool interop
-
-### Phase 21: Standalone ACK
-
-Currently `{:ack, counter}` actions are silently dropped. Matter MRP requires a standalone ACK within 200ms for any `needs_ack: true` message not immediately replied to (e.g. `ReportData` with `suppress_response: true`). chip-tool will retransmit and eventually drop the session.
-
-- `lib/matterlix/message_handler.ex` — encode and send standalone ACK frames
 
 ### Phase 22: Real NOC Parsing
 
