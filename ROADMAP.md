@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-20)
+## Completed Phases (1-22)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -23,19 +23,13 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 19 | Network Commissioning + Group Key Management clusters | - |
 | 20 | TimedRequest Handling | - |
 | 21 | Standalone ACK | - |
+| 22 | Real NOC Parsing (X.509 DER with Matter OIDs) | - |
 
-**Current: 689 tests, 0 failures, 0 warnings**
+**Current: 693 tests, 0 failures, 0 warnings**
 
 ---
 
 ## P0 — Required for chip-tool interop
-
-### Phase 22: Real NOC Parsing
-
-`CASE.Messages.encode_noc/decode_noc` use a simplified 3-field TLV struct. chip-tool sends real Matter Operational Certificates (X.509 DER with Matter OIDs). `AddNOC` will reject chip-tool's NOC as invalid. Parse real Matter NOCs using Erlang's `:public_key` module.
-
-- `lib/matterlix/case/messages.ex` — X.509 NOC parsing
-- `lib/matterlix/cluster/operational_credentials.ex` — adapt AddNOC handler
 
 ### Phase 23: Operational mDNS (`_matter._tcp`)
 

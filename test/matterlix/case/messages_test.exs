@@ -118,7 +118,7 @@ defmodule Matterlix.CASE.MessagesTest do
   end
 
   describe "NOC encode/decode" do
-    test "round-trip" do
+    test "simplified TLV round-trip" do
       {pub, _priv} = Certificate.generate_keypair()
       node_id = 12345
       fabric_id = 1
@@ -129,6 +129,44 @@ defmodule Matterlix.CASE.MessagesTest do
       assert decoded.node_id == node_id
       assert decoded.fabric_id == fabric_id
       assert decoded.public_key == pub
+    end
+
+    test "X.509 DER NOC extracts node_id, fabric_id, and public_key" do
+      {pub, _priv} = Certificate.generate_keypair()
+      node_id = 1
+      fabric_id = 1
+
+      der = build_x509_noc(pub, node_id, fabric_id)
+      assert {:ok, decoded} = Messages.decode_noc(der)
+
+      assert decoded.node_id == node_id
+      assert decoded.fabric_id == fabric_id
+      assert decoded.public_key == pub
+    end
+
+    test "X.509 DER NOC with large IDs" do
+      {pub, _priv} = Certificate.generate_keypair()
+      node_id = 0xABCD1234DEAD5678
+      fabric_id = 0x0000000100000002
+
+      der = build_x509_noc(pub, node_id, fabric_id)
+      assert {:ok, decoded} = Messages.decode_noc(der)
+
+      assert decoded.node_id == node_id
+      assert decoded.fabric_id == fabric_id
+      assert decoded.public_key == pub
+    end
+
+    test "X.509 DER NOC is parseable by :public_key.der_decode" do
+      {pub, _priv} = Certificate.generate_keypair()
+      der = build_x509_noc(pub, 1, 1)
+
+      # Verify our test cert is valid DER
+      assert {:Certificate, _tbs, _algo, _sig} = :public_key.der_decode(:Certificate, der)
+    end
+
+    test "invalid DER starting with 0x30 returns error" do
+      assert {:error, :invalid_message} = Messages.decode_noc(<<0x30, 0x00>>)
     end
 
     test "invalid data returns error" do
@@ -199,5 +237,82 @@ defmodule Matterlix.CASE.MessagesTest do
       key = Messages.derive_key(@ipk, shared_secret, "Sigma2")
       assert byte_size(key) == 16
     end
+  end
+
+  # ── X.509 DER test cert builder ──────────────────────────────────
+
+  # Pre-encoded OID bytes
+  @oid_ecdsa_sha256 <<0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02>>
+  @oid_ec_pubkey <<0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01>>
+  @oid_prime256v1 <<0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07>>
+  @oid_matter_node_id <<0x2B, 0x06, 0x01, 0x04, 0x01, 0x82, 0xA2, 0x7C, 0x01, 0x01>>
+  @oid_matter_fabric_id <<0x2B, 0x06, 0x01, 0x04, 0x01, 0x82, 0xA2, 0x7C, 0x01, 0x05>>
+
+  defp build_x509_noc(public_key, node_id, fabric_id) do
+    node_hex = node_id |> Integer.to_string(16) |> String.pad_leading(16, "0")
+    fabric_hex = fabric_id |> Integer.to_string(16) |> String.pad_leading(16, "0")
+
+    sig_algo = der_seq(der_oid(@oid_ecdsa_sha256))
+
+    issuer = der_seq(
+      der_set(der_seq(der_oid(<<0x55, 0x04, 0x03>>) <> der_utf8("Test CA")))
+    )
+
+    validity = der_seq(
+      der_utctime("250101000000Z") <> der_utctime("350101000000Z")
+    )
+
+    subject = der_seq(
+      der_set(der_seq(der_oid(@oid_matter_node_id) <> der_utf8(node_hex))) <>
+      der_set(der_seq(der_oid(@oid_matter_fabric_id) <> der_utf8(fabric_hex)))
+    )
+
+    spki = der_seq(
+      der_seq(der_oid(@oid_ec_pubkey) <> der_oid(@oid_prime256v1)) <>
+      der_bitstring(public_key)
+    )
+
+    tbs = der_seq(
+      der_explicit(0, der_int(2)) <>
+      der_int(1) <>
+      sig_algo <>
+      issuer <>
+      validity <>
+      subject <>
+      spki
+    )
+
+    # Fake signature (not validated during NOC parsing)
+    fake_sig = :crypto.strong_rand_bytes(64)
+
+    der_seq(tbs <> sig_algo <> der_bitstring(fake_sig))
+  end
+
+  defp der_tlv(tag, value) do
+    len = byte_size(value)
+
+    length_bytes =
+      cond do
+        len < 128 -> <<len>>
+        len < 256 -> <<0x81, len>>
+        true -> <<0x82, len::16>>
+      end
+
+    <<tag>> <> length_bytes <> value
+  end
+
+  defp der_seq(content), do: der_tlv(0x30, content)
+  defp der_set(content), do: der_tlv(0x31, content)
+  defp der_oid(bytes), do: der_tlv(0x06, bytes)
+  defp der_utf8(str), do: der_tlv(0x0C, str)
+  defp der_bitstring(bytes), do: der_tlv(0x03, <<0>> <> bytes)
+  defp der_utctime(str), do: der_tlv(0x17, str)
+  defp der_explicit(tag_num, content), do: der_tlv(0xA0 + tag_num, content)
+
+  defp der_int(n) when n >= 0 do
+    bytes = :binary.encode_unsigned(n)
+    # Ensure positive by adding leading zero if high bit set
+    bytes = if :binary.first(bytes) >= 128, do: <<0>> <> bytes, else: bytes
+    der_tlv(0x02, bytes)
   end
 end

@@ -9,6 +9,10 @@ defmodule Matterlix.CASE.Messages do
   alias Matterlix.TLV
   alias Matterlix.Crypto.{KDF, Session}
 
+  # Matter certificate DN OIDs
+  @matter_node_id_oid {1, 3, 6, 1, 4, 1, 37244, 1, 1}
+  @matter_fabric_id_oid {1, 3, 6, 1, 4, 1, 37244, 1, 5}
+
   # ── Sigma1 (opcode 0x30) ───────────────────────────────────────
 
   @spec encode_sigma1(binary(), non_neg_integer(), binary(), binary()) :: binary()
@@ -135,7 +139,7 @@ defmodule Matterlix.CASE.Messages do
     end
   end
 
-  # ── Simplified NOC ─────────────────────────────────────────────
+  # ── NOC (Node Operational Certificate) ─────────────────────────
 
   @doc """
   Encode a simplified NOC containing node_id, fabric_id, and public_key.
@@ -149,8 +153,20 @@ defmodule Matterlix.CASE.Messages do
     })
   end
 
+  @doc """
+  Decode a NOC. Accepts both X.509 DER certificates (as sent by chip-tool)
+  and the simplified TLV format used in internal tests.
+  """
   @spec decode_noc(binary()) :: {:ok, map()} | {:error, :invalid_message}
+  def decode_noc(<<0x30, _::binary>> = data) do
+    decode_x509_noc(data)
+  end
+
   def decode_noc(data) do
+    decode_tlv_noc(data)
+  end
+
+  defp decode_tlv_noc(data) do
     with {:ok, decoded} <- safe_decode(data),
          %{1 => node_id, 2 => fabric_id, 3 => public_key} <- decoded do
       {:ok, %{node_id: node_id, fabric_id: fabric_id, public_key: public_key}}
@@ -158,6 +174,78 @@ defmodule Matterlix.CASE.Messages do
       _ -> {:error, :invalid_message}
     end
   end
+
+  defp decode_x509_noc(data) do
+    cert = :public_key.der_decode(:Certificate, data)
+    tbs = elem(cert, 1)
+
+    # SubjectPublicKeyInfo is at index 7 in TBSCertificate record
+    public_key = elem(tbs, 7) |> elem(2) |> normalize_bitstring()
+
+    # Subject DN is at index 6 in TBSCertificate record
+    {:rdnSequence, rdns} = elem(tbs, 6)
+    node_id = find_matter_dn_attr(rdns, @matter_node_id_oid)
+    fabric_id = find_matter_dn_attr(rdns, @matter_fabric_id_oid)
+
+    if node_id && fabric_id && public_key do
+      {:ok, %{node_id: node_id, fabric_id: fabric_id, public_key: public_key}}
+    else
+      {:error, :invalid_message}
+    end
+  rescue
+    _ -> {:error, :invalid_message}
+  end
+
+  defp normalize_bitstring(bin) when is_binary(bin), do: bin
+
+  defp normalize_bitstring(bits) when is_bitstring(bits) do
+    size = bit_size(bits)
+
+    if rem(size, 8) == 0 do
+      bytes = div(size, 8)
+      <<bin::binary-size(bytes)>> = bits
+      bin
+    end
+  end
+
+  defp normalize_bitstring(_), do: nil
+
+  defp find_matter_dn_attr(rdns, target_oid) do
+    Enum.find_value(rdns, fn rdn_set ->
+      Enum.find_value(rdn_set, fn
+        {:AttributeTypeAndValue, ^target_oid, value} ->
+          parse_matter_dn_value(value)
+
+        _ ->
+          nil
+      end)
+    end)
+  end
+
+  # Erlang wraps unknown OID values in {:asn1_OPENTYPE, raw_der}
+  defp parse_matter_dn_value({:asn1_OPENTYPE, raw_der}), do: parse_matter_dn_value(raw_der)
+
+  # Raw DER UTF8String: tag 0x0C, length, hex string
+  defp parse_matter_dn_value(<<0x0C, len, hex_str::binary-size(len)>>) when len < 128 do
+    parse_hex_id(hex_str)
+  end
+
+  defp parse_matter_dn_value(<<0x0C, 0x81, len, hex_str::binary-size(len)>>) do
+    parse_hex_id(hex_str)
+  end
+
+  # Erlang may decode as tagged tuple
+  defp parse_matter_dn_value({:utf8String, str}), do: parse_hex_id(to_string(str))
+  defp parse_matter_dn_value(_), do: nil
+
+  defp parse_hex_id(hex_str) when is_binary(hex_str) do
+    case Integer.parse(hex_str, 16) do
+      {val, ""} -> val
+      _ -> nil
+    end
+  end
+
+  defp parse_hex_id(_), do: nil
 
   # ── Destination ID ──────────────────────────────────────────────
 
