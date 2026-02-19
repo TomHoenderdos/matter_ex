@@ -31,6 +31,8 @@ defmodule Matterlix.MessageHandler do
       end
   """
 
+  require Logger
+
   alias Matterlix.{ExchangeManager, PASE, SecureChannel, Session}
   alias Matterlix.IM.Router, as: IMRouter
   alias Matterlix.Protocol.{Counter, MessageCodec, ProtocolID}
@@ -105,6 +107,7 @@ defmodule Matterlix.MessageHandler do
         end
 
       {:error, reason} ->
+        Logger.warning("Failed to decode message header: #{inspect(reason)}")
         {[{:error, reason}], state}
     end
   end
@@ -119,17 +122,20 @@ defmodule Matterlix.MessageHandler do
   def handle_mrp_timeout(%__MODULE__{} = state, session_id, exchange_id, attempt) do
     case Map.get(state.sessions, session_id) do
       nil ->
+        Logger.warning("MRP timeout for unknown session #{session_id}")
         {nil, state}
 
       %{session: session, exchange_mgr: mgr} = entry ->
         case ExchangeManager.handle_timeout(mgr, exchange_id, attempt) do
           {:retransmit, proto, mgr} ->
+            Logger.debug("MRP retransmit session=#{session_id} exchange=#{exchange_id} attempt=#{attempt}")
             {frame, session} = SecureChannel.seal(session, proto)
             entry = %{entry | session: session, exchange_mgr: mgr}
             sessions = Map.put(state.sessions, session_id, entry)
             {{:send, frame}, %{state | sessions: sessions}}
 
           {:give_up, _exchange_id, mgr} ->
+            Logger.warning("MRP gave up on session=#{session_id} exchange=#{exchange_id} after #{attempt + 1} attempts")
             entry = %{entry | exchange_mgr: mgr}
             sessions = Map.put(state.sessions, session_id, entry)
             {nil, %{state | sessions: sessions}}
@@ -155,6 +161,7 @@ defmodule Matterlix.MessageHandler do
         handle_pase_message(state, message, opcode_name)
 
       {:error, reason} ->
+        Logger.warning("Failed to decode plaintext frame: #{inspect(reason)}")
         {[{:error, reason}], state}
     end
   end
@@ -168,6 +175,7 @@ defmodule Matterlix.MessageHandler do
         {[{:send, frame}], %{state | pase: pase, plaintext_counter: counter}}
 
       {:established, :status_report, sr_payload, session, pase} ->
+        Logger.info("PASE session established: local=#{session.local_session_id} peer=#{session.peer_session_id}")
         frame = build_plaintext_frame(state, message, :status_report, sr_payload)
         {_counter_val, counter} = Counter.next(state.plaintext_counter)
 
@@ -185,6 +193,7 @@ defmodule Matterlix.MessageHandler do
         {actions, %{state | pase: pase, sessions: sessions, plaintext_counter: counter}}
 
       {:error, reason} ->
+        Logger.warning("PASE error: #{inspect(reason)}")
         {[{:error, reason}], state}
     end
   end
@@ -217,6 +226,7 @@ defmodule Matterlix.MessageHandler do
   defp handle_encrypted(state, session_id, frame) do
     case Map.get(state.sessions, session_id) do
       nil ->
+        Logger.warning("Received frame for unknown session #{session_id}")
         {[{:error, :unknown_session}], state}
 
       %{session: session, exchange_mgr: mgr} = entry ->
@@ -232,6 +242,7 @@ defmodule Matterlix.MessageHandler do
             {actions, %{state | sessions: sessions}}
 
           {:error, reason} ->
+            Logger.warning("Failed to decrypt frame for session #{session_id}: #{inspect(reason)}")
             {[{:error, reason}], state}
         end
     end
