@@ -288,6 +288,119 @@ defmodule Matterlix.DeviceTest do
 
   # ── Full integration ──────────────────────────────────────────
 
+  # ── Device __cluster_ids__ ────────────────────────────────────
+
+  describe "cluster_ids" do
+    test "__cluster_ids__ returns cluster IDs for endpoint" do
+      ids = TestLight.__cluster_ids__(1)
+      assert 0x001D in ids  # Descriptor
+      assert 0x0006 in ids  # OnOff
+    end
+
+    test "__cluster_ids__ returns empty for unknown endpoint" do
+      assert TestLight.__cluster_ids__(99) == []
+    end
+  end
+
+  # ── Wildcard reads ──────────────────────────────────────────
+
+  describe "wildcard reads" do
+    test "wildcard endpoint reads from all endpoints with matching cluster" do
+      # OnOff (0x0006) is only on endpoint 1, so wildcard endpoint with cluster 0x0006
+      # should return results from endpoint 1 only
+      req = %IM.ReadRequest{
+        attribute_paths: [%{cluster: 0x0006, attribute: 0x0000}]
+      }
+
+      %IM.ReportData{attribute_reports: reports} = Router.handle_read(TestLight, req)
+      data_reports = for {:data, d} <- reports, do: d
+      assert length(data_reports) == 1
+      assert hd(data_reports).path.endpoint == 1
+    end
+
+    test "wildcard cluster reads cluster_revision from all clusters on endpoint" do
+      # Endpoint 1 has Descriptor + OnOff, both have cluster_revision (0xFFFD)
+      req = %IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, attribute: 0xFFFD}]
+      }
+
+      %IM.ReportData{attribute_reports: reports} = Router.handle_read(TestLight, req)
+      data_reports = for {:data, d} <- reports, do: d
+      assert length(data_reports) == 2
+
+      clusters = Enum.map(data_reports, & &1.path.cluster) |> Enum.sort()
+      assert 0x0006 in clusters  # OnOff
+      assert 0x001D in clusters  # Descriptor
+    end
+
+    test "wildcard attribute reads all attributes from a cluster" do
+      # OnOff has 2 attributes: on_off (0x0000) and cluster_revision (0xFFFD)
+      req = %IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 0x0006}]
+      }
+
+      %IM.ReportData{attribute_reports: reports} = Router.handle_read(TestLight, req)
+      data_reports = for {:data, d} <- reports, do: d
+      assert length(data_reports) == 2
+
+      attr_ids = Enum.map(data_reports, & &1.path.attribute) |> Enum.sort()
+      assert attr_ids == [0x0000, 0xFFFD]
+    end
+
+    test "fully wildcard reads all attributes across all endpoints" do
+      req = %IM.ReadRequest{attribute_paths: [%{}]}
+
+      %IM.ReportData{attribute_reports: reports} = Router.handle_read(TestLight, req)
+      data_reports = for {:data, d} <- reports, do: d
+
+      # Should get attributes from ep0 (Descriptor, BasicInformation,
+      # GeneralCommissioning, OperationalCredentials, AccessControl) and
+      # ep1 (Descriptor, OnOff) — many attributes total
+      assert length(data_reports) > 10
+
+      endpoints = data_reports |> Enum.map(& &1.path.endpoint) |> Enum.uniq() |> Enum.sort()
+      assert endpoints == [0, 1]
+    end
+
+    test "wildcard matching no cluster returns empty" do
+      req = %IM.ReadRequest{
+        attribute_paths: [%{cluster: 0x9999, attribute: 0x0000}]
+      }
+
+      %IM.ReportData{attribute_reports: reports} = Router.handle_read(TestLight, req)
+      # Wildcard (no endpoint key) that matches nothing → silently omitted
+      assert reports == []
+    end
+
+    test "mixed wildcard and concrete paths" do
+      req = %IM.ReadRequest{
+        attribute_paths: [
+          # Concrete path
+          %{endpoint: 1, cluster: 0x0006, attribute: 0x0000},
+          # Wildcard: all attributes on ep1 OnOff
+          %{endpoint: 1, cluster: 0x0006}
+        ]
+      }
+
+      %IM.ReportData{attribute_reports: reports} = Router.handle_read(TestLight, req)
+      data_reports = for {:data, d} <- reports, do: d
+      # 1 from concrete + 2 from wildcard (on_off + cluster_revision)
+      assert length(data_reports) == 3
+    end
+
+    test "concrete path error still returns status" do
+      req = %IM.ReadRequest{
+        attribute_paths: [%{endpoint: 99, cluster: 0x0006, attribute: 0x0000}]
+      }
+
+      %IM.ReportData{attribute_reports: reports} = Router.handle_read(TestLight, req)
+      assert [{:status, status}] = reports
+      assert status.status == Status.status_code(:unsupported_endpoint)
+    end
+  end
+
+  # ── Full integration ────────────────────────────────────────
+
   describe "full integration" do
     test "read → write → invoke → read" do
       # Read initial state

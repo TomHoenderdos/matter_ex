@@ -35,36 +35,48 @@ defmodule Matterlix.IM.Router do
   @spec handle_read(module(), IM.ReadRequest.t(), map()) :: IM.ReportData.t()
   def handle_read(device, %IM.ReadRequest{} = req, context \\ %{auth_mode: :pase}) do
     reports =
-      Enum.map(req.attribute_paths, fn path ->
-        case resolve_attribute(device, path) do
-          {:ok, gen_name, attr_name, attr_type} ->
-            target = {path[:endpoint], path[:cluster]}
+      Enum.flat_map(req.attribute_paths, fn path ->
+        expanded = expand_attribute_path(device, path)
 
-            case check_acl(device, context, :view, target) do
-              :allow ->
-                case GenServer.call(gen_name, {:read_attribute, attr_name}) do
-                  {:ok, value} ->
-                    {:data,
-                     %{
-                       version: 0,
-                       path: path,
-                       value: to_tlv(attr_type, value)
-                     }}
-
-                  {:error, reason} ->
-                    {:status, error_status(path, reason)}
-                end
-
-              :deny ->
-                {:status, error_status(path, :unsupported_access)}
-            end
-
-          {:error, reason} ->
-            {:status, error_status(path, reason)}
+        if expanded == [] and concrete_path?(path) do
+          # Concrete path that resolved to nothing → return error status
+          [read_one_attribute(device, path, context)]
+        else
+          # Expanded (or wildcard with no matches → silently omit)
+          Enum.map(expanded, fn cp -> read_one_attribute(device, cp, context) end)
         end
       end)
 
     %IM.ReportData{attribute_reports: reports}
+  end
+
+  defp read_one_attribute(device, path, context) do
+    case resolve_attribute(device, path) do
+      {:ok, gen_name, attr_name, attr_type} ->
+        target = {path[:endpoint], path[:cluster]}
+
+        case check_acl(device, context, :view, target) do
+          :allow ->
+            case GenServer.call(gen_name, {:read_attribute, attr_name}) do
+              {:ok, value} ->
+                {:data,
+                 %{
+                   version: 0,
+                   path: path,
+                   value: to_tlv(attr_type, value)
+                 }}
+
+              {:error, reason} ->
+                {:status, error_status(path, reason)}
+            end
+
+          :deny ->
+            {:status, error_status(path, :unsupported_access)}
+        end
+
+      {:error, reason} ->
+        {:status, error_status(path, reason)}
+    end
   end
 
   @spec handle_write(module(), IM.WriteRequest.t(), map()) :: IM.WriteResponse.t()
@@ -136,6 +148,52 @@ defmodule Matterlix.IM.Router do
       end)
 
     %IM.InvokeResponse{invoke_responses: responses}
+  end
+
+  # ── Wildcard expansion ────────────────────────────────────────
+
+  defp concrete_path?(path) do
+    Map.has_key?(path, :endpoint) and Map.has_key?(path, :cluster) and Map.has_key?(path, :attribute)
+  end
+
+  defp expand_attribute_path(device, path) do
+    endpoints =
+      case path[:endpoint] do
+        nil -> MapSet.to_list(device.__endpoint_ids__())
+        ep -> if MapSet.member?(device.__endpoint_ids__(), ep), do: [ep], else: []
+      end
+
+    for ep <- endpoints,
+        cl <- expand_clusters(device, ep, path[:cluster]),
+        attr <- expand_attributes(device, ep, cl, path[:attribute]) do
+      %{endpoint: ep, cluster: cl, attribute: attr.id}
+    end
+  end
+
+  defp expand_clusters(device, ep, nil), do: device.__cluster_ids__(ep)
+
+  defp expand_clusters(device, ep, cluster_id) do
+    if device.__cluster_module__(ep, cluster_id), do: [cluster_id], else: []
+  end
+
+  defp expand_attributes(device, ep, cluster_id, nil) do
+    case device.__cluster_module__(ep, cluster_id) do
+      nil -> []
+      cluster_mod -> cluster_mod.attribute_defs()
+    end
+  end
+
+  defp expand_attributes(device, ep, cluster_id, attr_id) do
+    case device.__cluster_module__(ep, cluster_id) do
+      nil ->
+        []
+
+      cluster_mod ->
+        case Enum.find(cluster_mod.attribute_defs(), &(&1.id == attr_id)) do
+          nil -> []
+          attr -> [attr]
+        end
+    end
   end
 
   # ── Path resolution ────────────────────────────────────────────

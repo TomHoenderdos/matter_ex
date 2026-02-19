@@ -125,6 +125,10 @@ defmodule Matterlix.Device do
       def __endpoints__, do: unquote(Macro.escape(all_endpoints))
       def __endpoint_ids__, do: unquote(Macro.escape(endpoint_ids))
 
+      def __cluster_ids__(endpoint_id) do
+        Map.get(unquote(Macro.escape(endpoint_server_lists)), endpoint_id, [])
+      end
+
       def __cluster_module__(endpoint_id, cluster_id) do
         Map.get(unquote(Macro.escape(cluster_lookup)), {endpoint_id, cluster_id})
       end
