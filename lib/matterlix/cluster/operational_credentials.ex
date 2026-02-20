@@ -3,6 +3,7 @@ defmodule Matterlix.Cluster.OperationalCredentials do
   Matter Operational Credentials cluster (0x003E).
 
   Handles CSR generation and NOC installation during commissioning. Endpoint 0 only.
+  Supports multiple fabrics with auto-assigned fabric_index.
   """
 
   use Matterlix.Cluster, id: 0x003E, name: :operational_credentials
@@ -14,13 +15,19 @@ defmodule Matterlix.Cluster.OperationalCredentials do
 
   attribute 0x0000, :nocs, :list, default: []
   attribute 0x0001, :fabrics, :list, default: []
-  attribute 0x0003, :supported_fabrics, :uint8, default: 1
+  attribute 0x0003, :supported_fabrics, :uint8, default: 5
   attribute 0x0004, :commissioned_fabrics, :uint8, default: 0
   attribute 0xFFFD, :cluster_revision, :uint16, default: 1
 
   command 0x04, :csr_request, [csr_nonce: :bytes]
   command 0x06, :add_noc, [noc_value: :bytes, ipk_value: :bytes, case_admin_subject: :uint64, admin_vendor_id: :uint16]
   command 0x0B, :add_trusted_root_cert, [root_ca_cert: :bytes]
+
+  def init(opts) do
+    {:ok, state} = super(opts)
+    # Track next available fabric index (internal, not an attribute)
+    {:ok, Map.put(state, :_next_fabric_index, 1)}
+  end
 
   @impl Matterlix.Cluster
   def handle_command(:csr_request, params, state) do
@@ -65,21 +72,45 @@ defmodule Matterlix.Cluster.OperationalCredentials do
         stored_keypair = Map.get(state, :_keypair)
 
         if stored_keypair && elem(stored_keypair, 0) == pub_key do
+          # Assign fabric_index
+          fabric_index = Map.get(state, :_next_fabric_index, 1)
+
           if Process.whereis(Commissioning) do
-            Commissioning.store_noc(noc_value, ipk_value, node_id, fabric_id)
+            Commissioning.store_noc(fabric_index, noc_value, ipk_value, node_id, fabric_id)
 
             # Store the admin subject for ACL seeding
             case_admin_subject = params[:case_admin_subject]
 
             if case_admin_subject do
-              Commissioning.store_admin_subject(case_admin_subject)
+              Commissioning.store_admin_subject(fabric_index, case_admin_subject)
             end
           end
 
-          state = set_attribute(state, :commissioned_fabrics, 1)
+          # Update nocs list
+          nocs = Map.get(state, :nocs, [])
+          noc_entry = %{fabric_index: fabric_index, noc: noc_value, icac: nil}
+          nocs = nocs ++ [noc_entry]
 
-          # NOCResponse: StatusCode=Success(0), FabricIndex=1, DebugText=""
-          {:ok, %{0 => {:uint, 0}, 1 => {:uint, 1}, 2 => {:string, ""}}, state}
+          # Update fabrics list
+          fabrics = Map.get(state, :fabrics, [])
+          fabric_entry = %{
+            fabric_index: fabric_index,
+            root_public_key: <<>>,
+            vendor_id: params[:admin_vendor_id] || 0,
+            fabric_id: fabric_id,
+            node_id: node_id,
+            label: ""
+          }
+          fabrics = fabrics ++ [fabric_entry]
+
+          state = state
+            |> Map.put(:nocs, nocs)
+            |> Map.put(:fabrics, fabrics)
+            |> Map.put(:commissioned_fabrics, length(nocs))
+            |> Map.put(:_next_fabric_index, fabric_index + 1)
+
+          # NOCResponse: StatusCode=Success(0), FabricIndex, DebugText=""
+          {:ok, %{0 => {:uint, 0}, 1 => {:uint, fabric_index}, 2 => {:string, ""}}, state}
         else
           # NOCResponse: StatusCode=InvalidPublicKey(1)
           {:ok, %{0 => {:uint, 1}, 1 => {:uint, 0}, 2 => {:string, "public key mismatch"}}, state}

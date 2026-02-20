@@ -38,6 +38,7 @@ defmodule Matterlix.CASE do
     :ipk,
     :node_id,
     :fabric_id,
+    :fabric_index,
     :local_session_id,
     :peer_session_id,
     :peer_node_id,
@@ -57,7 +58,7 @@ defmodule Matterlix.CASE do
   Create a new device (responder) CASE state.
 
   Required opts: `:noc`, `:private_key`, `:ipk`, `:node_id`, `:fabric_id`, `:local_session_id`
-  Optional: `:icac`
+  Optional: `:icac`, `:fabric_index`
   """
   @spec new_device(keyword()) :: t()
   def new_device(opts) do
@@ -70,6 +71,7 @@ defmodule Matterlix.CASE do
       ipk: Keyword.fetch!(opts, :ipk),
       node_id: Keyword.fetch!(opts, :node_id),
       fabric_id: Keyword.fetch!(opts, :fabric_id),
+      fabric_index: Keyword.get(opts, :fabric_index, 1),
       local_session_id: Keyword.fetch!(opts, :local_session_id)
     }
   end
@@ -92,6 +94,7 @@ defmodule Matterlix.CASE do
       ipk: Keyword.fetch!(opts, :ipk),
       node_id: Keyword.fetch!(opts, :node_id),
       fabric_id: Keyword.fetch!(opts, :fabric_id),
+      fabric_index: Keyword.get(opts, :fabric_index, 1),
       local_session_id: Keyword.fetch!(opts, :local_session_id),
       peer_node_id: Keyword.fetch!(opts, :peer_node_id),
       peer_fabric_id: Keyword.fetch!(opts, :peer_fabric_id)
@@ -190,7 +193,7 @@ defmodule Matterlix.CASE do
           local_node_id: cs.node_id,
           peer_node_id: cs.peer_node_id,
           auth_mode: :case,
-          fabric_index: 1
+          fabric_index: cs.fabric_index
         )
 
         {:established, session, %{cs | state: :established}}
@@ -375,7 +378,7 @@ defmodule Matterlix.CASE do
             local_node_id: cs.node_id,
             peer_node_id: peer_node_id,
             auth_mode: :case,
-            fabric_index: 1
+            fabric_index: cs.fabric_index
           )
 
           {:established, :status_report, sr_payload, session,

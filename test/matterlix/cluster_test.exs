@@ -222,7 +222,7 @@ defmodule Matterlix.ClusterTest do
 
     test "OperationalCredentials attribute defaults" do
       defs = OperationalCredentials.attribute_defs()
-      assert Enum.find(defs, &(&1.name == :supported_fabrics)).default == 1
+      assert Enum.find(defs, &(&1.name == :supported_fabrics)).default == 5
       assert Enum.find(defs, &(&1.name == :commissioned_fabrics)).default == 0
     end
   end
@@ -804,8 +804,44 @@ defmodule Matterlix.ClusterTest do
       assert {:uint, 1} = noc_response[0]
     end
 
-    test "supported_fabrics defaults to 1", %{name: name} do
-      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :supported_fabrics})
+    test "supported_fabrics defaults to 5", %{name: name} do
+      assert {:ok, 5} = GenServer.call(name, {:read_attribute, :supported_fabrics})
+    end
+
+    test "multiple add_noc assigns sequential fabric_index", %{name: name} do
+      alias Matterlix.CASE.Messages, as: CASEMessages
+      alias Matterlix.Crypto.Certificate
+
+      # First fabric
+      {:ok, _csr_resp} = GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: <<0::256>>}})
+      stored_keypair = Map.get(:sys.get_state(name), :_keypair)
+      {pub1, _priv1} = stored_keypair
+      noc1 = CASEMessages.encode_noc(42, 1, pub1)
+
+      {:ok, noc_resp1} = GenServer.call(name, {:invoke_command, :add_noc, %{
+        noc_value: noc1, ipk_value: :crypto.strong_rand_bytes(16),
+        case_admin_subject: 100, admin_vendor_id: 0xFFF1
+      }})
+
+      assert {:uint, 0} = noc_resp1[0]   # Success
+      assert {:uint, 1} = noc_resp1[1]   # fabric_index = 1
+
+      # Second fabric
+      {:ok, _csr_resp2} = GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: <<1::256>>}})
+      stored_keypair2 = Map.get(:sys.get_state(name), :_keypair)
+      {pub2, _priv2} = stored_keypair2
+      noc2 = CASEMessages.encode_noc(99, 2, pub2)
+
+      {:ok, noc_resp2} = GenServer.call(name, {:invoke_command, :add_noc, %{
+        noc_value: noc2, ipk_value: :crypto.strong_rand_bytes(16),
+        case_admin_subject: 200, admin_vendor_id: 0xFFF2
+      }})
+
+      assert {:uint, 0} = noc_resp2[0]   # Success
+      assert {:uint, 2} = noc_resp2[1]   # fabric_index = 2
+
+      # commissioned_fabrics should be 2
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :commissioned_fabrics})
     end
   end
 

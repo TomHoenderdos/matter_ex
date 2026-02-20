@@ -203,30 +203,37 @@ defmodule Matterlix.Node do
     end)
   end
 
-  defp maybe_update_case(%MessageHandler{case_state: nil} = handler, state) do
-    case Commissioning.get_credentials() do
+  defp maybe_update_case(handler, state) do
+    case Commissioning.last_added_fabric() do
       nil ->
         {handler, state}
 
-      creds ->
-        Logger.info("Commissioning complete — enabling CASE")
-        handler = MessageHandler.update_case(handler, Keyword.new(creds))
+      fabric_index ->
+        creds = Commissioning.get_credentials(fabric_index)
 
-        # Write initial admin ACL entry if we have an admin subject
-        if handler.device && creds[:case_admin_subject] do
-          write_initial_acl(handler.device, creds.case_admin_subject)
+        if creds do
+          Logger.info("Commissioning complete for fabric #{fabric_index} — enabling CASE")
+          opts = Keyword.new(Map.put(creds, :fabric_index, fabric_index))
+          handler = MessageHandler.update_case(handler, opts)
+
+          Commissioning.clear_last_added()
+
+          # Write initial admin ACL entry if we have an admin subject
+          if handler.device && creds[:case_admin_subject] do
+            write_initial_acl(handler.device, creds.case_admin_subject, fabric_index)
+          end
+
+          # Transition mDNS: withdraw commissioning, advertise operational
+          transition_mdns(state, creds)
+
+          {handler, state}
+        else
+          {handler, state}
         end
-
-        # Transition mDNS: withdraw commissioning, advertise operational
-        transition_mdns(state, creds)
-
-        {handler, state}
     end
   end
 
-  defp maybe_update_case(handler, state), do: {handler, state}
-
-  defp write_initial_acl(device, admin_subject) do
+  defp write_initial_acl(device, admin_subject, fabric_index) do
     acl_name = device.__process_name__(0, :access_control)
 
     if acl_name && Process.whereis(acl_name) do
@@ -235,7 +242,7 @@ defmodule Matterlix.Node do
         auth_mode: 2,
         subjects: [admin_subject],
         targets: nil,
-        fabric_index: 1
+        fabric_index: fabric_index
       }
 
       GenServer.call(acl_name, {:write_attribute, :acl, [admin_entry]})

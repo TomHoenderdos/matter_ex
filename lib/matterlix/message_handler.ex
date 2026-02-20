@@ -55,14 +55,14 @@ defmodule Matterlix.MessageHandler do
   @type t :: %__MODULE__{
     device: module() | nil,
     pase: PASE.t() | nil,
-    case_state: CASE.t() | nil,
+    case_states: %{non_neg_integer() => CASE.t()},
     sessions: %{non_neg_integer() => session_entry()},
     plaintext_counter: Counter.t()
   }
 
   defstruct device: nil,
             pase: nil,
-            case_state: nil,
+            case_states: %{},
             sessions: %{},
             plaintext_counter: Counter.new()
 
@@ -92,12 +92,12 @@ defmodule Matterlix.MessageHandler do
       local_session_id: Keyword.fetch!(opts, :local_session_id)
     )
 
-    case_state = maybe_init_case(opts)
+    case_states = maybe_init_case(opts)
 
     %__MODULE__{
       device: Keyword.get(opts, :device),
       pase: pase,
-      case_state: case_state,
+      case_states: case_states,
       plaintext_counter: Counter.new(0)
     }
   end
@@ -182,7 +182,8 @@ defmodule Matterlix.MessageHandler do
   """
   @spec update_case(t(), keyword()) :: t()
   def update_case(%__MODULE__{} = state, opts) do
-    %{state | case_state: maybe_init_case(opts)}
+    new_entries = maybe_init_case(opts)
+    %{state | case_states: Map.merge(state.case_states, new_entries)}
   end
 
   @doc """
@@ -268,43 +269,52 @@ defmodule Matterlix.MessageHandler do
   # ── Plaintext path (CASE) ──────────────────────────────────────────
 
   defp handle_case_message(state, message, opcode_name) do
-    case state.case_state do
-      nil ->
-        Logger.warning("CASE message received but CASE not configured")
-        {[{:error, :case_not_configured}], state}
+    if map_size(state.case_states) == 0 do
+      Logger.warning("CASE message received but CASE not configured")
+      {[{:error, :case_not_configured}], state}
+    else
+      try_case_fabrics(state, message, opcode_name, Map.to_list(state.case_states), nil)
+    end
+  end
 
-      case_state ->
-        case CASE.handle(case_state, opcode_name, message.proto.payload) do
-          {:reply, resp_type, resp_payload, case_state} ->
-            frame = build_plaintext_frame(state, message, resp_type, resp_payload)
-            {_counter_val, counter} = Counter.next(state.plaintext_counter)
-            {[{:send, frame}], %{state | case_state: case_state, plaintext_counter: counter}}
+  defp try_case_fabrics(state, _message, _opcode_name, [], last_error) do
+    reason = last_error || :no_matching_fabric
+    Logger.warning("CASE error: #{inspect(reason)}")
+    {[{:error, reason}], state}
+  end
 
-          {:established, :status_report, sr_payload, session, _case_state} ->
-            Logger.info("CASE session established: local=#{session.local_session_id} peer=#{session.peer_session_id}")
-            frame = build_plaintext_frame(state, message, :status_report, sr_payload)
-            {_counter_val, counter} = Counter.next(state.plaintext_counter)
+  defp try_case_fabrics(state, message, opcode_name, [{fabric_index, case_state} | rest], _last_error) do
+    case CASE.handle(case_state, opcode_name, message.proto.payload) do
+      {:reply, resp_type, resp_payload, updated_cs} ->
+        frame = build_plaintext_frame(state, message, resp_type, resp_payload)
+        {_counter_val, counter} = Counter.next(state.plaintext_counter)
+        case_states = Map.put(state.case_states, fabric_index, updated_cs)
+        {[{:send, frame}], %{state | case_states: case_states, plaintext_counter: counter}}
 
-            handler = build_im_handler(state.device, session)
-            mgr = ExchangeManager.new(handler: handler)
+      {:established, :status_report, sr_payload, session, _updated_cs} ->
+        Logger.info("CASE session established: local=#{session.local_session_id} peer=#{session.peer_session_id}")
+        frame = build_plaintext_frame(state, message, :status_report, sr_payload)
+        {_counter_val, counter} = Counter.next(state.plaintext_counter)
 
-            entry = %{session: session, exchange_mgr: mgr, subscription_mgr: SubscriptionManager.new(), exchange_to_sub: %{}}
-            sessions = Map.put(state.sessions, session.local_session_id, entry)
+        handler = build_im_handler(state.device, session)
+        mgr = ExchangeManager.new(handler: handler)
 
-            # Reset CASE state for next handshake
-            new_case = reset_case(state.case_state)
+        entry = %{session: session, exchange_mgr: mgr, subscription_mgr: SubscriptionManager.new(), exchange_to_sub: %{}}
+        sessions = Map.put(state.sessions, session.local_session_id, entry)
 
-            actions = [
-              {:send, frame},
-              {:session_established, session.local_session_id}
-            ]
+        # Reset this fabric's CASE state for next handshake
+        case_states = Map.put(state.case_states, fabric_index, reset_one_case(case_state))
 
-            {actions, %{state | case_state: new_case, sessions: sessions, plaintext_counter: counter}}
+        actions = [
+          {:send, frame},
+          {:session_established, session.local_session_id}
+        ]
 
-          {:error, reason} ->
-            Logger.warning("CASE error: #{inspect(reason)}")
-            {[{:error, reason}], state}
-        end
+        {actions, %{state | case_states: case_states, sessions: sessions, plaintext_counter: counter}}
+
+      {:error, reason} ->
+        # Try next fabric
+        try_case_fabrics(state, message, opcode_name, rest, reason)
     end
   end
 
@@ -314,25 +324,28 @@ defmodule Matterlix.MessageHandler do
     ipk = Keyword.get(opts, :ipk)
     node_id = Keyword.get(opts, :node_id)
     fabric_id = Keyword.get(opts, :fabric_id)
+    fabric_index = Keyword.get(opts, :fabric_index, 1)
 
     if noc && private_key && ipk && node_id && fabric_id do
-      # Generate a random CASE session ID different from PASE
       case_session_id = :rand.uniform(65534)
 
-      CASE.new_device(
+      cs = CASE.new_device(
         noc: noc,
         private_key: private_key,
         ipk: ipk,
         node_id: node_id,
         fabric_id: fabric_id,
+        fabric_index: fabric_index,
         local_session_id: case_session_id
       )
+
+      %{fabric_index => cs}
+    else
+      %{}
     end
   end
 
-  defp reset_case(nil), do: nil
-
-  defp reset_case(cs) do
+  defp reset_one_case(cs) do
     case_session_id = :rand.uniform(65534)
 
     CASE.new_device(
@@ -342,6 +355,7 @@ defmodule Matterlix.MessageHandler do
       ipk: cs.ipk,
       node_id: cs.node_id,
       fabric_id: cs.fabric_id,
+      fabric_index: cs.fabric_index,
       local_session_id: case_session_id
     )
   end

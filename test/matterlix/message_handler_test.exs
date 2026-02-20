@@ -909,8 +909,8 @@ defmodule Matterlix.MessageHandlerTest do
       assert msg.proto.opcode == ProtocolID.opcode(:secure_channel, :case_sigma2)
       assert msg.proto.initiator == false
 
-      # CASE state advanced
-      assert handler.case_state.state == :sigma2_sent
+      # CASE state advanced (fabric_index 1)
+      assert handler.case_states[1].state == :sigma2_sent
     end
 
     test "full CASE handshake through MessageHandler → session established" do
@@ -981,6 +981,91 @@ defmodule Matterlix.MessageHandlerTest do
       {actions, _handler} = MessageHandler.handle_frame(handler, frame)
 
       assert [{:error, :unexpected_message}] = actions
+    end
+
+    test "multi-fabric: two fabrics can each accept CASE" do
+      # Create handler with fabric 1
+      {pub1, priv1} = Matterlix.Crypto.Certificate.generate_keypair()
+      noc1 = Matterlix.CASE.Messages.encode_noc(1, 1, pub1)
+      ipk1 = :crypto.strong_rand_bytes(16)
+
+      handler = MessageHandler.new(
+        device: TestLight,
+        passcode: @passcode,
+        salt: @salt,
+        iterations: @iterations,
+        local_session_id: 1,
+        noc: noc1,
+        private_key: priv1,
+        ipk: ipk1,
+        node_id: 1,
+        fabric_id: 1,
+        fabric_index: 1
+      )
+
+      # Add fabric 2
+      {pub2, priv2} = Matterlix.Crypto.Certificate.generate_keypair()
+      noc2 = Matterlix.CASE.Messages.encode_noc(10, 2, pub2)
+      ipk2 = :crypto.strong_rand_bytes(16)
+
+      handler = MessageHandler.update_case(handler, [
+        noc: noc2, private_key: priv2, ipk: ipk2,
+        node_id: 10, fabric_id: 2, fabric_index: 2
+      ])
+
+      assert map_size(handler.case_states) == 2
+
+      # Initiator for fabric 1
+      {init_pub1, init_priv1} = Matterlix.Crypto.Certificate.generate_keypair()
+      init_noc1 = Matterlix.CASE.Messages.encode_noc(2, 1, init_pub1)
+
+      init1 = Matterlix.CASE.new_initiator(
+        noc: init_noc1, private_key: init_priv1, ipk: ipk1,
+        node_id: 2, fabric_id: 1, local_session_id: 100,
+        peer_node_id: 1, peer_fabric_id: 1
+      )
+
+      # Run CASE handshake for fabric 1
+      {:send, :case_sigma1, sigma1, init1} = Matterlix.CASE.initiate(init1)
+      frame = build_case_frame(:case_sigma1, sigma1, 10, 0)
+      {[{:send, sigma2_frame}], handler} = MessageHandler.handle_frame(handler, frame)
+
+      {:ok, sigma2_msg} = MessageCodec.decode(sigma2_frame)
+      {:send, :case_sigma3, sigma3, _init1} =
+        Matterlix.CASE.handle(init1, :case_sigma2, sigma2_msg.proto.payload)
+
+      frame = build_case_frame(:case_sigma3, sigma3, 10, 1)
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
+      [{:send, _sr}, {:session_established, sid1}] = actions
+      assert Map.has_key?(handler.sessions, sid1)
+
+      # Initiator for fabric 2
+      {init_pub2, init_priv2} = Matterlix.Crypto.Certificate.generate_keypair()
+      init_noc2 = Matterlix.CASE.Messages.encode_noc(20, 2, init_pub2)
+
+      init2 = Matterlix.CASE.new_initiator(
+        noc: init_noc2, private_key: init_priv2, ipk: ipk2,
+        node_id: 20, fabric_id: 2, local_session_id: 200,
+        peer_node_id: 10, peer_fabric_id: 2
+      )
+
+      # Run CASE handshake for fabric 2
+      {:send, :case_sigma1, sigma1_2, init2} = Matterlix.CASE.initiate(init2)
+      frame = build_case_frame(:case_sigma1, sigma1_2, 20, 2)
+      {[{:send, sigma2_frame2}], handler} = MessageHandler.handle_frame(handler, frame)
+
+      {:ok, sigma2_msg2} = MessageCodec.decode(sigma2_frame2)
+      {:send, :case_sigma3, sigma3_2, _init2} =
+        Matterlix.CASE.handle(init2, :case_sigma2, sigma2_msg2.proto.payload)
+
+      frame = build_case_frame(:case_sigma3, sigma3_2, 20, 3)
+      {actions2, handler} = MessageHandler.handle_frame(handler, frame)
+      [{:send, _sr2}, {:session_established, sid2}] = actions2
+      assert Map.has_key?(handler.sessions, sid2)
+
+      # Both sessions exist with different IDs
+      assert sid1 != sid2
+      assert map_size(handler.sessions) >= 2
     end
   end
 
@@ -1077,8 +1162,8 @@ defmodule Matterlix.MessageHandlerTest do
 
       # Update handler with CASE credentials
       handler = MessageHandler.update_case(handler, Keyword.new(creds))
-      assert handler.case_state != nil
-      assert handler.case_state.node_id == 42
+      assert map_size(handler.case_states) > 0
+      assert handler.case_states[1].node_id == 42
     end
 
     test "commissioned credentials produce valid CASE session" do

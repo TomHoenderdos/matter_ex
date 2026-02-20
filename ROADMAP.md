@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-29)
+## Completed Phases (1-30)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -31,8 +31,9 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 27 | Global Attributes (AttributeList, AcceptedCommandList, GeneratedCommandList, FeatureMap) | - |
 | 28 | DataVersion Tracking (per-cluster version, DataVersionFilter in ReadRequest) | - |
 | 29 | Event Reporting (EventStore, event macro, BasicInformation.StartUp, IM codec) | - |
+| 30 | Multi-Fabric Support (per-fabric CASE, NOC, ACL, mDNS) | - |
 
-**Current: 757 tests, 0 failures**
+**Current: 762 tests, 0 failures**
 
 ---
 
@@ -41,10 +42,6 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 ---
 
 ## P3 — Production hardening
-
-### Phase 30: Multi-Fabric Support
-
-Remove hardcoded `fabric_index: 1`. Track multiple fabrics with independent ACL, NOC, and IPK storage. Required for multi-admin scenarios.
 
 ### Phase 31: TCP Transport
 
