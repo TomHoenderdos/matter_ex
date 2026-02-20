@@ -231,7 +231,7 @@ defmodule Matterlix.MDNSTest do
       assert "D=3840" in txt
       assert "VP=65521+32769" in txt
       assert "CM=1" in txt
-      assert "T=0" in txt
+      assert "T=1" in txt
       assert "DT=256" in txt
       assert "DN=Test Light" in txt
 
@@ -325,7 +325,7 @@ defmodule Matterlix.MDNSTest do
       assert config[:instance] == expected_instance
 
       txt = config[:txt]
-      assert "T=0" in txt
+      assert "T=1" in txt
     end
 
     test "operational_service responds to _matter._tcp queries",

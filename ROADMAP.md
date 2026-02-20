@@ -32,8 +32,9 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 28 | DataVersion Tracking (per-cluster version, DataVersionFilter in ReadRequest) | - |
 | 29 | Event Reporting (EventStore, event macro, BasicInformation.StartUp, IM codec) | - |
 | 30 | Multi-Fabric Support (per-fabric CASE, NOC, ACL, mDNS) | - |
+| 31 | TCP Transport (length-prefixed framing, MRP bypass, per-session transport) | - |
 
-**Current: 762 tests, 0 failures**
+**Current: 778 tests, 0 failures**
 
 ---
 
@@ -42,10 +43,6 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 ---
 
 ## P3 — Production hardening
-
-### Phase 31: TCP Transport
-
-Add `:gen_tcp` listener alongside UDP. Required for large payloads (>1280 bytes) and `T=1` mDNS advertisement.
 
 ### Phase 32: Group Messaging
 

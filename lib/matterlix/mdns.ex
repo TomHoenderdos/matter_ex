@@ -143,7 +143,7 @@ defmodule Matterlix.MDNS do
       "D=#{discriminator}",
       "VP=#{vendor_id}+#{product_id}",
       "CM=#{cm}",
-      "T=0"
+      "T=1"
     ]
 
     txt = if device_type, do: txt ++ ["DT=#{device_type}"], else: txt
@@ -191,7 +191,7 @@ defmodule Matterlix.MDNS do
     txt = [
       "SII=#{5000}",
       "SAI=#{300}",
-      "T=0"
+      "T=1"
     ]
 
     [

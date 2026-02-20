@@ -5,6 +5,7 @@ defmodule Matterlix.NodeTest do
   alias Matterlix.IM
   alias Matterlix.Protocol.{MessageCodec, ProtocolID}
   alias Matterlix.Protocol.MessageCodec.{Header, ProtoHeader}
+  alias Matterlix.Transport.TCP, as: TCPFraming
 
   @passcode 20202021
   @salt :crypto.strong_rand_bytes(32)
@@ -108,6 +109,55 @@ defmodule Matterlix.NodeTest do
     comm_session
   end
 
+  # TCP helpers
+
+  defp tcp_connect(port) do
+    {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, {:active, true}])
+    socket
+  end
+
+  defp tcp_send_and_receive(socket, data) do
+    framed = TCPFraming.frame(data)
+    :ok = :gen_tcp.send(socket, framed)
+
+    receive do
+      {:tcp, ^socket, response_data} ->
+        {[message], _remaining} = TCPFraming.parse(response_data)
+        message
+    after
+      2000 -> flunk("No TCP response received within 2s")
+    end
+  end
+
+  defp run_pase_over_tcp(tcp_socket) do
+    comm = PASE.new_commissioner(passcode: @passcode, local_session_id: 2)
+    exchange_id = 1
+
+    {:send, :pbkdf_param_request, req_payload, comm} = PASE.initiate(comm)
+    frame = build_pase_frame(:pbkdf_param_request, req_payload, exchange_id, 0)
+    resp = tcp_send_and_receive(tcp_socket, frame)
+
+    {:ok, resp_msg} = MessageCodec.decode(resp)
+    {:send, :pase_pake1, pake1_payload, comm} =
+      PASE.handle(comm, :pbkdf_param_response, resp_msg.proto.payload)
+
+    frame = build_pase_frame(:pase_pake1, pake1_payload, exchange_id, 1)
+    resp = tcp_send_and_receive(tcp_socket, frame)
+
+    {:ok, pake2_msg} = MessageCodec.decode(resp)
+    {:send, :pase_pake3, pake3_payload, comm} =
+      PASE.handle(comm, :pase_pake2, pake2_msg.proto.payload)
+
+    frame = build_pase_frame(:pase_pake3, pake3_payload, exchange_id, 2)
+    resp = tcp_send_and_receive(tcp_socket, frame)
+
+    {:ok, sr_msg} = MessageCodec.decode(resp)
+    {:established, comm_session, _comm} =
+      PASE.handle(comm, :status_report, sr_msg.proto.payload)
+
+    comm_session
+  end
+
   # ── Basic connectivity ──────────────────────────────────────────
 
   describe "basic connectivity" do
@@ -117,6 +167,12 @@ defmodule Matterlix.NodeTest do
 
     test "port/1 returns assigned port", %{node: node, port: port} do
       assert Matterlix.Node.port(node) == port
+    end
+
+    test "TCP listener accepts connections", %{port: port} do
+      socket = tcp_connect(port)
+      # Connection established — no crash
+      :gen_tcp.close(socket)
     end
   end
 
@@ -143,6 +199,122 @@ defmodule Matterlix.NodeTest do
       assert msg.proto.opcode == ProtocolID.opcode(:secure_channel, :pbkdf_param_response)
       assert msg.proto.exchange_id == 1
       assert msg.proto.initiator == false
+    end
+  end
+
+  # ── PASE over TCP ───────────────────────────────────────────────
+
+  describe "PASE over TCP" do
+    test "full PASE handshake over TCP produces session", %{port: port} do
+      tcp_socket = tcp_connect(port)
+      # Small delay for accept
+      Process.sleep(50)
+
+      comm_session = run_pase_over_tcp(tcp_socket)
+
+      assert comm_session.local_session_id == 2
+      assert byte_size(comm_session.encrypt_key) == 16
+      assert byte_size(comm_session.decrypt_key) == 16
+
+      :gen_tcp.close(tcp_socket)
+    end
+
+    test "encrypted IM read over TCP", %{port: port} do
+      tcp_socket = tcp_connect(port)
+      Process.sleep(50)
+
+      comm_session = run_pase_over_tcp(tcp_socket)
+
+      read_req = IM.encode(%IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+        fabric_filtered: true
+      })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :read_request),
+        exchange_id: 10,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: read_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      resp = tcp_send_and_receive(tcp_socket, frame)
+
+      {:ok, msg, _comm_session} = SecureChannel.open(comm_session, resp)
+      assert msg.proto.opcode == ProtocolID.opcode(:interaction_model, :report_data)
+
+      {:ok, report} = IM.decode(:report_data, msg.proto.payload)
+      assert [{:data, data}] = report.attribute_reports
+      assert data.value == false
+
+      :gen_tcp.close(tcp_socket)
+    end
+
+    test "full round trip over TCP: read, invoke, read", %{port: port} do
+      tcp_socket = tcp_connect(port)
+      Process.sleep(50)
+
+      comm_session = run_pase_over_tcp(tcp_socket)
+
+      # Read on_off (false)
+      read_req = IM.encode(%IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+        fabric_filtered: true
+      })
+
+      proto = %ProtoHeader{
+        initiator: true, needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :read_request),
+        exchange_id: 10, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: read_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      resp = tcp_send_and_receive(tcp_socket, frame)
+      {:ok, msg, comm_session} = SecureChannel.open(comm_session, resp)
+      {:ok, report} = IM.decode(:report_data, msg.proto.payload)
+      [{:data, data}] = report.attribute_reports
+      assert data.value == false
+
+      # Invoke "on"
+      invoke_req = IM.encode(%IM.InvokeRequest{
+        invoke_requests: [%{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}]
+      })
+
+      proto2 = %ProtoHeader{
+        initiator: true, needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :invoke_request),
+        exchange_id: 11, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: invoke_req
+      }
+
+      {frame2, comm_session} = SecureChannel.seal(comm_session, proto2)
+      resp2 = tcp_send_and_receive(tcp_socket, frame2)
+      {:ok, _msg2, comm_session} = SecureChannel.open(comm_session, resp2)
+
+      # Read on_off (true)
+      read_req2 = IM.encode(%IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+        fabric_filtered: true
+      })
+
+      proto3 = %ProtoHeader{
+        initiator: true, needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :read_request),
+        exchange_id: 12, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: read_req2
+      }
+
+      {frame3, comm_session} = SecureChannel.seal(comm_session, proto3)
+      resp3 = tcp_send_and_receive(tcp_socket, frame3)
+      {:ok, msg3, _comm_session} = SecureChannel.open(comm_session, resp3)
+      {:ok, report3} = IM.decode(:report_data, msg3.proto.payload)
+      [{:data, data3}] = report3.attribute_reports
+      assert data3.value == true
+
+      :gen_tcp.close(tcp_socket)
     end
   end
 
@@ -273,13 +445,34 @@ defmodule Matterlix.NodeTest do
   # ── Error handling ──────────────────────────────────────────────
 
   describe "error handling" do
-    test "malformed frame does not crash node", %{client: client, port: port, node: node} do
+    test "malformed UDP frame does not crash node", %{client: client, port: port, node: node} do
       :ok = :gen_udp.send(client, ~c"127.0.0.1", port, <<0, 1, 2, 3>>)
 
       # Give the node a moment to process
       Process.sleep(50)
 
       # Node is still alive
+      assert Process.alive?(node)
+    end
+
+    test "malformed TCP frame does not crash node", %{port: port, node: node} do
+      tcp_socket = tcp_connect(port)
+      Process.sleep(50)
+
+      # Send garbage data (valid length prefix but garbage payload)
+      :gen_tcp.send(tcp_socket, TCPFraming.frame(<<0, 1, 2, 3>>))
+      Process.sleep(50)
+
+      assert Process.alive?(node)
+      :gen_tcp.close(tcp_socket)
+    end
+
+    test "TCP connection close does not crash node", %{port: port, node: node} do
+      tcp_socket = tcp_connect(port)
+      Process.sleep(50)
+      :gen_tcp.close(tcp_socket)
+      Process.sleep(50)
+
       assert Process.alive?(node)
     end
   end
