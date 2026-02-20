@@ -185,7 +185,7 @@ defmodule Matterlix.ExchangeManager do
         suppress? = Map.get(request, :suppress_response, false)
 
         case response_opcode(opcode) do
-          {:ok, resp_opcode_name} when suppress? ->
+          {:ok, _resp_opcode_name} when suppress? ->
             # suppress_response set — execute handler but skip IM response, just ACK
             Logger.debug("suppress_response: executing #{inspect(opcode)} without IM reply")
             state.handler.(opcode, request)

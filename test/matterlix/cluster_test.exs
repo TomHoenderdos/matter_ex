@@ -26,7 +26,7 @@ defmodule Matterlix.ClusterTest do
 
     test "OnOff attribute_defs" do
       defs = OnOff.attribute_defs()
-      assert length(defs) == 2
+      assert length(defs) == 6
 
       on_off_attr = Enum.find(defs, &(&1.name == :on_off))
       assert on_off_attr.id == 0x0000
@@ -37,6 +37,32 @@ defmodule Matterlix.ClusterTest do
       rev_attr = Enum.find(defs, &(&1.name == :cluster_revision))
       assert rev_attr.id == 0xFFFD
       assert rev_attr.writable == false
+    end
+
+    test "OnOff global attributes auto-generated" do
+      defs = OnOff.attribute_defs()
+
+      # FeatureMap
+      feature_map = Enum.find(defs, &(&1.id == 0xFFFC))
+      assert feature_map.name == :feature_map
+      assert feature_map.default == 0
+      assert feature_map.writable == false
+
+      # AcceptedCommandList
+      accepted = Enum.find(defs, &(&1.id == 0xFFF9))
+      assert accepted.name == :accepted_command_list
+      assert accepted.default == [0x00, 0x01, 0x02]
+
+      # GeneratedCommandList (no response_ids defined)
+      generated = Enum.find(defs, &(&1.id == 0xFFF8))
+      assert generated.name == :generated_command_list
+      assert generated.default == []
+
+      # AttributeList (all attribute IDs sorted)
+      attr_list = Enum.find(defs, &(&1.id == 0xFFFB))
+      assert attr_list.name == :attribute_list
+      expected_ids = Enum.map(defs, & &1.id) |> Enum.sort()
+      assert attr_list.default == expected_ids
     end
 
     test "OnOff command_defs" do
@@ -64,7 +90,7 @@ defmodule Matterlix.ClusterTest do
 
     test "LevelControl attribute_defs" do
       defs = LevelControl.attribute_defs()
-      assert length(defs) == 5
+      assert length(defs) == 9
 
       level = Enum.find(defs, &(&1.name == :current_level))
       assert level.id == 0x0000
@@ -90,7 +116,7 @@ defmodule Matterlix.ClusterTest do
 
     test "ColorControl attribute_defs" do
       defs = ColorControl.attribute_defs()
-      assert length(defs) == 10
+      assert length(defs) == 14
 
       assert Enum.find(defs, &(&1.name == :current_hue)).writable == true
       assert Enum.find(defs, &(&1.name == :color_mode)).writable == false
@@ -113,7 +139,7 @@ defmodule Matterlix.ClusterTest do
 
     test "TemperatureMeasurement attribute_defs" do
       defs = TemperatureMeasurement.attribute_defs()
-      assert length(defs) == 5
+      assert length(defs) == 9
       assert Enum.find(defs, &(&1.name == :measured_value)).default == 2000
       assert Enum.find(defs, &(&1.name == :measured_value)).writable == false
     end
@@ -129,7 +155,7 @@ defmodule Matterlix.ClusterTest do
 
     test "BooleanState attribute_defs" do
       defs = BooleanState.attribute_defs()
-      assert length(defs) == 2
+      assert length(defs) == 6
       assert Enum.find(defs, &(&1.name == :state_value)).default == false
       assert Enum.find(defs, &(&1.name == :state_value)).writable == false
     end
@@ -145,7 +171,7 @@ defmodule Matterlix.ClusterTest do
 
     test "Thermostat attribute_defs" do
       defs = Thermostat.attribute_defs()
-      assert length(defs) == 10
+      assert length(defs) == 14
 
       heat = Enum.find(defs, &(&1.name == :occupied_heating_setpoint))
       assert heat.id == 0x0012
@@ -165,6 +191,12 @@ defmodule Matterlix.ClusterTest do
     test "GeneralCommissioning cluster_id and name" do
       assert GeneralCommissioning.cluster_id() == 0x0030
       assert GeneralCommissioning.cluster_name() == :general_commissioning
+    end
+
+    test "GeneralCommissioning generated_command_list from response_ids" do
+      defs = GeneralCommissioning.attribute_defs()
+      generated = Enum.find(defs, &(&1.id == 0xFFF8))
+      assert generated.default == [0x01, 0x03, 0x05]
     end
 
     test "GeneralCommissioning command_defs" do
@@ -711,12 +743,19 @@ defmodule Matterlix.ClusterTest do
 
     test "attribute_defs" do
       defs = NetworkCommissioning.attribute_defs()
-      assert length(defs) == 10
+      assert length(defs) == 13
 
       assert Enum.find(defs, &(&1.name == :max_networks)).default == 1
       assert Enum.find(defs, &(&1.name == :interface_enabled)).default == true
       assert Enum.find(defs, &(&1.name == :interface_enabled)).writable == true
       assert Enum.find(defs, &(&1.name == :feature_map)).default == 0x04
+    end
+
+    test "manually declared feature_map not duplicated" do
+      defs = NetworkCommissioning.attribute_defs()
+      feature_maps = Enum.filter(defs, &(&1.id == 0xFFFC))
+      assert length(feature_maps) == 1
+      assert hd(feature_maps).default == 0x04
     end
 
     test "command_defs" do
@@ -789,7 +828,7 @@ defmodule Matterlix.ClusterTest do
 
     test "attribute_defs" do
       defs = GroupKeyManagement.attribute_defs()
-      assert length(defs) == 6
+      assert length(defs) == 9
 
       assert Enum.find(defs, &(&1.name == :group_key_map)).writable == true
       assert Enum.find(defs, &(&1.name == :group_table)).writable == false

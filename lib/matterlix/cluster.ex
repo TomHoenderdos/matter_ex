@@ -132,8 +132,44 @@ defmodule Matterlix.Cluster do
   end
 
   defmacro __before_compile__(env) do
-    attributes = Module.get_attribute(env.module, :matter_attributes) |> Enum.reverse()
+    user_attributes = Module.get_attribute(env.module, :matter_attributes) |> Enum.reverse()
     commands = Module.get_attribute(env.module, :matter_commands) |> Enum.reverse()
+
+    # Auto-generate global attributes that aren't already declared
+    declared_ids = MapSet.new(user_attributes, & &1.id)
+
+    # Compute generated_command_list: response_ids from commands that have one
+    generated_cmd_ids =
+      commands
+      |> Enum.map(& &1.response_id)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    # Compute accepted_command_list: all command IDs
+    accepted_cmd_ids = commands |> Enum.map(& &1.id) |> Enum.sort()
+
+    # Build the global attributes to inject
+    global_attrs =
+      []
+      |> maybe_add_global(declared_ids, 0xFFFC, :feature_map, :uint32, 0)
+      |> maybe_add_global(declared_ids, 0xFFF8, :generated_command_list, :list, generated_cmd_ids)
+      |> maybe_add_global(declared_ids, 0xFFF9, :accepted_command_list, :list, accepted_cmd_ids)
+
+    # AttributeList must include all IDs (user + globals + itself)
+    all_attr_ids_so_far =
+      (user_attributes ++ global_attrs)
+      |> Enum.map(& &1.id)
+
+    global_attrs =
+      if MapSet.member?(declared_ids, 0xFFFB) do
+        global_attrs
+      else
+        attr_list_value = Enum.sort([0xFFFB | all_attr_ids_so_far])
+        global_attrs ++ [%{id: 0xFFFB, name: :attribute_list, type: :list, default: attr_list_value, writable: false}]
+      end
+
+    attributes = user_attributes ++ global_attrs
 
     quote do
       @impl Matterlix.Cluster
@@ -147,6 +183,14 @@ defmodule Matterlix.Cluster do
 
       @impl Matterlix.Cluster
       def command_defs, do: unquote(Macro.escape(commands))
+    end
+  end
+
+  defp maybe_add_global(acc, declared_ids, id, name, type, default) do
+    if MapSet.member?(declared_ids, id) do
+      acc
+    else
+      acc ++ [%{id: id, name: name, type: type, default: default, writable: false}]
     end
   end
 

@@ -341,17 +341,19 @@ defmodule Matterlix.DeviceTest do
     end
 
     test "wildcard attribute reads all attributes from a cluster" do
-      # OnOff has 2 attributes: on_off (0x0000) and cluster_revision (0xFFFD)
+      # OnOff has 6 attributes: on_off, cluster_revision + 4 global attrs
       req = %IM.ReadRequest{
         attribute_paths: [%{endpoint: 1, cluster: 0x0006}]
       }
 
       %IM.ReportData{attribute_reports: reports} = Router.handle_read(TestLight, req)
       data_reports = for {:data, d} <- reports, do: d
-      assert length(data_reports) == 2
+      assert length(data_reports) == 6
 
       attr_ids = Enum.map(data_reports, & &1.path.attribute) |> Enum.sort()
-      assert attr_ids == [0x0000, 0xFFFD]
+      assert 0x0000 in attr_ids
+      assert 0xFFFD in attr_ids
+      assert 0xFFFB in attr_ids  # AttributeList
     end
 
     test "fully wildcard reads all attributes across all endpoints" do
@@ -391,8 +393,8 @@ defmodule Matterlix.DeviceTest do
 
       %IM.ReportData{attribute_reports: reports} = Router.handle_read(TestLight, req)
       data_reports = for {:data, d} <- reports, do: d
-      # 1 from concrete + 2 from wildcard (on_off + cluster_revision)
-      assert length(data_reports) == 3
+      # 1 from concrete + 6 from wildcard (on_off + cluster_revision + 4 global)
+      assert length(data_reports) == 7
     end
 
     test "concrete path error still returns status" do
