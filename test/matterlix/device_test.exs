@@ -408,6 +408,152 @@ defmodule Matterlix.DeviceTest do
     end
   end
 
+  # ── DataVersion in reports ──────────────────────────────────
+
+  describe "DataVersion in reports" do
+    test "report includes data_version" do
+      req = %IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 0x0006, attribute: 0x0000}]
+      }
+
+      %IM.ReportData{attribute_reports: [{:data, data}]} =
+        Router.handle_read(TestLight, req)
+
+      assert is_integer(data.version)
+    end
+
+    test "data_version increments after write" do
+      req = %IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 0x0006, attribute: 0x0000}]
+      }
+
+      %IM.ReportData{attribute_reports: [{:data, data}]} =
+        Router.handle_read(TestLight, req)
+
+      v0 = data.version
+
+      # Write to bump version
+      write_req = %IM.WriteRequest{
+        write_requests: [
+          %{version: 0, path: %{endpoint: 1, cluster: 0x0006, attribute: 0x0000}, value: true}
+        ]
+      }
+
+      Router.handle(TestLight, :write_request, write_req)
+
+      %IM.ReportData{attribute_reports: [{:data, data}]} =
+        Router.handle_read(TestLight, req)
+
+      assert data.version == v0 + 1
+    end
+  end
+
+  # ── DataVersionFilter ──────────────────────────────────────
+
+  describe "DataVersionFilter" do
+    test "matching filter skips cluster attributes" do
+      # Read current version
+      req = %IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 0x0006, attribute: 0x0000}]
+      }
+
+      %IM.ReportData{attribute_reports: [{:data, data}]} =
+        Router.handle_read(TestLight, req)
+
+      current_version = data.version
+
+      # Read with matching DataVersionFilter → skipped
+      filtered_req = %IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 0x0006, attribute: 0x0000}],
+        data_version_filters: [
+          %{endpoint: 1, cluster: 0x0006, data_version: current_version}
+        ]
+      }
+
+      %IM.ReportData{attribute_reports: reports} =
+        Router.handle_read(TestLight, filtered_req)
+
+      assert reports == []
+    end
+
+    test "non-matching filter still returns data" do
+      req = %IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 0x0006, attribute: 0x0000}],
+        data_version_filters: [
+          %{endpoint: 1, cluster: 0x0006, data_version: 999_999}
+        ]
+      }
+
+      %IM.ReportData{attribute_reports: reports} =
+        Router.handle_read(TestLight, req)
+
+      assert [{:data, _}] = reports
+    end
+
+    test "filter for one cluster does not affect other clusters" do
+      # Get OnOff version
+      req = %IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 0x0006, attribute: 0x0000}]
+      }
+
+      %IM.ReportData{attribute_reports: [{:data, data}]} =
+        Router.handle_read(TestLight, req)
+
+      onoff_version = data.version
+
+      # Wildcard read on ep1 with filter matching OnOff only
+      wildcard_req = %IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, attribute: 0xFFFD}],
+        data_version_filters: [
+          %{endpoint: 1, cluster: 0x0006, data_version: onoff_version}
+        ]
+      }
+
+      %IM.ReportData{attribute_reports: reports} =
+        Router.handle_read(TestLight, wildcard_req)
+
+      # Should get Descriptor's cluster_revision but not OnOff's
+      data_reports = for {:data, d} <- reports, do: d
+      clusters = Enum.map(data_reports, & &1.path.cluster)
+      assert 0x001D in clusters
+      refute 0x0006 in clusters
+    end
+
+    test "filter after write with stale version returns data" do
+      # Read initial version
+      req = %IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 0x0006, attribute: 0x0000}]
+      }
+
+      %IM.ReportData{attribute_reports: [{:data, data}]} =
+        Router.handle_read(TestLight, req)
+
+      stale_version = data.version
+
+      # Write to bump version
+      write_req = %IM.WriteRequest{
+        write_requests: [
+          %{version: 0, path: %{endpoint: 1, cluster: 0x0006, attribute: 0x0000}, value: true}
+        ]
+      }
+
+      Router.handle(TestLight, :write_request, write_req)
+
+      # Use stale version in filter → should NOT skip (version changed)
+      filtered_req = %IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 0x0006, attribute: 0x0000}],
+        data_version_filters: [
+          %{endpoint: 1, cluster: 0x0006, data_version: stale_version}
+        ]
+      }
+
+      %IM.ReportData{attribute_reports: reports} =
+        Router.handle_read(TestLight, filtered_req)
+
+      assert [{:data, _}] = reports
+    end
+  end
+
   # ── Full integration ────────────────────────────────────────
 
   describe "full integration" do

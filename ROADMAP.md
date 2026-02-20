@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-27)
+## Completed Phases (1-28)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -29,16 +29,13 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 25 | Subscription Lifecycle (min_interval throttle, give_up cleanup, session close) | - |
 | 26 | suppress_response Handling | - |
 | 27 | Global Attributes (AttributeList, AcceptedCommandList, GeneratedCommandList, FeatureMap) | - |
+| 28 | DataVersion Tracking (per-cluster version, DataVersionFilter in ReadRequest) | - |
 
-**Current: 726 tests, 0 failures**
+**Current: 739 tests, 0 failures**
 
 ---
 
 ## P2 — Spec compliance
-
-### Phase 28: DataVersion Tracking
-
-Track a monotonically increasing `DataVersion` per cluster that increments on attribute writes. Include in `ReportData`. Support `DataVersionFilter` in `ReadRequest` to skip unchanged clusters.
 
 ### Phase 29: Event Reporting
 

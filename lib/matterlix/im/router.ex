@@ -38,6 +38,8 @@ defmodule Matterlix.IM.Router do
 
   @spec handle_read(module(), IM.ReadRequest.t(), map()) :: IM.ReportData.t()
   def handle_read(device, %IM.ReadRequest{} = req, context \\ %{auth_mode: :pase}) do
+    version_filter_set = build_version_filter_set(device, req.data_version_filters)
+
     reports =
       Enum.flat_map(req.attribute_paths, fn path ->
         expanded = expand_attribute_path(device, path)
@@ -47,7 +49,9 @@ defmodule Matterlix.IM.Router do
           [read_one_attribute(device, path, context)]
         else
           # Expanded (or wildcard with no matches → silently omit)
-          Enum.map(expanded, fn cp -> read_one_attribute(device, cp, context) end)
+          expanded
+          |> Enum.reject(fn cp -> MapSet.member?(version_filter_set, {cp.endpoint, cp.cluster}) end)
+          |> Enum.map(fn cp -> read_one_attribute(device, cp, context) end)
         end
       end)
 
@@ -63,9 +67,11 @@ defmodule Matterlix.IM.Router do
           :allow ->
             case GenServer.call(gen_name, {:read_attribute, attr_name}) do
               {:ok, value} ->
+                data_version = GenServer.call(gen_name, :read_data_version)
+
                 {:data,
                  %{
-                   version: 0,
+                   version: data_version,
                    path: path,
                    value: to_tlv(attr_type, value)
                  }}
@@ -159,6 +165,30 @@ defmodule Matterlix.IM.Router do
       end)
 
     %IM.InvokeResponse{invoke_responses: responses}
+  end
+
+  # ── DataVersionFilter ─────────────────────────────────────────
+
+  defp build_version_filter_set(device, filters) do
+    Enum.reduce(filters, MapSet.new(), fn filter, acc ->
+      ep = filter.endpoint
+      cl = filter.cluster
+
+      case device.__cluster_module__(ep, cl) do
+        nil ->
+          acc
+
+        _cluster_mod ->
+          gen_name = device.__process_name__(ep, device.__cluster_module__(ep, cl).cluster_name())
+          current_version = GenServer.call(gen_name, :read_data_version)
+
+          if current_version == filter.data_version do
+            MapSet.put(acc, {ep, cl})
+          else
+            acc
+          end
+      end
+    end)
   end
 
   # ── Wildcard expansion ────────────────────────────────────────

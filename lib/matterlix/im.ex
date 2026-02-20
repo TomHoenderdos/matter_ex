@@ -26,7 +26,7 @@ defmodule Matterlix.IM do
 
   defmodule ReadRequest do
     @moduledoc false
-    defstruct attribute_paths: [], fabric_filtered: true
+    defstruct attribute_paths: [], data_version_filters: [], fabric_filtered: true
   end
 
   defmodule ReportData do
@@ -108,9 +108,11 @@ defmodule Matterlix.IM do
 
   defp decode_message(:read_request, map) do
     paths = for p <- map[0] || [], do: decode_attribute_path(p)
+    filters = for f <- map[4] || [], do: decode_data_version_filter(f)
 
     {:ok, %ReadRequest{
       attribute_paths: paths,
+      data_version_filters: filters,
       fabric_filtered: Map.get(map, 3, false)
     }}
   end
@@ -184,6 +186,11 @@ defmodule Matterlix.IM do
     path = if map[3], do: Map.put(path, :cluster, map[3]), else: path
     path = if map[4], do: Map.put(path, :attribute, map[4]), else: path
     path
+  end
+
+  defp decode_data_version_filter(map) do
+    path = map[0] || %{}
+    %{endpoint: path[1], cluster: path[2], data_version: map[1]}
   end
 
   defp decode_command_path(map) do
@@ -262,6 +269,14 @@ defmodule Matterlix.IM do
       if req.attribute_paths != [] do
         paths = Enum.map(req.attribute_paths, &{:list, encode_attribute_path(&1)})
         Map.put(map, 0, {:array, paths})
+      else
+        map
+      end
+
+    map =
+      if req.data_version_filters != [] do
+        filters = Enum.map(req.data_version_filters, &{:struct, encode_data_version_filter(&1)})
+        Map.put(map, 4, {:array, filters})
       else
         map
       end
@@ -363,6 +378,13 @@ defmodule Matterlix.IM do
     map = if path[:cluster], do: Map.put(map, 3, {:uint, path.cluster}), else: map
     map = if path[:attribute], do: Map.put(map, 4, {:uint, path.attribute}), else: map
     map
+  end
+
+  defp encode_data_version_filter(filter) do
+    %{
+      0 => {:list, %{1 => {:uint, filter.endpoint}, 2 => {:uint, filter.cluster}}},
+      1 => {:uint, filter.data_version}
+    }
   end
 
   defp encode_command_path(path) do

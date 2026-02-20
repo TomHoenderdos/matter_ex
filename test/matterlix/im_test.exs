@@ -108,6 +108,33 @@ defmodule Matterlix.IMTest do
       refute Map.has_key?(path, :endpoint)
       assert path.cluster == 0x0006
     end
+
+    test "encode/decode with data_version_filters" do
+      msg = %IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 0x0006, attribute: 0x0000}],
+        data_version_filters: [
+          %{endpoint: 1, cluster: 0x0006, data_version: 42}
+        ],
+        fabric_filtered: true
+      }
+
+      {:ok, decoded} = IM.decode(:read_request, IM.encode(msg))
+      assert [filter] = decoded.data_version_filters
+      assert filter.endpoint == 1
+      assert filter.cluster == 0x0006
+      assert filter.data_version == 42
+    end
+
+    test "encode/decode with empty data_version_filters" do
+      msg = %IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 0x0006, attribute: 0x0000}],
+        data_version_filters: [],
+        fabric_filtered: true
+      }
+
+      {:ok, decoded} = IM.decode(:read_request, IM.encode(msg))
+      assert decoded.data_version_filters == []
+    end
   end
 
   # ── ReportData ────────────────────────────────────────────────

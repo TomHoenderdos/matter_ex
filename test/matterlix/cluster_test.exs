@@ -286,6 +286,47 @@ defmodule Matterlix.ClusterTest do
     end
   end
 
+  # ── DataVersion Tracking ─────────────────────────────────────
+
+  describe "DataVersion tracking" do
+    setup do
+      name = :"on_off_dv_test_#{System.unique_integer([:positive])}"
+      {:ok, pid} = OnOff.start_link(name: name)
+      %{pid: pid, name: name}
+    end
+
+    test "initial data_version is 0", %{name: name} do
+      assert 0 = GenServer.call(name, :read_data_version)
+    end
+
+    test "write_attribute bumps data_version", %{name: name} do
+      assert 0 = GenServer.call(name, :read_data_version)
+      :ok = GenServer.call(name, {:write_attribute, :on_off, true})
+      assert 1 = GenServer.call(name, :read_data_version)
+      :ok = GenServer.call(name, {:write_attribute, :on_off, false})
+      assert 2 = GenServer.call(name, :read_data_version)
+    end
+
+    test "invoke_command bumps data_version when state changes", %{name: name} do
+      assert 0 = GenServer.call(name, :read_data_version)
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :on, %{}})
+      assert 1 = GenServer.call(name, :read_data_version)
+    end
+
+    test "invoke_command does not bump when state is unchanged", %{name: name} do
+      # on_off starts as false, :off is a no-op
+      assert 0 = GenServer.call(name, :read_data_version)
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :off, %{}})
+      assert 0 = GenServer.call(name, :read_data_version)
+    end
+
+    test "failed write does not bump data_version", %{name: name} do
+      assert 0 = GenServer.call(name, :read_data_version)
+      {:error, :unsupported_write} = GenServer.call(name, {:write_attribute, :cluster_revision, 99})
+      assert 0 = GenServer.call(name, :read_data_version)
+    end
+  end
+
   # ── Descriptor GenServer ──────────────────────────────────────
 
   describe "Descriptor GenServer" do

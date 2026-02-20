@@ -50,8 +50,19 @@ defmodule Matterlix.Cluster do
   @doc false
   def dispatch_command_reply(module, name, params, state) do
     case module.handle_command(name, params, state) do
-      {:ok, response, new_state} -> {:reply, {:ok, response}, new_state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
+      {:ok, response, new_state} ->
+        # Bump data_version if state changed
+        new_state =
+          if Map.drop(new_state, [:__data_version__]) != Map.drop(state, [:__data_version__]) do
+            Map.update!(new_state, :__data_version__, &(&1 + 1))
+          else
+            new_state
+          end
+
+        {:reply, {:ok, response}, new_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
@@ -76,7 +87,7 @@ defmodule Matterlix.Cluster do
 
       def init(opts) do
         state =
-          Enum.reduce(attribute_defs(), %{}, fn attr, acc ->
+          Enum.reduce(attribute_defs(), %{__data_version__: 0}, fn attr, acc ->
             value = Keyword.get(opts, attr.name, attr.default)
             Map.put(acc, attr.name, value)
           end)
@@ -94,13 +105,19 @@ defmodule Matterlix.Cluster do
         end
       end
 
+      def handle_call(:read_data_version, _from, state) do
+        {:reply, state.__data_version__, state}
+      end
+
       def handle_call({:write_attribute, name, value}, _from, state) do
         attr = Enum.find(attribute_defs(), &(&1.name == name))
 
         cond do
           attr == nil -> {:reply, {:error, :unsupported_attribute}, state}
           !attr.writable -> {:reply, {:error, :unsupported_write}, state}
-          true -> {:reply, :ok, Map.put(state, name, value)}
+          true ->
+            state = state |> Map.put(name, value) |> bump_data_version()
+            {:reply, :ok, state}
         end
       end
 
@@ -118,6 +135,10 @@ defmodule Matterlix.Cluster do
 
       def handle_call(:get_state, _from, state) do
         {:reply, state, state}
+      end
+
+      defp bump_data_version(state) do
+        Map.update!(state, :__data_version__, &(&1 + 1))
       end
 
       def get_attribute(state, name), do: Map.get(state, name)
