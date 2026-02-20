@@ -7,7 +7,7 @@ defmodule Matterlix.IM.Router do
   """
 
   alias Matterlix.{ACL, IM}
-  alias Matterlix.IM.Status
+  alias Matterlix.IM.{EventStore, Status}
 
   @doc """
   Dispatch an IM message to the appropriate cluster(s) and return the response.
@@ -55,7 +55,9 @@ defmodule Matterlix.IM.Router do
         end
       end)
 
-    %IM.ReportData{attribute_reports: reports}
+    event_reports = read_events(device, req.event_requests, req.event_filters)
+
+    %IM.ReportData{attribute_reports: reports, event_reports: event_reports}
   end
 
   defp read_one_attribute(device, path, context) do
@@ -189,6 +191,37 @@ defmodule Matterlix.IM.Router do
           end
       end
     end)
+  end
+
+  # ── Event reads ───────────────────────────────────────────────
+
+  defp read_events(_device, [], _event_filters), do: []
+
+  defp read_events(device, event_requests, event_filters) do
+    event_store_name = device.__process_name__(0, :event_store)
+
+    if event_store_name && Process.whereis(event_store_name) do
+      event_min =
+        case event_filters do
+          [%{event_min: min} | _] -> min
+          _ -> 0
+        end
+
+      events = EventStore.read(event_store_name, event_requests, event_min)
+
+      Enum.map(events, fn e ->
+        {:data,
+         %{
+           path: %{endpoint: e.endpoint, cluster: e.cluster, event: e.event},
+           event_number: e.number,
+           priority: e.priority,
+           system_timestamp: e.system_timestamp,
+           data: e.data
+         }}
+      end)
+    else
+      []
+    end
   end
 
   # ── Wildcard expansion ────────────────────────────────────────

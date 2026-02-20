@@ -26,13 +26,18 @@ defmodule Matterlix.IM do
 
   defmodule ReadRequest do
     @moduledoc false
-    defstruct attribute_paths: [], data_version_filters: [], fabric_filtered: true
+    defstruct attribute_paths: [],
+              event_requests: [],
+              event_filters: [],
+              data_version_filters: [],
+              fabric_filtered: true
   end
 
   defmodule ReportData do
     @moduledoc false
     defstruct subscription_id: nil,
               attribute_reports: [],
+              event_reports: [],
               suppress_response: false
   end
 
@@ -108,21 +113,27 @@ defmodule Matterlix.IM do
 
   defp decode_message(:read_request, map) do
     paths = for p <- map[0] || [], do: decode_attribute_path(p)
-    filters = for f <- map[4] || [], do: decode_data_version_filter(f)
+    event_reqs = for e <- map[1] || [], do: decode_event_path(e)
+    event_filters = for f <- map[2] || [], do: decode_event_filter(f)
+    dv_filters = for f <- map[4] || [], do: decode_data_version_filter(f)
 
     {:ok, %ReadRequest{
       attribute_paths: paths,
-      data_version_filters: filters,
+      event_requests: event_reqs,
+      event_filters: event_filters,
+      data_version_filters: dv_filters,
       fabric_filtered: Map.get(map, 3, false)
     }}
   end
 
   defp decode_message(:report_data, map) do
     reports = for r <- map[1] || [], do: decode_attribute_report(r)
+    event_reports = for r <- map[2] || [], do: decode_event_report(r)
 
     {:ok, %ReportData{
       subscription_id: map[0],
       attribute_reports: reports,
+      event_reports: event_reports,
       suppress_response: Map.get(map, 4, false)
     }}
   end
@@ -191,6 +202,49 @@ defmodule Matterlix.IM do
   defp decode_data_version_filter(map) do
     path = map[0] || %{}
     %{endpoint: path[1], cluster: path[2], data_version: map[1]}
+  end
+
+  defp decode_event_path(map) do
+    path = %{}
+    path = if map[1], do: Map.put(path, :endpoint, map[1]), else: path
+    path = if map[2], do: Map.put(path, :cluster, map[2]), else: path
+    path = if map[3], do: Map.put(path, :event, map[3]), else: path
+    path = if map[4], do: Map.put(path, :is_urgent, map[4]), else: path
+    path
+  end
+
+  defp decode_event_filter(map) do
+    %{event_min: map[1] || 0}
+  end
+
+  defp decode_event_report(map) do
+    cond do
+      map[1] -> {:data, decode_event_data(map[1])}
+      map[0] -> {:status, decode_event_status(map[0])}
+    end
+  end
+
+  defp decode_event_data(map) do
+    path = decode_event_path(map[0] || %{})
+
+    %{
+      path: path,
+      event_number: map[1],
+      priority: map[2],
+      system_timestamp: map[4],
+      data: map[7]
+    }
+  end
+
+  defp decode_event_status(map) do
+    path = decode_event_path(map[0] || %{})
+    status_ib = map[1] || %{}
+
+    %{
+      path: path,
+      status: status_ib[0],
+      cluster_status: status_ib[1]
+    }
   end
 
   defp decode_command_path(map) do
@@ -274,6 +328,22 @@ defmodule Matterlix.IM do
       end
 
     map =
+      if req.event_requests != [] do
+        events = Enum.map(req.event_requests, &{:list, encode_event_path(&1)})
+        Map.put(map, 1, {:array, events})
+      else
+        map
+      end
+
+    map =
+      if req.event_filters != [] do
+        filters = Enum.map(req.event_filters, &{:struct, encode_event_filter(&1)})
+        Map.put(map, 2, {:array, filters})
+      else
+        map
+      end
+
+    map =
       if req.data_version_filters != [] do
         filters = Enum.map(req.data_version_filters, &{:struct, encode_data_version_filter(&1)})
         Map.put(map, 4, {:array, filters})
@@ -292,6 +362,14 @@ defmodule Matterlix.IM do
       if msg.attribute_reports != [] do
         reports = Enum.map(msg.attribute_reports, &{:struct, encode_attribute_report(&1)})
         Map.put(map, 1, {:array, reports})
+      else
+        map
+      end
+
+    map =
+      if msg.event_reports != [] do
+        reports = Enum.map(msg.event_reports, &{:struct, encode_event_report(&1)})
+        Map.put(map, 2, {:array, reports})
       else
         map
       end
@@ -385,6 +463,51 @@ defmodule Matterlix.IM do
       0 => {:list, %{1 => {:uint, filter.endpoint}, 2 => {:uint, filter.cluster}}},
       1 => {:uint, filter.data_version}
     }
+  end
+
+  defp encode_event_path(path) do
+    map = %{}
+    map = if path[:endpoint], do: Map.put(map, 1, {:uint, path.endpoint}), else: map
+    map = if path[:cluster], do: Map.put(map, 2, {:uint, path.cluster}), else: map
+    map = if path[:event], do: Map.put(map, 3, {:uint, path.event}), else: map
+    map = if path[:is_urgent], do: Map.put(map, 4, {:bool, path.is_urgent}), else: map
+    map
+  end
+
+  defp encode_event_filter(filter) do
+    %{1 => {:uint, filter.event_min}}
+  end
+
+  defp encode_event_report({:data, data}) do
+    %{1 => {:struct, encode_event_data(data)}}
+  end
+
+  defp encode_event_report({:status, status}) do
+    status_ib = %{0 => {:uint, status.status}}
+
+    status_ib =
+      if status[:cluster_status],
+        do: Map.put(status_ib, 1, {:uint, status.cluster_status}),
+        else: status_ib
+
+    %{
+      0 => {:struct, %{
+        0 => {:list, encode_event_path(status.path)},
+        1 => {:struct, status_ib}
+      }}
+    }
+  end
+
+  defp encode_event_data(data) do
+    map = %{
+      0 => {:list, encode_event_path(data.path)},
+      1 => {:uint, data.event_number},
+      2 => {:uint, data.priority}
+    }
+
+    map = if data[:system_timestamp], do: Map.put(map, 4, {:uint, data.system_timestamp}), else: map
+    map = if data[:data], do: Map.put(map, 7, {:struct, data.data}), else: map
+    map
   end
 
   defp encode_command_path(path) do

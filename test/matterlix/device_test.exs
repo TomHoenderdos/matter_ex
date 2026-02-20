@@ -341,14 +341,14 @@ defmodule Matterlix.DeviceTest do
     end
 
     test "wildcard attribute reads all attributes from a cluster" do
-      # OnOff has 6 attributes: on_off, cluster_revision + 4 global attrs
+      # OnOff has 7 attributes: on_off, cluster_revision + 5 global attrs
       req = %IM.ReadRequest{
         attribute_paths: [%{endpoint: 1, cluster: 0x0006}]
       }
 
       %IM.ReportData{attribute_reports: reports} = Router.handle_read(TestLight, req)
       data_reports = for {:data, d} <- reports, do: d
-      assert length(data_reports) == 6
+      assert length(data_reports) == 7
 
       attr_ids = Enum.map(data_reports, & &1.path.attribute) |> Enum.sort()
       assert 0x0000 in attr_ids
@@ -393,8 +393,8 @@ defmodule Matterlix.DeviceTest do
 
       %IM.ReportData{attribute_reports: reports} = Router.handle_read(TestLight, req)
       data_reports = for {:data, d} <- reports, do: d
-      # 1 from concrete + 6 from wildcard (on_off + cluster_revision + 4 global)
-      assert length(data_reports) == 7
+      # 1 from concrete + 7 from wildcard (on_off + cluster_revision + 5 global)
+      assert length(data_reports) == 8
     end
 
     test "concrete path error still returns status" do
@@ -551,6 +551,70 @@ defmodule Matterlix.DeviceTest do
         Router.handle_read(TestLight, filtered_req)
 
       assert [{:data, _}] = reports
+    end
+  end
+
+  # ── Event reads through Router ───────────────────────────────
+
+  describe "Event reads" do
+    test "BasicInformation StartUp event is emitted on device start" do
+      req = %IM.ReadRequest{
+        event_requests: [%{endpoint: 0, cluster: 0x0028, event: 0x00}]
+      }
+
+      %IM.ReportData{event_reports: events} = Router.handle_read(TestLight, req)
+      assert length(events) >= 1
+
+      {:data, event} = hd(events)
+      assert event.path.endpoint == 0
+      assert event.path.cluster == 0x0028
+      assert event.path.event == 0x00
+      assert event.priority == 2
+      assert event.data == %{0 => {:uint, 1}}
+    end
+
+    test "event_min filter skips old events" do
+      # Read all events first to get the latest number
+      req = %IM.ReadRequest{
+        event_requests: [%{endpoint: 0, cluster: 0x0028}]
+      }
+
+      %IM.ReportData{event_reports: events} = Router.handle_read(TestLight, req)
+      assert length(events) >= 1
+
+      # Use event_min beyond all known events
+      {:data, last} = List.last(events)
+      future_min = last.event_number + 1
+
+      filtered_req = %IM.ReadRequest{
+        event_requests: [%{endpoint: 0, cluster: 0x0028}],
+        event_filters: [%{event_min: future_min}]
+      }
+
+      %IM.ReportData{event_reports: filtered_events} = Router.handle_read(TestLight, filtered_req)
+      assert filtered_events == []
+    end
+
+    test "no event_requests returns empty event_reports" do
+      req = %IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 0x0006, attribute: 0x0000}]
+      }
+
+      %IM.ReportData{event_reports: events} = Router.handle_read(TestLight, req)
+      assert events == []
+    end
+
+    test "mixed attribute and event read" do
+      req = %IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 0x0006, attribute: 0x0000}],
+        event_requests: [%{endpoint: 0, cluster: 0x0028, event: 0x00}]
+      }
+
+      %IM.ReportData{attribute_reports: attrs, event_reports: events} =
+        Router.handle_read(TestLight, req)
+
+      assert length(attrs) == 1
+      assert length(events) >= 1
     end
   end
 

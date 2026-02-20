@@ -18,4 +18,28 @@ defmodule Matterlix.Cluster.BasicInformation do
   attribute 0x0009, :software_version, :uint32, default: 1
   attribute 0x000A, :software_version_string, :string, default: "1.0.0"
   attribute 0xFFFD, :cluster_revision, :uint16, default: 1
+
+  event 0x00, :start_up, :critical
+  event 0x01, :shut_down, :critical
+
+  def init(opts) do
+    {:ok, state} = super(opts)
+
+    # Emit StartUp event with software_version
+    sw_version = Map.get(state, :software_version, 1)
+    event_store = Keyword.get(opts, :event_store)
+
+    if event_store && Process.whereis(event_store) do
+      Matterlix.IM.EventStore.emit(
+        event_store,
+        Keyword.get(opts, :endpoint, 0),
+        0x0028,
+        0x00,
+        2,
+        %{0 => {:uint, sw_version}}
+      )
+    end
+
+    {:ok, state}
+  end
 end

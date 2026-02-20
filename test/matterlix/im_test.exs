@@ -135,6 +135,31 @@ defmodule Matterlix.IMTest do
       {:ok, decoded} = IM.decode(:read_request, IM.encode(msg))
       assert decoded.data_version_filters == []
     end
+
+    test "encode/decode with event_requests" do
+      msg = %IM.ReadRequest{
+        event_requests: [%{endpoint: 0, cluster: 0x0028, event: 0x00}],
+        fabric_filtered: true
+      }
+
+      {:ok, decoded} = IM.decode(:read_request, IM.encode(msg))
+      assert [path] = decoded.event_requests
+      assert path.endpoint == 0
+      assert path.cluster == 0x0028
+      assert path.event == 0x00
+    end
+
+    test "encode/decode with event_filters" do
+      msg = %IM.ReadRequest{
+        event_requests: [%{endpoint: 0, cluster: 0x0028}],
+        event_filters: [%{event_min: 42}],
+        fabric_filtered: true
+      }
+
+      {:ok, decoded} = IM.decode(:read_request, IM.encode(msg))
+      assert [filter] = decoded.event_filters
+      assert filter.event_min == 42
+    end
   end
 
   # ── ReportData ────────────────────────────────────────────────
@@ -188,6 +213,29 @@ defmodule Matterlix.IMTest do
       msg = %IM.ReportData{subscription_id: nil, attribute_reports: []}
       {:ok, decoded} = IM.decode(:report_data, IM.encode(msg))
       assert decoded.subscription_id == nil
+    end
+
+    test "encode/decode with event reports" do
+      msg = %IM.ReportData{
+        event_reports: [
+          {:data, %{
+            path: %{endpoint: 0, cluster: 0x0028, event: 0x00},
+            event_number: 0,
+            priority: 2,
+            system_timestamp: 1_000_000,
+            data: %{0 => {:uint, 1}}
+          }}
+        ]
+      }
+
+      {:ok, decoded} = IM.decode(:report_data, IM.encode(msg))
+      assert [{:data, event}] = decoded.event_reports
+      assert event.path.endpoint == 0
+      assert event.path.cluster == 0x0028
+      assert event.path.event == 0x00
+      assert event.event_number == 0
+      assert event.priority == 2
+      assert event.system_timestamp == 1_000_000
     end
 
     test "multiple attribute reports" do

@@ -109,6 +109,10 @@ defmodule Matterlix.Device do
         {{ep_id, mod.cluster_name()}, :"#{env.module}.ep#{ep_id}.#{mod.cluster_name()}"}
       end
 
+    # Add event_store process name
+    event_store_name = :"#{env.module}.ep0.event_store"
+    name_lookup = Map.put(name_lookup, {0, :event_store}, event_store_name)
+
     # Endpoint IDs set
     endpoint_ids = MapSet.new(for {id, _opts, _clusters} <- all_endpoints, do: id)
 
@@ -164,20 +168,31 @@ defmodule Matterlix.Device do
 
   # Build child specs at compile time
   defp build_child_specs(device_module, all_endpoints, device_opts, parts_list, endpoint_server_lists) do
-    Enum.flat_map(all_endpoints, fn {ep_id, ep_opts, clusters} ->
-      Enum.map(clusters, fn cluster_mod ->
-        name = :"#{device_module}.ep#{ep_id}.#{cluster_mod.cluster_name()}"
+    event_store_name = :"#{device_module}.ep0.event_store"
 
-        init_opts =
-          [name: name, endpoint: ep_id] ++
-            cluster_init_opts(cluster_mod, ep_id, ep_opts, device_opts, parts_list, endpoint_server_lists)
+    event_store_spec = %{
+      id: event_store_name,
+      start: {Matterlix.IM.EventStore, :start_link, [[name: event_store_name]]}
+    }
 
-        %{
-          id: name,
-          start: {cluster_mod, :start_link, [init_opts]}
-        }
+    cluster_specs =
+      Enum.flat_map(all_endpoints, fn {ep_id, ep_opts, clusters} ->
+        Enum.map(clusters, fn cluster_mod ->
+          name = :"#{device_module}.ep#{ep_id}.#{cluster_mod.cluster_name()}"
+
+          init_opts =
+            [name: name, endpoint: ep_id, event_store: event_store_name] ++
+              cluster_init_opts(cluster_mod, ep_id, ep_opts, device_opts, parts_list, endpoint_server_lists)
+
+          %{
+            id: name,
+            start: {cluster_mod, :start_link, [init_opts]}
+          }
+        end)
       end)
-    end)
+
+    # EventStore must start before clusters so clusters can emit events in init
+    [event_store_spec | cluster_specs]
   end
 
   defp cluster_init_opts(Matterlix.Cluster.Descriptor, ep_id, ep_opts, _device_opts, parts_list, endpoint_server_lists) do

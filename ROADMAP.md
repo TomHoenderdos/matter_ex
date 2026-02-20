@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-28)
+## Completed Phases (1-29)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -30,16 +30,13 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 26 | suppress_response Handling | - |
 | 27 | Global Attributes (AttributeList, AcceptedCommandList, GeneratedCommandList, FeatureMap) | - |
 | 28 | DataVersion Tracking (per-cluster version, DataVersionFilter in ReadRequest) | - |
+| 29 | Event Reporting (EventStore, event macro, BasicInformation.StartUp, IM codec) | - |
 
-**Current: 739 tests, 0 failures**
+**Current: 757 tests, 0 failures**
 
 ---
 
 ## P2 — Spec compliance
-
-### Phase 29: Event Reporting
-
-Add `EventRequest`, `EventReport`, event storage, and cluster event emission. Required by some mandatory clusters (e.g. `BasicInformation.StartUp`).
 
 ---
 

@@ -26,7 +26,7 @@ defmodule Matterlix.ClusterTest do
 
     test "OnOff attribute_defs" do
       defs = OnOff.attribute_defs()
-      assert length(defs) == 6
+      assert length(defs) == 7
 
       on_off_attr = Enum.find(defs, &(&1.name == :on_off))
       assert on_off_attr.id == 0x0000
@@ -90,7 +90,7 @@ defmodule Matterlix.ClusterTest do
 
     test "LevelControl attribute_defs" do
       defs = LevelControl.attribute_defs()
-      assert length(defs) == 9
+      assert length(defs) == 10
 
       level = Enum.find(defs, &(&1.name == :current_level))
       assert level.id == 0x0000
@@ -116,7 +116,7 @@ defmodule Matterlix.ClusterTest do
 
     test "ColorControl attribute_defs" do
       defs = ColorControl.attribute_defs()
-      assert length(defs) == 14
+      assert length(defs) == 15
 
       assert Enum.find(defs, &(&1.name == :current_hue)).writable == true
       assert Enum.find(defs, &(&1.name == :color_mode)).writable == false
@@ -139,7 +139,7 @@ defmodule Matterlix.ClusterTest do
 
     test "TemperatureMeasurement attribute_defs" do
       defs = TemperatureMeasurement.attribute_defs()
-      assert length(defs) == 9
+      assert length(defs) == 10
       assert Enum.find(defs, &(&1.name == :measured_value)).default == 2000
       assert Enum.find(defs, &(&1.name == :measured_value)).writable == false
     end
@@ -155,7 +155,7 @@ defmodule Matterlix.ClusterTest do
 
     test "BooleanState attribute_defs" do
       defs = BooleanState.attribute_defs()
-      assert length(defs) == 6
+      assert length(defs) == 7
       assert Enum.find(defs, &(&1.name == :state_value)).default == false
       assert Enum.find(defs, &(&1.name == :state_value)).writable == false
     end
@@ -171,7 +171,7 @@ defmodule Matterlix.ClusterTest do
 
     test "Thermostat attribute_defs" do
       defs = Thermostat.attribute_defs()
-      assert length(defs) == 14
+      assert length(defs) == 15
 
       heat = Enum.find(defs, &(&1.name == :occupied_heating_setpoint))
       assert heat.id == 0x0012
@@ -224,6 +224,41 @@ defmodule Matterlix.ClusterTest do
       defs = OperationalCredentials.attribute_defs()
       assert Enum.find(defs, &(&1.name == :supported_fabrics)).default == 1
       assert Enum.find(defs, &(&1.name == :commissioned_fabrics)).default == 0
+    end
+  end
+
+  # ── Event declarations ───────────────────────────────────────
+
+  describe "event declarations" do
+    test "OnOff has no events" do
+      assert OnOff.event_defs() == []
+    end
+
+    test "BasicInformation has start_up and shut_down events" do
+      defs = BasicInformation.event_defs()
+      assert length(defs) == 2
+
+      start_up = Enum.find(defs, &(&1.name == :start_up))
+      assert start_up.id == 0x00
+      assert start_up.priority == 2
+
+      shut_down = Enum.find(defs, &(&1.name == :shut_down))
+      assert shut_down.id == 0x01
+      assert shut_down.priority == 2
+    end
+
+    test "OnOff event_list global attribute is empty" do
+      defs = OnOff.attribute_defs()
+      event_list = Enum.find(defs, &(&1.id == 0xFFFA))
+      assert event_list.name == :event_list
+      assert event_list.default == []
+    end
+
+    test "BasicInformation event_list contains event IDs" do
+      defs = BasicInformation.attribute_defs()
+      event_list = Enum.find(defs, &(&1.id == 0xFFFA))
+      assert event_list.name == :event_list
+      assert event_list.default == [0x00, 0x01]
     end
   end
 
@@ -784,7 +819,7 @@ defmodule Matterlix.ClusterTest do
 
     test "attribute_defs" do
       defs = NetworkCommissioning.attribute_defs()
-      assert length(defs) == 13
+      assert length(defs) == 14
 
       assert Enum.find(defs, &(&1.name == :max_networks)).default == 1
       assert Enum.find(defs, &(&1.name == :interface_enabled)).default == true
@@ -869,7 +904,7 @@ defmodule Matterlix.ClusterTest do
 
     test "attribute_defs" do
       defs = GroupKeyManagement.attribute_defs()
-      assert length(defs) == 9
+      assert length(defs) == 10
 
       assert Enum.find(defs, &(&1.name == :group_key_map)).writable == true
       assert Enum.find(defs, &(&1.name == :group_table)).writable == false

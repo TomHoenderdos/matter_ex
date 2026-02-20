@@ -40,10 +40,17 @@ defmodule Matterlix.Cluster do
           params: keyword()
         }
 
+  @type event_def :: %{
+          id: non_neg_integer(),
+          name: atom(),
+          priority: non_neg_integer()
+        }
+
   @callback cluster_id() :: non_neg_integer()
   @callback cluster_name() :: atom()
   @callback attribute_defs() :: [attr_def()]
   @callback command_defs() :: [cmd_def()]
+  @callback event_defs() :: [event_def()]
   @callback handle_command(atom(), map(), map()) ::
               {:ok, term() | nil, map()} | {:error, atom()}
 
@@ -71,10 +78,11 @@ defmodule Matterlix.Cluster do
       @behaviour Matterlix.Cluster
       use GenServer
 
-      import Matterlix.Cluster, only: [attribute: 4, attribute: 5, command: 3, command: 4]
+      import Matterlix.Cluster, only: [attribute: 4, attribute: 5, command: 3, command: 4, event: 3]
 
       Module.register_attribute(__MODULE__, :matter_attributes, accumulate: true)
       Module.register_attribute(__MODULE__, :matter_commands, accumulate: true)
+      Module.register_attribute(__MODULE__, :matter_events, accumulate: true)
 
       @cluster_id unquote(opts[:id])
       @cluster_name unquote(opts[:name])
@@ -155,6 +163,7 @@ defmodule Matterlix.Cluster do
   defmacro __before_compile__(env) do
     user_attributes = Module.get_attribute(env.module, :matter_attributes) |> Enum.reverse()
     commands = Module.get_attribute(env.module, :matter_commands) |> Enum.reverse()
+    events = Module.get_attribute(env.module, :matter_events) |> Enum.reverse()
 
     # Auto-generate global attributes that aren't already declared
     declared_ids = MapSet.new(user_attributes, & &1.id)
@@ -170,12 +179,16 @@ defmodule Matterlix.Cluster do
     # Compute accepted_command_list: all command IDs
     accepted_cmd_ids = commands |> Enum.map(& &1.id) |> Enum.sort()
 
+    # Compute event_list: all event IDs
+    event_ids = events |> Enum.map(& &1.id) |> Enum.sort()
+
     # Build the global attributes to inject
     global_attrs =
       []
       |> maybe_add_global(declared_ids, 0xFFFC, :feature_map, :uint32, 0)
       |> maybe_add_global(declared_ids, 0xFFF8, :generated_command_list, :list, generated_cmd_ids)
       |> maybe_add_global(declared_ids, 0xFFF9, :accepted_command_list, :list, accepted_cmd_ids)
+      |> maybe_add_global(declared_ids, 0xFFFA, :event_list, :list, event_ids)
 
     # AttributeList must include all IDs (user + globals + itself)
     all_attr_ids_so_far =
@@ -204,6 +217,9 @@ defmodule Matterlix.Cluster do
 
       @impl Matterlix.Cluster
       def command_defs, do: unquote(Macro.escape(commands))
+
+      @impl Matterlix.Cluster
+      def event_defs, do: unquote(Macro.escape(events))
     end
   end
 
@@ -257,6 +273,20 @@ defmodule Matterlix.Cluster do
         name: unquote(name),
         params: unquote(params),
         response_id: unquote(Keyword.get(opts, :response_id))
+      }
+    end
+  end
+
+  @priority_map %{debug: 0, info: 1, critical: 2}
+
+  defmacro event(id, name, priority) do
+    priority_val = Map.fetch!(@priority_map, priority)
+
+    quote do
+      @matter_events %{
+        id: unquote(id),
+        name: unquote(name),
+        priority: unquote(priority_val)
       }
     end
   end
