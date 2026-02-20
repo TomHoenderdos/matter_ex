@@ -458,6 +458,159 @@ defmodule Matterlix.MessageHandlerTest do
     end
   end
 
+  # ── suppress_response (Phase 26) ────────────────────────────────
+
+  describe "suppress_response handling" do
+    setup do
+      start_supervised!(TestLight)
+
+      handler = new_handler(device: TestLight)
+      {comm_session, handler} = run_pase_handshake(handler)
+      %{handler: handler, comm_session: comm_session}
+    end
+
+    test "WriteRequest with suppress_response skips WriteResponse, sends ACK",
+         %{handler: handler, comm_session: comm_session} do
+      write_req = IM.encode(%IM.WriteRequest{
+        suppress_response: true,
+        write_requests: [
+          %{path: %{endpoint: 1, cluster: 6, attribute: 0}, value: {:bool, true}, version: 0}
+        ]
+      })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :write_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: write_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      {actions, _handler} = MessageHandler.handle_frame(handler, frame)
+
+      # Should get a standalone ACK, not a WriteResponse
+      send_actions = Enum.filter(actions, &match?({:send, _}, &1))
+      assert length(send_actions) == 1
+
+      [{:send, ack_frame}] = send_actions
+      {:ok, msg, _comm_session} = SecureChannel.open(comm_session, ack_frame)
+
+      # Verify it's a standalone ACK (secure_channel protocol), not a WriteResponse
+      assert msg.proto.opcode == ProtocolID.opcode(:secure_channel, :standalone_ack)
+      assert msg.proto.protocol_id == ProtocolID.protocol_id(:secure_channel)
+    end
+
+    test "InvokeRequest with suppress_response skips InvokeResponse, sends ACK",
+         %{handler: handler, comm_session: comm_session} do
+      invoke_req = IM.encode(%IM.InvokeRequest{
+        suppress_response: true,
+        invoke_requests: [
+          %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
+        ]
+      })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :invoke_request),
+        exchange_id: 2,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: invoke_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      {actions, _handler} = MessageHandler.handle_frame(handler, frame)
+
+      send_actions = Enum.filter(actions, &match?({:send, _}, &1))
+      assert length(send_actions) == 1
+
+      [{:send, ack_frame}] = send_actions
+      {:ok, msg, _comm_session} = SecureChannel.open(comm_session, ack_frame)
+
+      assert msg.proto.opcode == ProtocolID.opcode(:secure_channel, :standalone_ack)
+    end
+
+    test "InvokeRequest with suppress_response still executes the command",
+         %{handler: handler, comm_session: comm_session} do
+      # Invoke "on" command with suppress_response
+      invoke_req = IM.encode(%IM.InvokeRequest{
+        suppress_response: true,
+        invoke_requests: [
+          %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
+        ]
+      })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :invoke_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: invoke_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      {_actions, handler} = MessageHandler.handle_frame(handler, frame)
+
+      # Read the attribute to verify the command was executed
+      read_req = IM.encode(%IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
+      })
+
+      proto2 = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :read_request),
+        exchange_id: 2,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: read_req
+      }
+
+      {frame2, comm_session} = SecureChannel.seal(comm_session, proto2)
+      {actions, _handler} = MessageHandler.handle_frame(handler, frame2)
+
+      [{:send, resp_frame} | _] = actions
+      {:ok, msg, _comm_session} = SecureChannel.open(comm_session, resp_frame)
+      {:ok, report} = IM.decode(:report_data, msg.proto.payload)
+
+      [{:data, data}] = report.attribute_reports
+      assert data.value == true
+    end
+
+    test "WriteRequest without suppress_response still sends WriteResponse",
+         %{handler: handler, comm_session: comm_session} do
+      write_req = IM.encode(%IM.WriteRequest{
+        suppress_response: false,
+        write_requests: [
+          %{path: %{endpoint: 1, cluster: 6, attribute: 0}, value: {:bool, true}, version: 0}
+        ]
+      })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :write_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: write_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      {actions, _handler} = MessageHandler.handle_frame(handler, frame)
+
+      send_actions = Enum.filter(actions, &match?({:send, _}, &1))
+      assert length(send_actions) == 1
+
+      [{:send, resp_frame}] = send_actions
+      {:ok, msg, _comm_session} = SecureChannel.open(comm_session, resp_frame)
+
+      # Should be a WriteResponse, not a standalone ACK
+      assert msg.proto.opcode == ProtocolID.opcode(:interaction_model, :write_response)
+    end
+  end
+
   # ── Subscription lifecycle (Phase 25) ───────────────────────────
 
   describe "subscription lifecycle" do

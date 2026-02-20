@@ -182,7 +182,17 @@ defmodule Matterlix.ExchangeManager do
 
     case IM.decode(opcode, proto.payload) do
       {:ok, request} ->
+        suppress? = Map.get(request, :suppress_response, false)
+
         case response_opcode(opcode) do
+          {:ok, resp_opcode_name} when suppress? ->
+            # suppress_response set — execute handler but skip IM response, just ACK
+            Logger.debug("suppress_response: executing #{inspect(opcode)} without IM reply")
+            state.handler.(opcode, request)
+            state = close_exchange(state, proto.exchange_id)
+            actions = if proto.needs_ack, do: [{:ack, build_standalone_ack(proto, message_counter)}], else: []
+            {actions, state}
+
           {:ok, resp_opcode_name} ->
             dispatch_and_reply(state, proto, opcode, request, resp_opcode_name, message_counter)
 

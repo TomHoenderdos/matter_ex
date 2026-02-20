@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-25)
+## Completed Phases (1-26)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -27,16 +27,9 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 23 | Operational mDNS (`_matter._tcp`) | - |
 | 24 | CASE Session Resumption (graceful fallback to full CASE) | - |
 | 25 | Subscription Lifecycle (min_interval throttle, give_up cleanup, session close) | - |
+| 26 | suppress_response Handling | - |
 
-**Current: 719 tests, 0 failures**
-
----
-
-## P1 — Required for robust operation
-
-### Phase 26: suppress_response Handling
-
-Check `suppress_response` flag on incoming IM messages. When set, skip sending `StatusResponse`. Prevents spurious frames that confuse chip-tool.
+**Current: 723 tests, 0 failures**
 
 ---
 
