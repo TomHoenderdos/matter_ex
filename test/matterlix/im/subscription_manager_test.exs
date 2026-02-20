@@ -132,5 +132,126 @@ defmodule Matterlix.IM.SubscriptionManagerTest do
       mgr = SubscriptionManager.record_report(mgr, 999, %{}, 0)
       refute SubscriptionManager.active?(mgr)
     end
+
+    test "record_report does not update last_sent_at" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 5, 10)
+
+      # Simulate a send at time 50
+      mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, 50)
+
+      # record_report at time 53 should not update last_sent_at
+      mgr = SubscriptionManager.record_report(mgr, sub_id, %{{1, 6, 0} => true}, 53)
+
+      sub = SubscriptionManager.get(mgr, sub_id)
+      assert sub.last_report_at == 53
+      assert sub.last_sent_at == 50
+    end
+  end
+
+  describe "record_sent/4" do
+    test "updates last_sent_at, last_report_at, and last_values" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 5, 10)
+
+      values = %{{1, 6, 0} => true}
+      now = System.monotonic_time(:second) + 100
+
+      mgr = SubscriptionManager.record_sent(mgr, sub_id, values, now)
+
+      sub = SubscriptionManager.get(mgr, sub_id)
+      assert sub.last_sent_at == now
+      assert sub.last_report_at == now
+      assert sub.last_values == values
+    end
+
+    test "recording sent for non-existent ID is no-op" do
+      mgr = SubscriptionManager.new()
+      mgr = SubscriptionManager.record_sent(mgr, 999, %{}, 0)
+      refute SubscriptionManager.active?(mgr)
+    end
+  end
+
+  describe "throttled?/3" do
+    test "returns false when min_interval is 0" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
+
+      refute SubscriptionManager.throttled?(mgr, sub_id, System.monotonic_time(:second))
+    end
+
+    test "returns false for freshly created subscription (no report sent yet)" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 60, 120)
+
+      # Even with large min_interval, initial report is never throttled
+      # because last_sent_at starts at 0
+      refute SubscriptionManager.throttled?(mgr, sub_id, System.monotonic_time(:second))
+    end
+
+    test "returns true when min_interval has not elapsed since last send" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 10, 60)
+
+      # Simulate having sent a report at time 100
+      mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, 100)
+
+      # Only 5 seconds elapsed since send, min_interval is 10
+      assert SubscriptionManager.throttled?(mgr, sub_id, 105)
+    end
+
+    test "returns false when min_interval has elapsed since last send" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 10, 60)
+
+      # Simulate having sent a report at time 100
+      mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, 100)
+
+      # 15 seconds elapsed since send, min_interval is 10
+      refute SubscriptionManager.throttled?(mgr, sub_id, 115)
+    end
+
+    test "returns false for non-existent subscription" do
+      mgr = SubscriptionManager.new()
+      refute SubscriptionManager.throttled?(mgr, 999, 0)
+    end
+
+    test "respects record_sent updating last_sent_at" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 10, 60)
+
+      send_time = 100
+
+      # Send a report at send_time
+      mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, send_time)
+
+      # 5 seconds after send — throttled
+      assert SubscriptionManager.throttled?(mgr, sub_id, send_time + 5)
+
+      # 10 seconds after send — not throttled
+      refute SubscriptionManager.throttled?(mgr, sub_id, send_time + 10)
+    end
+  end
+
+  describe "unsubscribe_all/1" do
+    test "removes all subscriptions" do
+      mgr = SubscriptionManager.new()
+      {_id1, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
+      {_id2, mgr} = SubscriptionManager.subscribe(mgr, @paths, 10, 120)
+      {_id3, mgr} = SubscriptionManager.subscribe(mgr, @paths, 5, 30)
+
+      assert SubscriptionManager.active?(mgr)
+      assert length(SubscriptionManager.subscriptions(mgr)) == 3
+
+      mgr = SubscriptionManager.unsubscribe_all(mgr)
+      refute SubscriptionManager.active?(mgr)
+      assert SubscriptionManager.subscriptions(mgr) == []
+    end
+
+    test "unsubscribe_all on empty state is no-op" do
+      mgr = SubscriptionManager.new()
+      mgr = SubscriptionManager.unsubscribe_all(mgr)
+      refute SubscriptionManager.active?(mgr)
+    end
   end
 end

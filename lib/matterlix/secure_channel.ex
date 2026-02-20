@@ -31,7 +31,7 @@ defmodule Matterlix.SecureChannel do
       session_id: session.peer_session_id,
       message_counter: counter_val,
       source_node_id: if(session.local_node_id != 0, do: session.local_node_id, else: nil),
-      privacy: true,
+      privacy: false,
       session_type: :unicast
     }
 

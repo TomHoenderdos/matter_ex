@@ -223,11 +223,18 @@ defmodule Matterlix.MDNS do
     hostname = Keyword.get(opts, :hostname) || generate_hostname()
     addresses = Keyword.get(opts, :addresses) || detect_addresses()
 
+    reuseport =
+      case :os.type() do
+        {:unix, :darwin} -> [{:raw, 0xFFFF, 0x0200, <<1::native-32>>}]
+        {:unix, _linux}  -> [{:raw, 1, 15, <<1::native-32>>}]
+        _other           -> []
+      end
+
     socket_opts = [
       :binary,
       {:active, true},
       {:reuseaddr, true}
-    ]
+    ] ++ reuseport
 
     # Add multicast options only for the standard mDNS port
     socket_opts = if mdns_port == @mdns_port do

@@ -124,7 +124,7 @@ defmodule Matterlix.SecureChannelTest do
       # Parse header to verify structure
       {:ok, header, _rest} = Matterlix.Protocol.MessageCodec.Header.decode(frame)
       assert header.session_id == 2  # peer_session_id
-      assert header.privacy == true
+      assert header.privacy == false
     end
   end
 

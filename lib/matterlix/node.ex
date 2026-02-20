@@ -121,6 +121,7 @@ defmodule Matterlix.Node do
   @impl true
   def handle_info({:udp, _socket, ip, port, data}, state) do
     peer = {ip, port}
+    Logger.debug("UDP RX #{byte_size(data)}B from #{:inet.ntoa(ip)}:#{port}: #{Base.encode16(binary_part(data, 0, min(32, byte_size(data))))}")
     {actions, handler} = MessageHandler.handle_frame(state.handler, data)
     state = %{state | handler: handler, peer: peer}
     state = process_actions(actions, state)
@@ -189,6 +190,10 @@ defmodule Matterlix.Node do
 
         {:session_established, session_id} ->
           Logger.info("Session #{session_id} established with peer #{inspect(state.peer)}")
+          state
+
+        {:session_closed, session_id} ->
+          Logger.info("Session #{session_id} closed")
           state
 
         {:error, reason} ->
@@ -264,6 +269,7 @@ defmodule Matterlix.Node do
   end
 
   defp send_to_peer(%State{socket: socket, peer: {ip, port}}, frame) do
+    Logger.debug("UDP TX #{byte_size(frame)}B to #{:inet.ntoa(ip)}:#{port}: #{Base.encode16(binary_part(frame, 0, min(32, byte_size(frame))))}")
     :gen_udp.send(socket, ip, port, frame)
   end
 

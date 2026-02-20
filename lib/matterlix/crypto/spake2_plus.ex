@@ -19,7 +19,7 @@ defmodule Matterlix.Crypto.SPAKE2Plus do
     0x07D60AA6BFADE45008A636337F5168C64D9BD36034808CD564490B1E656EDBE7
   }
 
-  @default_context "CHIP PASE V1 Commissioning"
+  @default_context "CHIP PAKE V1 Commissioning"
 
   @doc """
   Compute SPAKE2+ verifier from passcode (done once, stored on device).
@@ -31,7 +31,8 @@ defmodule Matterlix.Crypto.SPAKE2Plus do
   @spec compute_verifier(non_neg_integer(), binary(), pos_integer()) :: map()
   def compute_verifier(passcode, salt, iterations) do
     # PBKDF2 to derive 80 bytes: w0s (40 bytes) || w1s (40 bytes)
-    ws = KDF.pbkdf2_sha256(Integer.to_string(passcode), salt, iterations, 80)
+    # Passcode encoded as uint32 little-endian per Matter spec section 3.10.1
+    ws = KDF.pbkdf2_sha256(<<passcode::unsigned-little-32>>, salt, iterations, 80)
     w0s = binary_part(ws, 0, 40)
     w1s = binary_part(ws, 40, 40)
 

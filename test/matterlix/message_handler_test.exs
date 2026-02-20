@@ -458,6 +458,122 @@ defmodule Matterlix.MessageHandlerTest do
     end
   end
 
+  # ── Subscription lifecycle (Phase 25) ───────────────────────────
+
+  describe "subscription lifecycle" do
+    setup do
+      start_supervised!(TestLight)
+
+      handler = new_handler(device: TestLight)
+      {comm_session, handler} = run_pase_handshake(handler)
+      %{handler: handler, comm_session: comm_session}
+    end
+
+    test "min_interval throttle suppresses early reports",
+         %{handler: handler, comm_session: comm_session} do
+      # Subscribe with min_interval=60 seconds, max_interval=0 (immediately due)
+      sub_req = IM.encode(%IM.SubscribeRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+        min_interval: 60,
+        max_interval: 0
+      })
+
+      proto = %ProtoHeader{
+        initiator: true, needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 1, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: sub_req
+      }
+
+      {frame, _comm_session} = SecureChannel.seal(comm_session, proto)
+      {_actions, handler} = MessageHandler.handle_frame(handler, frame)
+
+      # First check — initial values differ from empty last_values, sends report
+      {actions1, handler} = MessageHandler.check_subscriptions(handler)
+      send_actions1 = Enum.filter(actions1, &match?({:send, _}, &1))
+      assert length(send_actions1) == 1
+
+      # Toggle the light so values change
+      on_off_name = TestLight.__process_name__(1, :on_off)
+      GenServer.call(on_off_name, {:write_attribute, :on_off, true})
+
+      # Second check — values changed BUT min_interval (60s) not elapsed
+      {actions2, _handler} = MessageHandler.check_subscriptions(handler)
+      send_actions2 = Enum.filter(actions2, &match?({:send, _}, &1))
+      assert send_actions2 == []
+    end
+
+    test "min_interval=0 allows immediate reports",
+         %{handler: handler, comm_session: comm_session} do
+      sub_req = IM.encode(%IM.SubscribeRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+        min_interval: 0,
+        max_interval: 0
+      })
+
+      proto = %ProtoHeader{
+        initiator: true, needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 1, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: sub_req
+      }
+
+      {frame, _comm_session} = SecureChannel.seal(comm_session, proto)
+      {_actions, handler} = MessageHandler.handle_frame(handler, frame)
+
+      # First report
+      {actions1, handler} = MessageHandler.check_subscriptions(handler)
+      assert length(Enum.filter(actions1, &match?({:send, _}, &1))) == 1
+
+      # Toggle value
+      on_off_name = TestLight.__process_name__(1, :on_off)
+      GenServer.call(on_off_name, {:write_attribute, :on_off, true})
+
+      # Second report — min_interval=0 means no throttle
+      Process.sleep(1)
+      {actions2, _handler} = MessageHandler.check_subscriptions(handler)
+      assert length(Enum.filter(actions2, &match?({:send, _}, &1))) == 1
+    end
+
+    test "close_session removes session and subscriptions",
+         %{handler: handler, comm_session: comm_session} do
+      # Subscribe
+      sub_req = IM.encode(%IM.SubscribeRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+        min_interval: 0,
+        max_interval: 60
+      })
+
+      proto = %ProtoHeader{
+        initiator: true, needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 1, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: sub_req
+      }
+
+      {frame, _comm_session} = SecureChannel.seal(comm_session, proto)
+      {_actions, handler} = MessageHandler.handle_frame(handler, frame)
+
+      # Verify session exists with active subscription
+      assert Map.has_key?(handler.sessions, 1)
+      assert Matterlix.IM.SubscriptionManager.active?(handler.sessions[1].subscription_mgr)
+
+      # Close session
+      {actions, handler} = MessageHandler.close_session(handler, 1)
+      assert [{:session_closed, 1}] = actions
+      refute Map.has_key?(handler.sessions, 1)
+
+      # check_subscriptions produces nothing (no sessions)
+      {actions, _handler} = MessageHandler.check_subscriptions(handler)
+      assert actions == []
+    end
+
+    test "close_session for non-existent session is no-op", %{handler: handler} do
+      {actions, _handler} = MessageHandler.close_session(handler, 999)
+      assert actions == []
+    end
+  end
+
   # ── Session management ──────────────────────────────────────────
 
   describe "session management" do

@@ -136,7 +136,14 @@ defmodule Matterlix.IM.Router do
                      }}
 
                   {:ok, response_fields} ->
-                    {:command, %{path: invoke.path, fields: response_fields}}
+                    response_path =
+                      if cmd_def[:response_id] do
+                        Map.put(invoke.path, :command, cmd_def.response_id)
+                      else
+                        invoke.path
+                      end
+
+                    {:command, %{path: response_path, fields: response_fields}}
 
                   {:error, reason} ->
                     {:status, command_error_status(invoke.path, reason)}
@@ -277,6 +284,7 @@ defmodule Matterlix.IM.Router do
   defp to_tlv(:uint8, value), do: {:uint, value}
   defp to_tlv(:uint16, value), do: {:uint, value}
   defp to_tlv(:uint32, value), do: {:uint, value}
+  defp to_tlv(:uint64, value), do: {:uint, value}
   defp to_tlv(:int8, value), do: {:int, value}
   defp to_tlv(:int16, value), do: {:int, value}
   defp to_tlv(:int32, value), do: {:int, value}
@@ -285,6 +293,7 @@ defmodule Matterlix.IM.Router do
   defp to_tlv(:enum8, value), do: {:uint, value}
   defp to_tlv(:bitmap8, value), do: {:uint, value}
   defp to_tlv(:bitmap16, value), do: {:uint, value}
+  defp to_tlv(:struct, value) when is_map(value), do: {:struct, value}
   defp to_tlv(:list, value), do: {:array, Enum.map(value, &{:uint, &1})}
   defp to_tlv(_type, value), do: {:uint, value}
 

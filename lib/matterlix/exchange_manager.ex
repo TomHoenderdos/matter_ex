@@ -25,6 +25,8 @@ defmodule Matterlix.ExchangeManager do
     | {:schedule_mrp, non_neg_integer(), non_neg_integer(), non_neg_integer()}
     | {:ack, non_neg_integer()}
 
+  require Logger
+
   @type exchange :: %{
     role: :initiator | :responder,
     protocol: atom()
@@ -84,7 +86,8 @@ defmodule Matterlix.ExchangeManager do
       {:interaction_model, im_opcode} ->
         handle_im_message(state, proto, im_opcode, message_counter)
 
-      _ ->
+      other ->
+        Logger.debug("Unsupported protocol/opcode: #{inspect(other)}")
         {[{:error, :unsupported_protocol}], state}
     end
   end
@@ -190,7 +193,8 @@ defmodule Matterlix.ExchangeManager do
             {actions, state}
         end
 
-      {:error, _reason} ->
+      {:error, reason} ->
+        Logger.debug("IM.decode failed for opcode #{inspect(opcode)}: #{inspect(reason)}, payload: #{Base.encode16(proto.payload)}")
         state = close_exchange(state, proto.exchange_id)
         actions = if proto.needs_ack, do: [{:ack, build_standalone_ack(proto, message_counter)}], else: []
         {[{:error, :decode_failed} | actions], state}

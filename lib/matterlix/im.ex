@@ -260,7 +260,7 @@ defmodule Matterlix.IM do
 
     map =
       if req.attribute_paths != [] do
-        paths = Enum.map(req.attribute_paths, &{:struct, encode_attribute_path(&1)})
+        paths = Enum.map(req.attribute_paths, &{:list, encode_attribute_path(&1)})
         Map.put(map, 0, {:array, paths})
       else
         map
@@ -339,7 +339,7 @@ defmodule Matterlix.IM do
 
     map =
       if msg.attribute_paths != [] do
-        paths = Enum.map(msg.attribute_paths, &{:struct, encode_attribute_path(&1)})
+        paths = Enum.map(msg.attribute_paths, &{:list, encode_attribute_path(&1)})
         Map.put(map, 3, {:array, paths})
       else
         map
@@ -386,7 +386,7 @@ defmodule Matterlix.IM do
   defp encode_attribute_data(data) do
     %{
       0 => {:uint, data.version},
-      1 => {:struct, encode_attribute_path(data.path)},
+      1 => {:list, encode_attribute_path(data.path)},
       2 => data.value
     }
   end
@@ -400,13 +400,13 @@ defmodule Matterlix.IM do
         else: status_ib
 
     %{
-      0 => {:struct, encode_attribute_path(status.path)},
+      0 => {:list, encode_attribute_path(status.path)},
       1 => {:struct, status_ib}
     }
   end
 
   defp encode_command_data(data) do
-    map = %{0 => {:struct, encode_command_path(data.path)}}
+    map = %{0 => {:list, encode_command_path(data.path)}}
     map = if data[:fields], do: Map.put(map, 1, {:struct, data.fields}), else: map
     map
   end
@@ -428,7 +428,7 @@ defmodule Matterlix.IM do
         else: status_ib
 
     %{
-      0 => {:struct, encode_command_path(status.path)},
+      0 => {:list, encode_command_path(status.path)},
       1 => {:struct, status_ib}
     }
   end

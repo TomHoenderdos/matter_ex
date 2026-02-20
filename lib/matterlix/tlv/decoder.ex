@@ -108,7 +108,7 @@ defmodule Matterlix.TLV.Decoder do
 
   defp decode_value(0x15, rest), do: decode_container_map(rest, %{})
   defp decode_value(0x16, rest), do: decode_container_list(rest, [])
-  defp decode_value(0x17, rest), do: decode_container_list(rest, [])
+  defp decode_value(0x17, rest), do: decode_container_map(rest, %{})
 
   ## Container helpers
 

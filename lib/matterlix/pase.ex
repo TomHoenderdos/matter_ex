@@ -202,7 +202,8 @@ defmodule Matterlix.PASE do
         %{iterations: iterations, salt: salt} = msg.pbkdf_parameters
 
         # Derive w0 and w1 from passcode using PBKDF parameters from device
-        ws = KDF.pbkdf2_sha256(Integer.to_string(pase.passcode), salt, iterations, 80)
+        # Passcode encoded as uint32 little-endian per Matter spec section 3.10.1
+        ws = KDF.pbkdf2_sha256(<<pase.passcode::unsigned-little-32>>, salt, iterations, 80)
         w0s = binary_part(ws, 0, 40)
         w1s = binary_part(ws, 40, 40)
 
@@ -295,11 +296,15 @@ defmodule Matterlix.PASE do
   # For the first call (request only), response is nil.
   # For the second call (commissioner updating context), first arg is the
   # existing hash from the request we sent, second is the response we received.
+  @pake_context "CHIP PAKE V1 Commissioning"
+
+  defp hash_context(first, second \\ nil)
+
   defp hash_context(first, nil) do
-    :crypto.hash(:sha256, first)
+    :crypto.hash(:sha256, @pake_context <> first)
   end
 
   defp hash_context(first, second) when is_binary(first) and is_binary(second) do
-    :crypto.hash(:sha256, first <> second)
+    :crypto.hash(:sha256, @pake_context <> first <> second)
   end
 end

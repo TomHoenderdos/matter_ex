@@ -296,17 +296,17 @@ defmodule Matterlix.TLVTest do
 
   describe "lists" do
     test "empty list" do
-      assert %{1 => []} == roundtrip(%{1 => {:list, []}})
+      assert %{1 => %{}} == roundtrip(%{1 => {:list, []}})
     end
 
     test "list with anonymous elements" do
       input = %{1 => {:list, [{:uint, 10}, {:string, "hi"}]}}
-      assert %{1 => [10, "hi"]} == roundtrip(input)
+      assert %{1 => %{0 => 10, 1 => "hi"}} == roundtrip(input)
     end
 
     test "list with tagged elements (map form)" do
       input = %{1 => {:list, %{0 => {:uint, 10}, 1 => {:string, "hi"}}}}
-      assert %{1 => [10, "hi"]} == roundtrip(input)
+      assert %{1 => %{0 => 10, 1 => "hi"}} == roundtrip(input)
     end
   end
 

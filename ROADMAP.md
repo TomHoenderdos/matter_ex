@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-24)
+## Completed Phases (1-25)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -26,18 +26,13 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 22 | Real NOC Parsing (X.509 DER with Matter OIDs) | - |
 | 23 | Operational mDNS (`_matter._tcp`) | - |
 | 24 | CASE Session Resumption (graceful fallback to full CASE) | - |
+| 25 | Subscription Lifecycle (min_interval throttle, give_up cleanup, session close) | - |
 
-**Current: 704 tests, 0 failures, 0 warnings**
+**Current: 719 tests, 0 failures**
 
 ---
 
 ## P1 — Required for robust operation
-
-### Phase 25: Subscription Lifecycle
-
-- Terminate subscriptions when MRP retransmissions exhaust (`give_up`)
-- Enforce `min_interval` throttle on change-triggered reports
-- Clean up subscriptions when sessions disconnect
 
 ### Phase 26: suppress_response Handling
 

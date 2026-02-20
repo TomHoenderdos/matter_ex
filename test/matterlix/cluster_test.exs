@@ -169,8 +169,9 @@ defmodule Matterlix.ClusterTest do
 
     test "GeneralCommissioning command_defs" do
       defs = GeneralCommissioning.command_defs()
-      assert length(defs) == 2
+      assert length(defs) == 3
       assert Enum.find(defs, &(&1.name == :arm_fail_safe)).id == 0x00
+      assert Enum.find(defs, &(&1.name == :set_regulatory_config)).id == 0x02
       assert Enum.find(defs, &(&1.name == :commissioning_complete)).id == 0x04
     end
 

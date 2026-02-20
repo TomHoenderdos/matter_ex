@@ -60,7 +60,7 @@ defmodule Matterlix.Cluster do
       @behaviour Matterlix.Cluster
       use GenServer
 
-      import Matterlix.Cluster, only: [attribute: 4, attribute: 5, command: 3]
+      import Matterlix.Cluster, only: [attribute: 4, attribute: 5, command: 3, command: 4]
 
       Module.register_attribute(__MODULE__, :matter_attributes, accumulate: true)
       Module.register_attribute(__MODULE__, :matter_commands, accumulate: true)
@@ -179,7 +179,19 @@ defmodule Matterlix.Cluster do
       @matter_commands %{
         id: unquote(id),
         name: unquote(name),
-        params: unquote(params)
+        params: unquote(params),
+        response_id: nil
+      }
+    end
+  end
+
+  defmacro command(id, name, params, opts) do
+    quote do
+      @matter_commands %{
+        id: unquote(id),
+        name: unquote(name),
+        params: unquote(params),
+        response_id: unquote(Keyword.get(opts, :response_id))
       }
     end
   end

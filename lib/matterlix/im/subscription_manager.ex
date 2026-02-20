@@ -28,6 +28,7 @@ defmodule Matterlix.IM.SubscriptionManager do
     min_interval: non_neg_integer(),
     max_interval: non_neg_integer(),
     last_report_at: integer(),
+    last_sent_at: integer() | nil,
     last_values: map()
   }
 
@@ -62,6 +63,7 @@ defmodule Matterlix.IM.SubscriptionManager do
       min_interval: min_interval,
       max_interval: max_interval,
       last_report_at: now,
+      last_sent_at: nil,
       last_values: %{}
     }
 
@@ -106,9 +108,26 @@ defmodule Matterlix.IM.SubscriptionManager do
   end
 
   @doc """
-  Record that a report was sent for a subscription.
+  Check if a subscription is throttled by `min_interval`.
+
+  Returns `true` when the time since the last sent report is less than
+  `min_interval`, meaning a change-triggered report should be suppressed.
+  """
+  @spec throttled?(t(), non_neg_integer(), integer()) :: boolean()
+  def throttled?(%__MODULE__{} = state, sub_id, now) do
+    case Map.get(state.subscriptions, sub_id) do
+      nil -> false
+      %{min_interval: 0} -> false
+      %{last_sent_at: nil} -> false
+      sub -> now - sub.last_sent_at < sub.min_interval
+    end
+  end
+
+  @doc """
+  Record that a report was checked for a subscription.
 
   Updates `last_report_at` and `last_values` for change detection.
+  Does NOT update `last_sent_at` — use `record_sent/3` for that.
   """
   @spec record_report(t(), non_neg_integer(), map(), integer()) :: t()
   def record_report(%__MODULE__{} = state, sub_id, values, now) do
@@ -118,6 +137,23 @@ defmodule Matterlix.IM.SubscriptionManager do
 
       sub ->
         sub = %{sub | last_report_at: now, last_values: values}
+        %{state | subscriptions: Map.put(state.subscriptions, sub_id, sub)}
+    end
+  end
+
+  @doc """
+  Record that a report was actually sent for a subscription.
+
+  Updates `last_sent_at`, `last_report_at`, and `last_values`.
+  """
+  @spec record_sent(t(), non_neg_integer(), map(), integer()) :: t()
+  def record_sent(%__MODULE__{} = state, sub_id, values, now) do
+    case Map.get(state.subscriptions, sub_id) do
+      nil ->
+        state
+
+      sub ->
+        sub = %{sub | last_sent_at: now, last_report_at: now, last_values: values}
         %{state | subscriptions: Map.put(state.subscriptions, sub_id, sub)}
     end
   end
@@ -136,5 +172,13 @@ defmodule Matterlix.IM.SubscriptionManager do
   @spec active?(t()) :: boolean()
   def active?(%__MODULE__{} = state) do
     map_size(state.subscriptions) > 0
+  end
+
+  @doc """
+  Remove all subscriptions. Used for session cleanup.
+  """
+  @spec unsubscribe_all(t()) :: t()
+  def unsubscribe_all(%__MODULE__{} = state) do
+    %{state | subscriptions: %{}}
   end
 end

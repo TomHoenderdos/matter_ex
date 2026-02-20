@@ -43,11 +43,13 @@ defmodule Matterlix.MessageHandler do
     {:send, binary()}
     | {:schedule_mrp, non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer()}
     | {:session_established, non_neg_integer()}
+    | {:session_closed, non_neg_integer()}
 
   @type session_entry :: %{
     session: Session.t(),
     exchange_mgr: ExchangeManager.t(),
-    subscription_mgr: SubscriptionManager.t()
+    subscription_mgr: SubscriptionManager.t(),
+    exchange_to_sub: %{non_neg_integer() => non_neg_integer()}
   }
 
   @type t :: %__MODULE__{
@@ -148,7 +150,19 @@ defmodule Matterlix.MessageHandler do
 
           {:give_up, _exchange_id, mgr} ->
             Logger.warning("MRP gave up on session=#{session_id} exchange=#{exchange_id} after #{attempt + 1} attempts")
-            entry = %{entry | exchange_mgr: mgr}
+            exchange_to_sub = Map.get(entry, :exchange_to_sub, %{})
+
+            {sub_mgr, exchange_to_sub} =
+              case Map.pop(exchange_to_sub, exchange_id) do
+                {nil, exchange_to_sub} ->
+                  {entry.subscription_mgr, exchange_to_sub}
+
+                {sub_id, exchange_to_sub} ->
+                  Logger.info("Cleaning up subscription #{sub_id} after MRP give_up on exchange #{exchange_id}")
+                  {SubscriptionManager.unsubscribe(entry.subscription_mgr, sub_id), exchange_to_sub}
+              end
+
+            entry = %{entry | exchange_mgr: mgr, subscription_mgr: sub_mgr, exchange_to_sub: exchange_to_sub}
             sessions = Map.put(state.sessions, session_id, entry)
             {nil, %{state | sessions: sessions}}
 
@@ -169,6 +183,30 @@ defmodule Matterlix.MessageHandler do
   @spec update_case(t(), keyword()) :: t()
   def update_case(%__MODULE__{} = state, opts) do
     %{state | case_state: maybe_init_case(opts)}
+  end
+
+  @doc """
+  Close a session, removing it and all its subscriptions.
+
+  Returns `{actions, updated_state}` where actions may include
+  `{:session_closed, session_id}`.
+  """
+  @spec close_session(t(), non_neg_integer()) :: {[action()], t()}
+  def close_session(%__MODULE__{} = state, session_id) do
+    case Map.get(state.sessions, session_id) do
+      nil ->
+        {[], state}
+
+      entry ->
+        sub_count = map_size(entry.subscription_mgr.subscriptions)
+
+        if sub_count > 0 do
+          Logger.info("Closing session #{session_id}: removing #{sub_count} subscription(s)")
+        end
+
+        sessions = Map.delete(state.sessions, session_id)
+        {[{:session_closed, session_id}], %{state | sessions: sessions}}
+    end
   end
 
   # ── Plaintext path (PASE / CASE) ──────────────────────────────────
@@ -211,7 +249,7 @@ defmodule Matterlix.MessageHandler do
         handler = build_im_handler(state.device, session)
         mgr = ExchangeManager.new(handler: handler)
 
-        entry = %{session: session, exchange_mgr: mgr, subscription_mgr: SubscriptionManager.new()}
+        entry = %{session: session, exchange_mgr: mgr, subscription_mgr: SubscriptionManager.new(), exchange_to_sub: %{}}
         sessions = Map.put(state.sessions, session.local_session_id, entry)
 
         actions = [
@@ -250,7 +288,7 @@ defmodule Matterlix.MessageHandler do
             handler = build_im_handler(state.device, session)
             mgr = ExchangeManager.new(handler: handler)
 
-            entry = %{session: session, exchange_mgr: mgr, subscription_mgr: SubscriptionManager.new()}
+            entry = %{session: session, exchange_mgr: mgr, subscription_mgr: SubscriptionManager.new(), exchange_to_sub: %{}}
             sessions = Map.put(state.sessions, session.local_session_id, entry)
 
             # Reset CASE state for next handshake
@@ -318,12 +356,16 @@ defmodule Matterlix.MessageHandler do
     header = %Header{
       session_id: 0,
       message_counter: counter_val,
+      source_node_id: incoming_message.header.dest_node_id,
+      dest_node_id: incoming_message.header.source_node_id,
       privacy: false,
       session_type: :unicast
     }
 
     proto = %ProtoHeader{
       initiator: false,
+      needs_ack: true,
+      ack_counter: incoming_message.header.message_counter,
       opcode: resp_opcode,
       exchange_id: incoming_message.proto.exchange_id,
       protocol_id: 0x0000,
@@ -345,6 +387,7 @@ defmodule Matterlix.MessageHandler do
         case SecureChannel.open(session, frame) do
           {:ok, message, session} ->
             opcode = ProtocolID.opcode_name(message.proto.protocol_id, message.proto.opcode)
+            Logger.debug("Decrypted message: protocol=#{inspect(message.proto.protocol_id)} opcode=#{inspect(message.proto.opcode)} (#{inspect(opcode)}) payload=#{byte_size(message.proto.payload)}B exchange=#{message.proto.exchange_id}")
 
             # Pre-process subscribe_request: register subscription and inject temp handler
             {mgr, sub_mgr} = maybe_setup_subscription(mgr, sub_mgr, opcode, message.proto)
@@ -449,37 +492,51 @@ defmodule Matterlix.MessageHandler do
             {[], %{state | sessions: sessions}}
 
           {report_data, current_values} ->
-            # Check if values changed
-            if current_values == sub.last_values do
-              # No change — just update timer
-              sub_mgr = SubscriptionManager.record_report(entry.subscription_mgr, sub_id, current_values, now)
-              entry = %{entry | subscription_mgr: sub_mgr}
-              sessions = Map.put(state.sessions, session_id, entry)
-              {[], %{state | sessions: sessions}}
-            else
-              # Values changed — send report
-              payload = IM.encode(report_data)
-              im_protocol_id = ProtocolID.protocol_id(:interaction_model)
+            # Check if values changed and min_interval allows sending
+            cond do
+              current_values == sub.last_values ->
+                # No change — just update timer
+                sub_mgr = SubscriptionManager.record_report(entry.subscription_mgr, sub_id, current_values, now)
+                entry = %{entry | subscription_mgr: sub_mgr}
+                sessions = Map.put(state.sessions, session_id, entry)
+                {[], %{state | sessions: sessions}}
 
-              {proto, mrp_actions, mgr} = ExchangeManager.initiate(
-                entry.exchange_mgr,
-                im_protocol_id,
-                :report_data,
-                payload
-              )
+              SubscriptionManager.throttled?(entry.subscription_mgr, sub_id, now) ->
+                # Values changed but min_interval not elapsed — suppress
+                Logger.debug("Subscription #{sub_id}: suppressed report (min_interval throttle)")
+                sub_mgr = SubscriptionManager.record_report(entry.subscription_mgr, sub_id, sub.last_values, now)
+                entry = %{entry | subscription_mgr: sub_mgr}
+                sessions = Map.put(state.sessions, session_id, entry)
+                {[], %{state | sessions: sessions}}
 
-              {frame, session} = SecureChannel.seal(entry.session, proto)
+              true ->
+                # Values changed and min_interval allows — send report
+                payload = IM.encode(report_data)
+                im_protocol_id = ProtocolID.protocol_id(:interaction_model)
 
-              sub_mgr = SubscriptionManager.record_report(entry.subscription_mgr, sub_id, current_values, now)
-              entry = %{entry | session: session, exchange_mgr: mgr, subscription_mgr: sub_mgr}
-              sessions = Map.put(state.sessions, session_id, entry)
+                {proto, mrp_actions, mgr} = ExchangeManager.initiate(
+                  entry.exchange_mgr,
+                  im_protocol_id,
+                  :report_data,
+                  payload
+                )
 
-              send_actions = [{:send, frame}]
-              schedule_actions = Enum.map(mrp_actions, fn {:schedule_mrp, eid, attempt, timeout} ->
-                {:schedule_mrp, session_id, eid, attempt, timeout}
-              end)
+                {frame, session} = SecureChannel.seal(entry.session, proto)
 
-              {send_actions ++ schedule_actions, %{state | sessions: sessions}}
+                # Track exchange→subscription mapping for give_up cleanup
+                exchange_to_sub = Map.get(entry, :exchange_to_sub, %{})
+                exchange_to_sub = Map.put(exchange_to_sub, proto.exchange_id, sub_id)
+
+                sub_mgr = SubscriptionManager.record_sent(entry.subscription_mgr, sub_id, current_values, now)
+                entry = %{entry | session: session, exchange_mgr: mgr, subscription_mgr: sub_mgr, exchange_to_sub: exchange_to_sub}
+                sessions = Map.put(state.sessions, session_id, entry)
+
+                send_actions = [{:send, frame}]
+                schedule_actions = Enum.map(mrp_actions, fn {:schedule_mrp, eid, attempt, timeout} ->
+                  {:schedule_mrp, session_id, eid, attempt, timeout}
+                end)
+
+                {send_actions ++ schedule_actions, %{state | sessions: sessions}}
             end
         end
       end)
