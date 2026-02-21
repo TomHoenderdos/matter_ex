@@ -48,6 +48,7 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.AirQuality
   alias Matterlix.Cluster.PM25ConcentrationMeasurement
   alias Matterlix.Cluster.CarbonDioxideConcentrationMeasurement
+  alias Matterlix.Cluster.ICDManagement
   alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -2333,6 +2334,86 @@ defmodule Matterlix.ClusterTest do
 
       assert {:ok, 0.0} = GenServer.call(name, {:read_attribute, :measured_value})
       assert {:ok, 0} = GenServer.call(name, {:read_attribute, :level_indication})
+    end
+  end
+
+  # ── ICD Management Cluster ───────────────────────────────────
+
+  describe "ICDManagement" do
+    setup do
+      name = :"icd_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = ICDManagement.start_link(name: name)
+      %{name: name}
+    end
+
+    test "metadata" do
+      assert ICDManagement.cluster_id() == 0x0046
+      assert ICDManagement.cluster_name() == :icd_management
+    end
+
+    test "default values", %{name: name} do
+      assert {:ok, 300} = GenServer.call(name, {:read_attribute, :idle_mode_duration})
+      assert {:ok, 300} = GenServer.call(name, {:read_attribute, :active_mode_duration})
+      assert {:ok, []} = GenServer.call(name, {:read_attribute, :registered_clients})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :operating_mode})
+    end
+
+    test "register_client adds client entry", %{name: name} do
+      key = :crypto.strong_rand_bytes(16)
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :register_client, %{
+        check_in_node_id: 42,
+        monitored_subject: 100,
+        key: key
+      }})
+      # Returns ICDCounter
+      assert resp[0] == {:uint, 0}
+
+      {:ok, clients} = GenServer.call(name, {:read_attribute, :registered_clients})
+      assert length(clients) == 1
+      assert hd(clients).check_in_node_id == 42
+    end
+
+    test "register_client replaces existing entry", %{name: name} do
+      key1 = :crypto.strong_rand_bytes(16)
+      key2 = :crypto.strong_rand_bytes(16)
+
+      {:ok, _} = GenServer.call(name, {:invoke_command, :register_client, %{
+        check_in_node_id: 42, monitored_subject: 100, key: key1
+      }})
+      {:ok, _} = GenServer.call(name, {:invoke_command, :register_client, %{
+        check_in_node_id: 42, monitored_subject: 200, key: key2
+      }})
+
+      {:ok, clients} = GenServer.call(name, {:read_attribute, :registered_clients})
+      assert length(clients) == 1
+      assert hd(clients).monitored_subject == 200
+    end
+
+    test "unregister_client removes client", %{name: name} do
+      {:ok, _} = GenServer.call(name, {:invoke_command, :register_client, %{
+        check_in_node_id: 42, monitored_subject: 100, key: :crypto.strong_rand_bytes(16)
+      }})
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :unregister_client, %{
+        check_in_node_id: 42
+      }})
+
+      {:ok, clients} = GenServer.call(name, {:read_attribute, :registered_clients})
+      assert clients == []
+    end
+
+    test "stay_active_request returns promised duration", %{name: name} do
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :stay_active_request, %{
+        stay_active_duration: 10_000
+      }})
+      assert resp[0] == {:uint, 10_000}
+    end
+
+    test "stay_active_request caps at 30 seconds", %{name: name} do
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :stay_active_request, %{
+        stay_active_duration: 60_000
+      }})
+      assert resp[0] == {:uint, 30_000}
     end
   end
 end
