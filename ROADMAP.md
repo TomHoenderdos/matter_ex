@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-45)
+## Completed Phases (1-46)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -47,8 +47,9 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 43 | EthernetNetworkDiagnostics, AdminCommissioning clusters | - |
 | 44 | Localization + Time clusters (LocalizationConfiguration, TimeFormatLocalization, UnitLocalization, TimeSynchronization) | - |
 | 45 | Switch, ModeSelect, FixedLabel, UserLabel clusters | - |
+| 46 | OTA Software Update (Provider + Requestor clusters) | - |
 
-**Current: 917 tests, 0 failures**
+**Current: 925 tests, 0 failures**
 
 ---
 

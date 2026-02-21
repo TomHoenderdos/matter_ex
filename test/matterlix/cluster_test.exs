@@ -41,6 +41,8 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.ModeSelect
   alias Matterlix.Cluster.FixedLabel
   alias Matterlix.Cluster.UserLabel
+  alias Matterlix.Cluster.OTASoftwareUpdateProvider
+  alias Matterlix.Cluster.OTASoftwareUpdateRequestor
   alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -2159,6 +2161,89 @@ defmodule Matterlix.ClusterTest do
       labels = [%{label: "room", value: "kitchen"}, %{label: "floor", value: "1"}]
       assert :ok = GenServer.call(name, {:write_attribute, :label_list, labels})
       assert {:ok, ^labels} = GenServer.call(name, {:read_attribute, :label_list})
+    end
+  end
+
+  # ── OTA Software Update Provider Cluster ─────────────────────
+
+  describe "OTASoftwareUpdateProvider" do
+    test "metadata" do
+      assert OTASoftwareUpdateProvider.cluster_id() == 0x0029
+      assert OTASoftwareUpdateProvider.cluster_name() == :ota_software_update_provider
+    end
+
+    test "query_image returns not available" do
+      name = :"ota_prov_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = OTASoftwareUpdateProvider.start_link(name: name)
+
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :query_image, %{
+        vendor_id: 0xFFF1,
+        product_id: 0x8001,
+        software_version: 1
+      }})
+      # Status=NotAvailable(2)
+      assert resp[0] == {:uint, 2}
+    end
+
+    test "apply_update_request returns proceed" do
+      name = :"ota_prov_apply_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = OTASoftwareUpdateProvider.start_link(name: name)
+
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :apply_update_request, %{
+        update_token: :crypto.strong_rand_bytes(32),
+        new_version: 2
+      }})
+      assert resp[0] == {:uint, 0}
+    end
+
+    test "notify_update_applied returns success" do
+      name = :"ota_prov_notify_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = OTASoftwareUpdateProvider.start_link(name: name)
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :notify_update_applied, %{
+        update_token: :crypto.strong_rand_bytes(32),
+        software_version: 2
+      }})
+    end
+  end
+
+  # ── OTA Software Update Requestor Cluster ────────────────────
+
+  describe "OTASoftwareUpdateRequestor" do
+    test "metadata" do
+      assert OTASoftwareUpdateRequestor.cluster_id() == 0x002A
+      assert OTASoftwareUpdateRequestor.cluster_name() == :ota_software_update_requestor
+    end
+
+    test "default values" do
+      name = :"ota_req_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = OTASoftwareUpdateRequestor.start_link(name: name)
+
+      assert {:ok, []} = GenServer.call(name, {:read_attribute, :default_ota_providers})
+      assert {:ok, true} = GenServer.call(name, {:read_attribute, :update_possible})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :update_state})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :update_state_progress})
+    end
+
+    test "announce_ota_provider returns success" do
+      name = :"ota_req_announce_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = OTASoftwareUpdateRequestor.start_link(name: name)
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :announce_ota_provider, %{
+        provider_node_id: 1,
+        vendor_id: 0xFFF1,
+        announcement_reason: 0,
+        endpoint: 0
+      }})
+    end
+
+    test "default_ota_providers is writable" do
+      name = :"ota_req_write_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = OTASoftwareUpdateRequestor.start_link(name: name)
+
+      providers = [%{provider_node_id: 1, endpoint: 0, fabric_index: 1}]
+      assert :ok = GenServer.call(name, {:write_attribute, :default_ota_providers, providers})
+      assert {:ok, ^providers} = GenServer.call(name, {:read_attribute, :default_ota_providers})
     end
   end
 end
