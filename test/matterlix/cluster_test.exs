@@ -19,6 +19,8 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.PowerSource
   alias Matterlix.Cluster.Scenes
   alias Matterlix.Cluster.Groups
+  alias Matterlix.Cluster.DoorLock
+  alias Matterlix.Cluster.WindowCovering
   alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -1365,6 +1367,143 @@ defmodule Matterlix.ClusterTest do
       {:ok, resp} = GenServer.call(name, {:invoke_command, :get_group_membership, %{group_list: []}})
       {:list, members} = resp[1]
       assert length(members) == 2
+    end
+  end
+
+  # ── Door Lock Cluster ────────────────────────────────────────
+
+  describe "DoorLock metadata" do
+    test "cluster_id and name" do
+      assert DoorLock.cluster_id() == 0x0101
+      assert DoorLock.cluster_name() == :door_lock
+    end
+
+    test "attribute_defs" do
+      defs = DoorLock.attribute_defs()
+      names = Enum.map(defs, & &1.name)
+      assert :lock_state in names
+      assert :lock_type in names
+      assert :actuator_enabled in names
+      assert :operating_mode in names
+    end
+
+    test "command_defs" do
+      cmds = DoorLock.command_defs()
+      names = Enum.map(cmds, & &1.name)
+      assert :lock_door in names
+      assert :unlock_door in names
+      assert :unlock_with_timeout in names
+    end
+  end
+
+  describe "DoorLock GenServer" do
+    setup do
+      name = :"door_lock_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = DoorLock.start_link(name: name)
+      %{name: name}
+    end
+
+    test "default lock_state is unlocked (2)", %{name: name} do
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :lock_state})
+    end
+
+    test "lock_door sets lock_state to locked (1)", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :lock_door, %{}})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :lock_state})
+    end
+
+    test "unlock_door sets lock_state to unlocked (2)", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :lock_door, %{}})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :lock_state})
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :unlock_door, %{}})
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :lock_state})
+    end
+
+    test "unlock_with_timeout sets lock_state to unlocked", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :lock_door, %{}})
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :unlock_with_timeout, %{timeout: 30}})
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :lock_state})
+    end
+
+    test "operating_mode is writable with enum constraint", %{name: name} do
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :operating_mode})
+      assert :ok = GenServer.call(name, {:write_attribute, :operating_mode, 2})
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :operating_mode})
+    end
+  end
+
+  # ── Window Covering Cluster ──────────────────────────────────
+
+  describe "WindowCovering metadata" do
+    test "cluster_id and name" do
+      assert WindowCovering.cluster_id() == 0x0102
+      assert WindowCovering.cluster_name() == :window_covering
+    end
+
+    test "attribute_defs" do
+      defs = WindowCovering.attribute_defs()
+      names = Enum.map(defs, & &1.name)
+      assert :type in names
+      assert :current_position_lift_percent_100ths in names
+      assert :current_position_tilt_percent_100ths in names
+      assert :operational_status in names
+    end
+
+    test "command_defs" do
+      cmds = WindowCovering.command_defs()
+      names = Enum.map(cmds, & &1.name)
+      assert :up_or_open in names
+      assert :down_or_close in names
+      assert :stop_motion in names
+      assert :go_to_lift_percentage in names
+      assert :go_to_tilt_percentage in names
+    end
+  end
+
+  describe "WindowCovering GenServer" do
+    setup do
+      name = :"wc_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = WindowCovering.start_link(name: name)
+      %{name: name}
+    end
+
+    test "default position is 0 (fully open)", %{name: name} do
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
+    end
+
+    test "up_or_open sets position to 0", %{name: name} do
+      # First close
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :down_or_close, %{}})
+      assert {:ok, 10000} = GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
+
+      # Then open
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :up_or_open, %{}})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
+    end
+
+    test "down_or_close sets position to 10000", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :down_or_close, %{}})
+      assert {:ok, 10000} = GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
+    end
+
+    test "go_to_lift_percentage sets exact position", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :go_to_lift_percentage, %{lift_percent_100ths: 5000}})
+      assert {:ok, 5000} = GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
+    end
+
+    test "go_to_lift_percentage clamps to valid range", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :go_to_lift_percentage, %{lift_percent_100ths: 99999}})
+      assert {:ok, 10000} = GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
+    end
+
+    test "go_to_tilt_percentage sets tilt position", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :go_to_tilt_percentage, %{tilt_percent_100ths: 7500}})
+      assert {:ok, 7500} = GenServer.call(name, {:read_attribute, :current_position_tilt_percent_100ths})
+    end
+
+    test "stop_motion returns success", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :stop_motion, %{}})
     end
   end
 end
