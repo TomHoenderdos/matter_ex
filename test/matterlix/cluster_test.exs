@@ -14,6 +14,9 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.GroupKeyManagement
   alias Matterlix.Cluster.NetworkCommissioning
   alias Matterlix.Cluster.OperationalCredentials
+  alias Matterlix.Cluster.Identify
+  alias Matterlix.Cluster.Binding
+  alias Matterlix.Cluster.PowerSource
   alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -1054,6 +1057,122 @@ defmodule Matterlix.ClusterTest do
       assert key.group_id == 100
       assert is_integer(key.session_id)
       assert byte_size(key.encrypt_key) == 16
+    end
+  end
+
+  # ── Identify Cluster ─────────────────────────────────────────
+
+  describe "Identify metadata" do
+    test "cluster_id and name" do
+      assert Identify.cluster_id() == 0x0003
+      assert Identify.cluster_name() == :identify
+    end
+
+    test "attribute_defs include identify_time and identify_type" do
+      defs = Identify.attribute_defs()
+      names = Enum.map(defs, & &1.name)
+      assert :identify_time in names
+      assert :identify_type in names
+      assert :cluster_revision in names
+
+      id_time = Enum.find(defs, &(&1.name == :identify_time))
+      assert id_time.writable == true
+      assert id_time.default == 0
+    end
+
+    test "command_defs include identify and trigger_effect" do
+      cmds = Identify.command_defs()
+      names = Enum.map(cmds, & &1.name)
+      assert :identify in names
+      assert :trigger_effect in names
+    end
+  end
+
+  describe "Identify GenServer" do
+    setup do
+      name = :"identify_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = Identify.start_link(name: name)
+      %{name: name}
+    end
+
+    test "identify command sets identify_time", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :identify, %{identify_time: 30}})
+      assert {:ok, 30} = GenServer.call(name, {:read_attribute, :identify_time})
+    end
+
+    test "trigger_effect returns success", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :trigger_effect, %{
+        effect_identifier: 0, effect_variant: 0
+      }})
+    end
+
+    test "identify_time defaults to 0", %{name: name} do
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :identify_time})
+    end
+  end
+
+  # ── Binding Cluster ─────────────────────────────────────────
+
+  describe "Binding metadata" do
+    test "cluster_id and name" do
+      assert Binding.cluster_id() == 0x001E
+      assert Binding.cluster_name() == :binding
+    end
+
+    test "binding attribute is writable list" do
+      defs = Binding.attribute_defs()
+      binding_attr = Enum.find(defs, &(&1.name == :binding))
+      assert binding_attr.writable == true
+      assert binding_attr.default == []
+    end
+  end
+
+  describe "Binding GenServer" do
+    setup do
+      name = :"binding_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = Binding.start_link(name: name)
+      %{name: name}
+    end
+
+    test "write and read binding entries", %{name: name} do
+      entries = [
+        %{node: 1, endpoint: 1, cluster: 6},
+        %{group: 100}
+      ]
+
+      :ok = GenServer.call(name, {:write_attribute, :binding, entries})
+      assert {:ok, ^entries} = GenServer.call(name, {:read_attribute, :binding})
+    end
+  end
+
+  # ── PowerSource Cluster ─────────────────────────────────────
+
+  describe "PowerSource metadata" do
+    test "cluster_id and name" do
+      assert PowerSource.cluster_id() == 0x002F
+      assert PowerSource.cluster_name() == :power_source
+    end
+
+    test "attribute_defs include status and bat_percent_remaining" do
+      defs = PowerSource.attribute_defs()
+      names = Enum.map(defs, & &1.name)
+      assert :status in names
+      assert :bat_percent_remaining in names
+      assert :bat_charge_level in names
+    end
+  end
+
+  describe "PowerSource GenServer" do
+    setup do
+      name = :"power_source_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = PowerSource.start_link(name: name)
+      %{name: name}
+    end
+
+    test "default values", %{name: name} do
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :status})
+      assert {:ok, 200} = GenServer.call(name, {:read_attribute, :bat_percent_remaining})
+      assert {:ok, "DC Power"} = GenServer.call(name, {:read_attribute, :description})
     end
   end
 end
