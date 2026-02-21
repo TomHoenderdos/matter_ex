@@ -244,6 +244,7 @@ defmodule Matterlix.Node do
   def handle_info(:check_subscriptions, state) do
     {actions, handler} = MessageHandler.check_subscriptions(state.handler)
     {handler, state} = maybe_update_case(handler, state)
+    handler = maybe_update_group_keys(handler)
     state = %{state | handler: handler}
     state = process_subscription_actions(actions, state)
     Process.send_after(self(), :check_subscriptions, @sub_check_interval)
@@ -399,6 +400,25 @@ defmodule Matterlix.Node do
   defp transport_name({:udp, _}), do: "UDP"
   defp transport_name({:tcp, _}), do: "TCP"
   defp transport_name(nil), do: "unknown"
+
+  # ── Private: Group key update ──────────────────────────────
+
+  defp maybe_update_group_keys(handler) do
+    device = handler.device
+
+    if device do
+      gkm_name = device.__process_name__(0, :group_key_management)
+
+      if gkm_name && Process.whereis(gkm_name) do
+        keys = GenServer.call(gkm_name, :get_group_keys)
+        MessageHandler.update_group_keys(handler, keys)
+      else
+        handler
+      end
+    else
+      handler
+    end
+  end
 
   # ── Private: CASE update ────────────────────────────────────────
 

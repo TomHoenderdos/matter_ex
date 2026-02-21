@@ -52,11 +52,18 @@ defmodule Matterlix.MessageHandler do
     exchange_to_sub: %{non_neg_integer() => non_neg_integer()}
   }
 
+  @type group_key_entry :: %{
+    group_id: non_neg_integer(),
+    session_id: non_neg_integer(),
+    encrypt_key: binary()
+  }
+
   @type t :: %__MODULE__{
     device: module() | nil,
     pase: PASE.t() | nil,
     case_states: %{non_neg_integer() => CASE.t()},
     sessions: %{non_neg_integer() => session_entry()},
+    group_keys: %{non_neg_integer() => group_key_entry()},
     plaintext_counter: Counter.t()
   }
 
@@ -64,6 +71,7 @@ defmodule Matterlix.MessageHandler do
             pase: nil,
             case_states: %{},
             sessions: %{},
+            group_keys: %{},
             plaintext_counter: Counter.new()
 
   @doc """
@@ -114,10 +122,15 @@ defmodule Matterlix.MessageHandler do
   def handle_frame(%__MODULE__{} = state, frame) when is_binary(frame) do
     case Header.decode(frame) do
       {:ok, header, _rest} ->
-        if header.session_id == 0 do
-          handle_plaintext(state, frame)
-        else
-          handle_encrypted(state, header.session_id, frame)
+        cond do
+          header.session_type == :group ->
+            handle_group_message(state, header, frame)
+
+          header.session_id == 0 ->
+            handle_plaintext(state, frame)
+
+          true ->
+            handle_encrypted(state, header.session_id, frame)
         end
 
       {:error, reason} ->
@@ -184,6 +197,18 @@ defmodule Matterlix.MessageHandler do
   def update_case(%__MODULE__{} = state, opts) do
     new_entries = maybe_init_case(opts)
     %{state | case_states: Map.merge(state.case_states, new_entries)}
+  end
+
+  @doc """
+  Update group keys from GroupKeyManagement cluster.
+
+  Accepts a list of `%{group_id, session_id, encrypt_key}` entries.
+  Indexes by session_id for fast lookup on incoming group messages.
+  """
+  @spec update_group_keys(t(), [group_key_entry()]) :: t()
+  def update_group_keys(%__MODULE__{} = state, entries) when is_list(entries) do
+    group_keys = Map.new(entries, fn entry -> {entry.session_id, entry} end)
+    %{state | group_keys: group_keys}
   end
 
   @doc """
@@ -387,6 +412,55 @@ defmodule Matterlix.MessageHandler do
     }
 
     IO.iodata_to_binary(MessageCodec.encode(header, proto))
+  end
+
+  # ── Group message path ────────────────────────────────────────────
+
+  defp handle_group_message(state, header, frame) do
+    case Map.get(state.group_keys, header.session_id) do
+      nil ->
+        Logger.warning("Group message for unknown group session #{header.session_id}")
+        {[{:error, :unknown_group_session}], state}
+
+      %{encrypt_key: key, group_id: group_id} ->
+        source_node_id = header.source_node_id || 0
+        nonce = MessageCodec.build_nonce(header.security_flags, header.message_counter, source_node_id)
+
+        case MessageCodec.decode_encrypted(frame, key, nonce) do
+          {:ok, message} ->
+            Logger.debug("Group message from node #{source_node_id} for group #{group_id}")
+            handle_group_im(state, message, source_node_id, group_id)
+
+          {:error, reason} ->
+            Logger.warning("Failed to decrypt group message: #{inspect(reason)}")
+            {[{:error, reason}], state}
+        end
+    end
+  end
+
+  defp handle_group_im(state, message, source_node_id, group_id) do
+    if state.device do
+      opcode = ProtocolID.opcode_name(message.proto.protocol_id, message.proto.opcode)
+
+      context = %{
+        auth_mode: :group,
+        subject: source_node_id,
+        fabric_index: 0,
+        group_id: group_id
+      }
+
+      case IM.decode(opcode, message.proto.payload) do
+        {:ok, request} ->
+          # Process but discard response (no-reply semantics for group messages)
+          _response = Router.handle(state.device, opcode, request, context)
+          {[], state}
+
+        {:error, _reason} ->
+          {[], state}
+      end
+    else
+      {[], state}
+    end
   end
 
   # ── Encrypted path (IM) ───────────────────────────────────────────

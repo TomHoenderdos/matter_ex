@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-30)
+## Completed Phases (1-32)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -33,8 +33,9 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 29 | Event Reporting (EventStore, event macro, BasicInformation.StartUp, IM codec) | - |
 | 30 | Multi-Fabric Support (per-fabric CASE, NOC, ACL, mDNS) | - |
 | 31 | TCP Transport (length-prefixed framing, MRP bypass, per-session transport) | - |
+| 32 | Group Messaging (group key derivation, group receive, no-reply semantics) | - |
 
-**Current: 778 tests, 0 failures**
+**Current: 800 tests, 0 failures**
 
 ---
 
@@ -43,10 +44,6 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 ---
 
 ## P3 — Production hardening
-
-### Phase 32: Group Messaging
-
-Implement group key derivation, multicast receive, and no-reply semantics. Required for scenes/groups clusters.
 
 ### Phase 33: Per-Peer Addressing
 

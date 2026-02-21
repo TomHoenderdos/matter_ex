@@ -944,7 +944,7 @@ defmodule Matterlix.ClusterTest do
 
       assert Enum.find(defs, &(&1.name == :group_key_map)).writable == true
       assert Enum.find(defs, &(&1.name == :group_table)).writable == false
-      assert Enum.find(defs, &(&1.name == :max_groups_per_fabric)).default == 1
+      assert Enum.find(defs, &(&1.name == :max_groups_per_fabric)).default == 4
     end
   end
 
@@ -960,7 +960,7 @@ defmodule Matterlix.ClusterTest do
     test "default attributes", %{name: name} do
       assert {:ok, []} = GenServer.call(name, {:read_attribute, :group_key_map})
       assert {:ok, []} = GenServer.call(name, {:read_attribute, :group_table})
-      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :max_groups_per_fabric})
+      assert {:ok, 4} = GenServer.call(name, {:read_attribute, :max_groups_per_fabric})
       assert {:ok, 0} = GenServer.call(name, {:read_attribute, :feature_map})
     end
 
@@ -973,6 +973,87 @@ defmodule Matterlix.ClusterTest do
     test "group_table is read-only", %{name: name} do
       assert {:error, :unsupported_write} =
                GenServer.call(name, {:write_attribute, :group_table, []})
+    end
+
+    test "key_set_write stores key set and rebuilds group table", %{name: name} do
+      epoch_key = :crypto.strong_rand_bytes(16)
+
+      # Write group_key_map FIRST, then key_set_write rebuilds the table
+      entry = %{group_id: 100, group_key_set_id: 1}
+      :ok = GenServer.call(name, {:write_attribute, :group_key_map, [entry]})
+
+      # Write a key set (triggers rebuild_group_table which reads the map)
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :key_set_write, %{
+        group_key_set: %{group_key_set_id: 1, epoch_key0: epoch_key, epoch_start_time0: 0}
+      }})
+
+      # group_table should now contain the mapping
+      {:ok, table} = GenServer.call(name, {:read_attribute, :group_table})
+      assert length(table) == 1
+      assert hd(table).group_id == 100
+      assert hd(table).group_key_set_id == 1
+    end
+
+    test "key_set_read returns stored key set", %{name: name} do
+      epoch_key = :crypto.strong_rand_bytes(16)
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :key_set_write, %{
+        group_key_set: %{group_key_set_id: 42, epoch_key0: epoch_key, epoch_start_time0: 1000}
+      }})
+
+      {:ok, response} = GenServer.call(name, {:invoke_command, :key_set_read, %{group_key_set_id: 42}})
+      {:struct, key_set} = response[0]
+      assert key_set[0] == {:uint, 42}
+      assert key_set[2] == {:uint, 1000}
+    end
+
+    test "key_set_remove deletes key set", %{name: name} do
+      epoch_key = :crypto.strong_rand_bytes(16)
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :key_set_write, %{
+        group_key_set: %{group_key_set_id: 5, epoch_key0: epoch_key}
+      }})
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :key_set_remove, %{group_key_set_id: 5}})
+
+      # Reading removed key set returns empty struct with just the ID
+      {:ok, response} = GenServer.call(name, {:invoke_command, :key_set_read, %{group_key_set_id: 5}})
+      {:struct, key_set} = response[0]
+      assert key_set[0] == {:uint, 5}
+      refute Map.has_key?(key_set, 2)
+    end
+
+    test "key_set_read_all_indices lists all key set IDs", %{name: name} do
+      for id <- [1, 2, 3] do
+        {:ok, nil} = GenServer.call(name, {:invoke_command, :key_set_write, %{
+          group_key_set: %{group_key_set_id: id, epoch_key0: :crypto.strong_rand_bytes(16)}
+        }})
+      end
+
+      {:ok, response} = GenServer.call(name, {:invoke_command, :key_set_read_all_indices, %{}})
+      {:list, indices_list} = response[0]
+      indices = Enum.map(indices_list, fn {:uint, id} -> id end)
+      assert Enum.sort(indices) == [1, 2, 3]
+    end
+
+    test "get_group_keys derives operational keys", %{name: name} do
+      epoch_key = :crypto.strong_rand_bytes(16)
+
+      # Write map first, then key_set_write rebuilds
+      :ok = GenServer.call(name, {:write_attribute, :group_key_map, [
+        %{group_id: 100, group_key_set_id: 1}
+      ]})
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :key_set_write, %{
+        group_key_set: %{group_key_set_id: 1, epoch_key0: epoch_key}
+      }})
+
+      keys = GenServer.call(name, :get_group_keys)
+      assert length(keys) == 1
+      [key] = keys
+      assert key.group_id == 100
+      assert is_integer(key.session_id)
+      assert byte_size(key.encrypt_key) == 16
     end
   end
 end

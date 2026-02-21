@@ -1476,4 +1476,139 @@ defmodule Matterlix.MessageHandlerTest do
       assert data3.value == true  # on_off is now true!
     end
   end
+
+  # ── Group Messaging ──────────────────────────────────────────────
+
+  describe "group messaging" do
+    setup do
+      start_supervised!(TestLight)
+      handler = new_handler(device: TestLight)
+
+      # Create group key entry
+      epoch_key = :crypto.strong_rand_bytes(16)
+      alias Matterlix.Crypto.GroupKey
+      op_key = GroupKey.operational_key(epoch_key)
+      enc_key = GroupKey.encryption_key(op_key, 100)
+      session_id = GroupKey.session_id(op_key)
+
+      group_entry = %{group_id: 100, session_id: session_id, encrypt_key: enc_key}
+      handler = MessageHandler.update_group_keys(handler, [group_entry])
+
+      %{handler: handler, enc_key: enc_key, session_id: session_id, group_id: 100}
+    end
+
+    test "update_group_keys stores entries indexed by session_id",
+         %{handler: handler, session_id: session_id, group_id: group_id} do
+      assert Map.has_key?(handler.group_keys, session_id)
+      assert handler.group_keys[session_id].group_id == group_id
+    end
+
+    test "group message is decrypted and processed (no reply)",
+         %{handler: handler, enc_key: enc_key, session_id: session_id} do
+      # Build a group invoke_request (toggle OnOff on endpoint 1)
+      invoke_req = %IM.InvokeRequest{
+        invoke_requests: [%{path: %{endpoint: 1, cluster: 0x0006, command: 2}, fields: nil}]
+      }
+      payload = IM.encode(invoke_req)
+
+      frame = build_group_frame(session_id, enc_key, :invoke_request, payload, 42)
+
+      {actions, _handler} = MessageHandler.handle_frame(handler, frame)
+
+      # No reply for group messages
+      assert actions == []
+    end
+
+    test "group message for unknown session returns error",
+         %{handler: handler, enc_key: enc_key} do
+      invoke_req = %IM.InvokeRequest{
+        invoke_requests: [%{path: %{endpoint: 1, cluster: 0x0006, command: 2}, fields: nil}]
+      }
+      payload = IM.encode(invoke_req)
+
+      # Use a session_id that doesn't match any group key
+      frame = build_group_frame(99999, enc_key, :invoke_request, payload, 42)
+
+      {actions, _handler} = MessageHandler.handle_frame(handler, frame)
+      assert [{:error, :unknown_group_session}] = actions
+    end
+
+    test "group message with wrong key fails decryption",
+         %{handler: handler, session_id: session_id} do
+      invoke_req = %IM.InvokeRequest{
+        invoke_requests: [%{path: %{endpoint: 1, cluster: 0x0006, command: 2}, fields: nil}]
+      }
+      payload = IM.encode(invoke_req)
+
+      # Use a different encryption key
+      wrong_key = :crypto.strong_rand_bytes(16)
+      frame = build_group_frame(session_id, wrong_key, :invoke_request, payload, 42)
+
+      {actions, _handler} = MessageHandler.handle_frame(handler, frame)
+      assert [{:error, :authentication_failed}] = actions
+    end
+
+    test "group write_request is processed without reply",
+         %{handler: handler, enc_key: enc_key, session_id: session_id} do
+      # Seed ACL for group auth_mode (auth_mode: 3)
+      acl_name = TestLight.__process_name__(0, :access_control)
+      group_acl = %{
+        privilege: 3,
+        auth_mode: 3,
+        subjects: nil,
+        targets: nil,
+        fabric_index: 0
+      }
+      GenServer.call(acl_name, {:write_attribute, :acl, [group_acl]})
+
+      write_req = %IM.WriteRequest{
+        write_requests: [%{path: %{endpoint: 1, cluster: 0x0006, attribute: 0}, value: {:bool, true}, version: 0}]
+      }
+      payload = IM.encode(write_req)
+
+      frame = build_group_frame(session_id, enc_key, :write_request, payload, 43)
+
+      {actions, _handler} = MessageHandler.handle_frame(handler, frame)
+      assert actions == []
+    end
+  end
+
+  # ── Group frame builder ──────────────────────────────────────────
+
+  defp build_group_frame(session_id, encrypt_key, opcode_name, payload, counter) do
+    header = %Header{
+      session_id: session_id,
+      message_counter: counter,
+      source_node_id: 42,
+      dest_group_id: 100,
+      privacy: false,
+      session_type: :group
+    }
+
+    opcode_num = ProtocolID.opcode(:interaction_model, opcode_name)
+
+    proto = %ProtoHeader{
+      initiator: true,
+      opcode: opcode_num,
+      exchange_id: 1,
+      protocol_id: ProtocolID.protocol_id(:interaction_model),
+      payload: payload
+    }
+
+    nonce = MessageCodec.build_nonce(
+      encode_group_security_flags(header),
+      counter,
+      42
+    )
+
+    IO.iodata_to_binary(MessageCodec.encode_encrypted(header, proto, encrypt_key, nonce))
+  end
+
+  defp encode_group_security_flags(%Header{} = h) do
+    import Bitwise
+    p = if h.privacy, do: 0x80, else: 0
+    c = if h.control_message, do: 0x40, else: 0
+    st = if h.session_type == :group, do: 1, else: 0
+    p ||| c ||| st
+  end
 end
