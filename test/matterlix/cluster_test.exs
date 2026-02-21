@@ -43,6 +43,11 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.UserLabel
   alias Matterlix.Cluster.OTASoftwareUpdateProvider
   alias Matterlix.Cluster.OTASoftwareUpdateRequestor
+  alias Matterlix.Cluster.ElectricalMeasurement
+  alias Matterlix.Cluster.PowerTopology
+  alias Matterlix.Cluster.AirQuality
+  alias Matterlix.Cluster.PM25ConcentrationMeasurement
+  alias Matterlix.Cluster.CarbonDioxideConcentrationMeasurement
   alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -2244,6 +2249,90 @@ defmodule Matterlix.ClusterTest do
       providers = [%{provider_node_id: 1, endpoint: 0, fabric_index: 1}]
       assert :ok = GenServer.call(name, {:write_attribute, :default_ota_providers, providers})
       assert {:ok, ^providers} = GenServer.call(name, {:read_attribute, :default_ota_providers})
+    end
+  end
+
+  # ── Electrical Measurement Cluster ───────────────────────────
+
+  describe "ElectricalMeasurement" do
+    test "metadata" do
+      assert ElectricalMeasurement.cluster_id() == 0x0B04
+      assert ElectricalMeasurement.cluster_name() == :electrical_measurement
+    end
+
+    test "default values" do
+      name = :"elec_meas_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = ElectricalMeasurement.start_link(name: name)
+
+      assert {:ok, 230} = GenServer.call(name, {:read_attribute, :rms_voltage})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :rms_current})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :active_power})
+    end
+  end
+
+  # ── Power Topology Cluster ──────────────────────────────────
+
+  describe "PowerTopology" do
+    test "metadata" do
+      assert PowerTopology.cluster_id() == 0x009C
+      assert PowerTopology.cluster_name() == :power_topology
+    end
+
+    test "default values" do
+      name = :"power_topo_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = PowerTopology.start_link(name: name)
+
+      assert {:ok, []} = GenServer.call(name, {:read_attribute, :available_endpoints})
+      assert {:ok, []} = GenServer.call(name, {:read_attribute, :active_endpoints})
+    end
+  end
+
+  # ── Air Quality Cluster ──────────────────────────────────────
+
+  describe "AirQuality" do
+    test "metadata" do
+      assert AirQuality.cluster_id() == 0x005B
+      assert AirQuality.cluster_name() == :air_quality
+    end
+
+    test "default value is Unknown (0)" do
+      name = :"air_qual_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = AirQuality.start_link(name: name)
+
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :air_quality})
+    end
+  end
+
+  # ── Concentration Measurement Clusters ───────────────────────
+
+  describe "ConcentrationMeasurement clusters" do
+    test "PM2.5 metadata" do
+      assert PM25ConcentrationMeasurement.cluster_id() == 0x042A
+      assert PM25ConcentrationMeasurement.cluster_name() == :pm25_concentration_measurement
+    end
+
+    test "CO2 metadata" do
+      assert CarbonDioxideConcentrationMeasurement.cluster_id() == 0x040D
+      assert CarbonDioxideConcentrationMeasurement.cluster_name() == :carbon_dioxide_concentration_measurement
+    end
+
+    test "PM2.5 default values" do
+      name = :"pm25_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = PM25ConcentrationMeasurement.start_link(name: name)
+
+      assert {:ok, 0.0} = GenServer.call(name, {:read_attribute, :measured_value})
+      assert {:ok, 0.0} = GenServer.call(name, {:read_attribute, :min_measured_value})
+      assert {:ok, 1000.0} = GenServer.call(name, {:read_attribute, :max_measured_value})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :measurement_unit})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :measurement_medium})
+    end
+
+    test "CO2 default values" do
+      name = :"co2_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = CarbonDioxideConcentrationMeasurement.start_link(name: name)
+
+      assert {:ok, 0.0} = GenServer.call(name, {:read_attribute, :measured_value})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :level_indication})
     end
   end
 end
