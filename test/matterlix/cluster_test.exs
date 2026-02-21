@@ -25,6 +25,9 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.OccupancySensing
   alias Matterlix.Cluster.IlluminanceMeasurement
   alias Matterlix.Cluster.RelativeHumidityMeasurement
+  alias Matterlix.Cluster.PressureMeasurement
+  alias Matterlix.Cluster.FlowMeasurement
+  alias Matterlix.Cluster.PumpConfigurationAndControl
   alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -1676,6 +1679,86 @@ defmodule Matterlix.ClusterTest do
       assert {:ok, 5000} = GenServer.call(name, {:read_attribute, :measured_value})
       assert {:ok, 0} = GenServer.call(name, {:read_attribute, :min_measured_value})
       assert {:ok, 10000} = GenServer.call(name, {:read_attribute, :max_measured_value})
+    end
+  end
+
+  # ── Pressure Measurement Cluster ─────────────────────────────
+
+  describe "PressureMeasurement" do
+    test "metadata" do
+      assert PressureMeasurement.cluster_id() == 0x0403
+      assert PressureMeasurement.cluster_name() == :pressure_measurement
+    end
+
+    test "attribute_defs" do
+      defs = PressureMeasurement.attribute_defs()
+      names = Enum.map(defs, & &1.name)
+      assert :measured_value in names
+      assert :min_measured_value in names
+      assert :max_measured_value in names
+      assert :tolerance in names
+    end
+
+    test "default values" do
+      name = :"pressure_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = PressureMeasurement.start_link(name: name)
+
+      assert {:ok, 1013} = GenServer.call(name, {:read_attribute, :measured_value})
+      assert {:ok, 300} = GenServer.call(name, {:read_attribute, :min_measured_value})
+      assert {:ok, 1100} = GenServer.call(name, {:read_attribute, :max_measured_value})
+    end
+  end
+
+  # ── Flow Measurement Cluster ─────────────────────────────────
+
+  describe "FlowMeasurement" do
+    test "metadata" do
+      assert FlowMeasurement.cluster_id() == 0x0404
+      assert FlowMeasurement.cluster_name() == :flow_measurement
+    end
+
+    test "default values" do
+      name = :"flow_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = FlowMeasurement.start_link(name: name)
+
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :measured_value})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :min_measured_value})
+      assert {:ok, 0xFFFE} = GenServer.call(name, {:read_attribute, :max_measured_value})
+    end
+  end
+
+  # ── Pump Configuration and Control Cluster ───────────────────
+
+  describe "PumpConfigurationAndControl" do
+    test "metadata" do
+      assert PumpConfigurationAndControl.cluster_id() == 0x0200
+      assert PumpConfigurationAndControl.cluster_name() == :pump_configuration_and_control
+    end
+
+    test "attribute_defs" do
+      defs = PumpConfigurationAndControl.attribute_defs()
+      names = Enum.map(defs, & &1.name)
+      assert :max_pressure in names
+      assert :max_speed in names
+      assert :max_flow in names
+      assert :operation_mode in names
+      assert :control_mode in names
+      assert :effective_operation_mode in names
+    end
+
+    test "default values and writable attributes" do
+      name = :"pump_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = PumpConfigurationAndControl.start_link(name: name)
+
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :operation_mode})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :control_mode})
+
+      # operation_mode is writable with enum constraint
+      assert :ok = GenServer.call(name, {:write_attribute, :operation_mode, 2})
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :operation_mode})
+
+      # Invalid mode
+      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :operation_mode, 4})
     end
   end
 end
