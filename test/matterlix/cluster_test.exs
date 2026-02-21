@@ -17,6 +17,8 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.Identify
   alias Matterlix.Cluster.Binding
   alias Matterlix.Cluster.PowerSource
+  alias Matterlix.Cluster.Scenes
+  alias Matterlix.Cluster.Groups
   alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -1241,6 +1243,128 @@ defmodule Matterlix.ClusterTest do
       defs = Thermostat.attribute_defs()
       mode = Enum.find(defs, &(&1.name == :system_mode))
       assert mode.enum_values == [0, 1, 3, 4, 5, 7]
+    end
+  end
+
+  # ── Scenes Cluster ──────────────────────────────────────────
+
+  describe "Scenes cluster" do
+    setup do
+      name = :"scenes_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = Scenes.start_link(name: name)
+      %{name: name}
+    end
+
+    test "metadata" do
+      assert Scenes.cluster_id() == 0x0005
+      assert Scenes.cluster_name() == :scenes
+    end
+
+    test "add_scene and view_scene", %{name: name} do
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :add_scene, %{
+        group_id: 1, scene_id: 10, transition_time: 100, scene_name: "Morning"
+      }})
+
+      assert resp[0] == {:uint, 0}
+      assert resp[1] == {:uint, 1}
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :scene_count})
+
+      {:ok, view} = GenServer.call(name, {:invoke_command, :view_scene, %{group_id: 1, scene_id: 10}})
+      assert view[0] == {:uint, 0}
+      assert view[4] == {:string, "Morning"}
+    end
+
+    test "remove_scene", %{name: name} do
+      {:ok, _} = GenServer.call(name, {:invoke_command, :add_scene, %{group_id: 1, scene_id: 1}})
+      {:ok, _} = GenServer.call(name, {:invoke_command, :add_scene, %{group_id: 1, scene_id: 2}})
+
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :remove_scene, %{group_id: 1, scene_id: 1}})
+      assert resp[0] == {:uint, 0}
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :scene_count})
+    end
+
+    test "remove_all_scenes for a group", %{name: name} do
+      {:ok, _} = GenServer.call(name, {:invoke_command, :add_scene, %{group_id: 1, scene_id: 1}})
+      {:ok, _} = GenServer.call(name, {:invoke_command, :add_scene, %{group_id: 1, scene_id: 2}})
+      {:ok, _} = GenServer.call(name, {:invoke_command, :add_scene, %{group_id: 2, scene_id: 1}})
+
+      {:ok, _} = GenServer.call(name, {:invoke_command, :remove_all_scenes, %{group_id: 1}})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :scene_count})
+    end
+
+    test "recall_scene sets current_scene", %{name: name} do
+      {:ok, _} = GenServer.call(name, {:invoke_command, :add_scene, %{group_id: 1, scene_id: 5}})
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :recall_scene, %{group_id: 1, scene_id: 5}})
+
+      assert {:ok, 5} = GenServer.call(name, {:read_attribute, :current_scene})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :current_group})
+      assert {:ok, true} = GenServer.call(name, {:read_attribute, :scene_valid})
+    end
+
+    test "get_scene_membership", %{name: name} do
+      {:ok, _} = GenServer.call(name, {:invoke_command, :add_scene, %{group_id: 1, scene_id: 1}})
+      {:ok, _} = GenServer.call(name, {:invoke_command, :add_scene, %{group_id: 1, scene_id: 2}})
+
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :get_scene_membership, %{group_id: 1}})
+      {:list, ids} = resp[3]
+      assert length(ids) == 2
+    end
+  end
+
+  # ── Groups Cluster ──────────────────────────────────────────
+
+  describe "Groups cluster" do
+    setup do
+      name = :"groups_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = Groups.start_link(name: name)
+      %{name: name}
+    end
+
+    test "metadata" do
+      assert Groups.cluster_id() == 0x0004
+      assert Groups.cluster_name() == :groups
+    end
+
+    test "add_group and view_group", %{name: name} do
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :add_group, %{group_id: 100, group_name: "Living Room"}})
+      assert resp[0] == {:uint, 0}
+
+      {:ok, view} = GenServer.call(name, {:invoke_command, :view_group, %{group_id: 100}})
+      assert view[0] == {:uint, 0}
+      assert view[2] == {:string, "Living Room"}
+    end
+
+    test "view_group returns not_found for unknown group", %{name: name} do
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :view_group, %{group_id: 999}})
+      assert resp[0] == {:uint, 0x8B}
+    end
+
+    test "remove_group", %{name: name} do
+      {:ok, _} = GenServer.call(name, {:invoke_command, :add_group, %{group_id: 1, group_name: "G1"}})
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :remove_group, %{group_id: 1}})
+      assert resp[0] == {:uint, 0}
+
+      {:ok, view} = GenServer.call(name, {:invoke_command, :view_group, %{group_id: 1}})
+      assert view[0] == {:uint, 0x8B}
+    end
+
+    test "remove_all_groups", %{name: name} do
+      {:ok, _} = GenServer.call(name, {:invoke_command, :add_group, %{group_id: 1, group_name: "G1"}})
+      {:ok, _} = GenServer.call(name, {:invoke_command, :add_group, %{group_id: 2, group_name: "G2"}})
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :remove_all_groups, %{}})
+
+      {:ok, view} = GenServer.call(name, {:invoke_command, :view_group, %{group_id: 1}})
+      assert view[0] == {:uint, 0x8B}
+    end
+
+    test "get_group_membership with empty list returns all", %{name: name} do
+      {:ok, _} = GenServer.call(name, {:invoke_command, :add_group, %{group_id: 1, group_name: "G1"}})
+      {:ok, _} = GenServer.call(name, {:invoke_command, :add_group, %{group_id: 2, group_name: "G2"}})
+
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :get_group_membership, %{group_list: []}})
+      {:list, members} = resp[1]
+      assert length(members) == 2
     end
   end
 end

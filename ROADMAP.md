@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-36)
+## Completed Phases (1-37)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -38,8 +38,9 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 34 | Additional Clusters: Identify, Binding, PowerSource | - |
 | 35 | Fabric-Scoped Attributes (per-fabric read filtering, write merging) | - |
 | 36 | Attribute Constraints (min/max range, enum validation, constraint_error) | - |
+| 37 | Groups + Scenes Clusters (group membership, scene store/recall) | - |
 
-**Current: 822 tests, 0 failures**
+**Current: 834 tests, 0 failures**
 
 ---
 
