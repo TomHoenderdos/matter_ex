@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-38)
+## Completed Phases (1-39)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -40,8 +40,9 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 36 | Attribute Constraints (min/max range, enum validation, constraint_error) | - |
 | 37 | Groups + Scenes Clusters (group membership, scene store/recall) | - |
 | 38 | Additional Clusters: DoorLock, WindowCovering | - |
+| 39 | Additional Clusters: FanControl, OccupancySensing, IlluminanceMeasurement, RelativeHumidityMeasurement | - |
 
-**Current: 852 tests, 0 failures**
+**Current: 870 tests, 0 failures**
 
 ---
 

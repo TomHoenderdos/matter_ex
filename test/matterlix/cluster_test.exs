@@ -21,6 +21,10 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.Groups
   alias Matterlix.Cluster.DoorLock
   alias Matterlix.Cluster.WindowCovering
+  alias Matterlix.Cluster.FanControl
+  alias Matterlix.Cluster.OccupancySensing
+  alias Matterlix.Cluster.IlluminanceMeasurement
+  alias Matterlix.Cluster.RelativeHumidityMeasurement
   alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -1504,6 +1508,174 @@ defmodule Matterlix.ClusterTest do
 
     test "stop_motion returns success", %{name: name} do
       {:ok, nil} = GenServer.call(name, {:invoke_command, :stop_motion, %{}})
+    end
+  end
+
+  # ── Fan Control Cluster ──────────────────────────────────────
+
+  describe "FanControl metadata" do
+    test "cluster_id and name" do
+      assert FanControl.cluster_id() == 0x0202
+      assert FanControl.cluster_name() == :fan_control
+    end
+
+    test "attribute_defs" do
+      defs = FanControl.attribute_defs()
+      names = Enum.map(defs, & &1.name)
+      assert :fan_mode in names
+      assert :percent_setting in names
+      assert :percent_current in names
+
+      mode = Enum.find(defs, &(&1.name == :fan_mode))
+      assert mode.enum_values == [0, 1, 2, 3, 4, 5, 6]
+    end
+  end
+
+  describe "FanControl GenServer" do
+    setup do
+      name = :"fan_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = FanControl.start_link(name: name)
+      %{name: name}
+    end
+
+    test "default values", %{name: name} do
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :fan_mode})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :percent_setting})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :percent_current})
+    end
+
+    test "fan_mode is writable with enum constraint", %{name: name} do
+      assert :ok = GenServer.call(name, {:write_attribute, :fan_mode, 5})
+      assert {:ok, 5} = GenServer.call(name, {:read_attribute, :fan_mode})
+
+      # Invalid mode
+      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :fan_mode, 7})
+    end
+
+    test "percent_setting is writable with range constraint", %{name: name} do
+      assert :ok = GenServer.call(name, {:write_attribute, :percent_setting, 50})
+      assert {:ok, 50} = GenServer.call(name, {:read_attribute, :percent_setting})
+
+      # Over max (100)
+      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :percent_setting, 101})
+    end
+
+    test "step command increases speed", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :step, %{direction: 0}})
+      assert {:ok, 10} = GenServer.call(name, {:read_attribute, :percent_setting})
+      assert {:ok, 10} = GenServer.call(name, {:read_attribute, :percent_current})
+    end
+
+    test "step command decreases speed", %{name: name} do
+      :ok = GenServer.call(name, {:write_attribute, :percent_setting, 50})
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :step, %{direction: 1}})
+      assert {:ok, 40} = GenServer.call(name, {:read_attribute, :percent_setting})
+    end
+
+    test "step does not go below 0", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :step, %{direction: 1}})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :percent_setting})
+    end
+
+    test "step does not go above 100", %{name: name} do
+      :ok = GenServer.call(name, {:write_attribute, :percent_setting, 95})
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :step, %{direction: 0}})
+      assert {:ok, 100} = GenServer.call(name, {:read_attribute, :percent_setting})
+    end
+  end
+
+  # ── Occupancy Sensing Cluster ────────────────────────────────
+
+  describe "OccupancySensing metadata" do
+    test "cluster_id and name" do
+      assert OccupancySensing.cluster_id() == 0x0406
+      assert OccupancySensing.cluster_name() == :occupancy_sensing
+    end
+
+    test "attribute_defs" do
+      defs = OccupancySensing.attribute_defs()
+      names = Enum.map(defs, & &1.name)
+      assert :occupancy in names
+      assert :occupancy_sensor_type in names
+      assert :occupancy_sensor_type_bitmap in names
+    end
+  end
+
+  describe "OccupancySensing GenServer" do
+    setup do
+      name = :"occ_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = OccupancySensing.start_link(name: name)
+      %{name: name}
+    end
+
+    test "default values", %{name: name} do
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :occupancy})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :occupancy_sensor_type})
+      assert {:ok, 0x01} = GenServer.call(name, {:read_attribute, :occupancy_sensor_type_bitmap})
+    end
+  end
+
+  # ── Illuminance Measurement Cluster ──────────────────────────
+
+  describe "IlluminanceMeasurement metadata" do
+    test "cluster_id and name" do
+      assert IlluminanceMeasurement.cluster_id() == 0x0400
+      assert IlluminanceMeasurement.cluster_name() == :illuminance_measurement
+    end
+
+    test "attribute_defs" do
+      defs = IlluminanceMeasurement.attribute_defs()
+      names = Enum.map(defs, & &1.name)
+      assert :measured_value in names
+      assert :min_measured_value in names
+      assert :max_measured_value in names
+      assert :light_sensor_type in names
+    end
+  end
+
+  describe "IlluminanceMeasurement GenServer" do
+    setup do
+      name = :"illum_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = IlluminanceMeasurement.start_link(name: name)
+      %{name: name}
+    end
+
+    test "default values", %{name: name} do
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :measured_value})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :min_measured_value})
+      assert {:ok, 0xFFFE} = GenServer.call(name, {:read_attribute, :max_measured_value})
+    end
+  end
+
+  # ── Relative Humidity Measurement Cluster ────────────────────
+
+  describe "RelativeHumidityMeasurement metadata" do
+    test "cluster_id and name" do
+      assert RelativeHumidityMeasurement.cluster_id() == 0x0405
+      assert RelativeHumidityMeasurement.cluster_name() == :relative_humidity_measurement
+    end
+
+    test "attribute_defs" do
+      defs = RelativeHumidityMeasurement.attribute_defs()
+      names = Enum.map(defs, & &1.name)
+      assert :measured_value in names
+      assert :min_measured_value in names
+      assert :max_measured_value in names
+      assert :tolerance in names
+    end
+  end
+
+  describe "RelativeHumidityMeasurement GenServer" do
+    setup do
+      name = :"rh_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = RelativeHumidityMeasurement.start_link(name: name)
+      %{name: name}
+    end
+
+    test "default values", %{name: name} do
+      assert {:ok, 5000} = GenServer.call(name, {:read_attribute, :measured_value})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :min_measured_value})
+      assert {:ok, 10000} = GenServer.call(name, {:read_attribute, :max_measured_value})
     end
   end
 end
