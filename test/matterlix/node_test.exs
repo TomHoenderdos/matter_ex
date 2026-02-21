@@ -476,4 +476,59 @@ defmodule Matterlix.NodeTest do
       assert Process.alive?(node)
     end
   end
+
+  # ── Per-Peer Addressing ────────────────────────────────────────
+
+  describe "per-peer addressing" do
+    test "response sent to new peer address after port change", %{client: client, port: port} do
+      # Establish session from first client
+      comm_session = run_pase_over_udp(client, port)
+
+      # Send an encrypted read from the first client
+      read_req = %IM.ReadRequest{attribute_paths: [%{endpoint: 1, cluster: 0x0006, attribute: 0}]}
+      payload = IM.encode(read_req)
+
+      opcode_num = ProtocolID.opcode(:interaction_model, :read_request)
+      proto = %ProtoHeader{
+        initiator: true,
+        opcode: opcode_num,
+        exchange_id: 10,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: payload,
+        needs_ack: true,
+        ack_counter: nil
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      resp = send_and_receive(client, port, frame)
+
+      # Verify response arrives on first client
+      {:ok, _msg, _comm_session2} = SecureChannel.open(comm_session, resp)
+
+      # Now send from a SECOND client (different port, simulating address change)
+      {:ok, client2} = :gen_udp.open(0, [:binary, {:active, true}])
+      on_exit(fn -> :gen_udp.close(client2) end)
+
+      # Send another read from client2 using the same session
+      proto2 = %ProtoHeader{
+        initiator: true,
+        opcode: opcode_num,
+        exchange_id: 11,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: payload,
+        needs_ack: true,
+        ack_counter: nil
+      }
+
+      {frame2, _comm_session} = SecureChannel.seal(comm_session, proto2)
+      :ok = :gen_udp.send(client2, ~c"127.0.0.1", port, frame2)
+
+      # Response should arrive on client2, not client1
+      receive do
+        {:udp, ^client2, _ip, _port, _response} -> :ok
+      after
+        2000 -> flunk("No response received on new client")
+      end
+    end
+  end
 end

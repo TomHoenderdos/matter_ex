@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-32)
+## Completed Phases (1-33)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -34,8 +34,9 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 30 | Multi-Fabric Support (per-fabric CASE, NOC, ACL, mDNS) | - |
 | 31 | TCP Transport (length-prefixed framing, MRP bypass, per-session transport) | - |
 | 32 | Group Messaging (group key derivation, group receive, no-reply semantics) | - |
+| 33 | Per-Peer Addressing (dynamic transport update per session) | - |
 
-**Current: 800 tests, 0 failures**
+**Current: 801 tests, 0 failures**
 
 ---
 
@@ -44,7 +45,3 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 ---
 
 ## P3 — Production hardening
-
-### Phase 33: Per-Peer Addressing
-
-Track peer addresses per session instead of a single `peer` field. Allows concurrent controllers without response misdirection.

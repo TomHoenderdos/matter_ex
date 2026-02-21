@@ -31,6 +31,7 @@ defmodule Matterlix.Node do
   require Logger
 
   alias Matterlix.{Commissioning, MessageHandler}
+  alias Matterlix.Protocol.MessageCodec.Header
   alias Matterlix.Transport.TCP, as: TCPFraming
 
   @sub_check_interval 1000
@@ -146,6 +147,7 @@ defmodule Matterlix.Node do
     transport = {:udp, {ip, port}}
     Logger.debug("UDP RX #{byte_size(data)}B from #{:inet.ntoa(ip)}:#{port}")
     state = %{state | current_transport: transport}
+    state = update_peer_transport(state, data, transport)
     {actions, handler} = MessageHandler.handle_frame(state.handler, data)
     state = %{state | handler: handler}
     state = process_actions(actions, state)
@@ -400,6 +402,32 @@ defmodule Matterlix.Node do
   defp transport_name({:udp, _}), do: "UDP"
   defp transport_name({:tcp, _}), do: "TCP"
   defp transport_name(nil), do: "unknown"
+
+  # ── Private: Per-peer transport update ──────────────────────
+
+  # Update the stored transport for a session when the peer's address changes
+  # (e.g., NAT rebinding, port change). Ensures subscription reports and MRP
+  # retransmits reach the peer at their current address.
+  defp update_peer_transport(state, data, transport) do
+    case Header.decode(data) do
+      {:ok, header, _rest} when header.session_id > 0 ->
+        case Map.get(state.session_transports, header.session_id) do
+          ^transport ->
+            state
+
+          old when old != nil ->
+            Logger.debug("Peer address updated for session #{header.session_id}")
+            session_transports = Map.put(state.session_transports, header.session_id, transport)
+            %{state | session_transports: session_transports}
+
+          nil ->
+            state
+        end
+
+      _ ->
+        state
+    end
+  end
 
   # ── Private: Group key update ──────────────────────────────
 
