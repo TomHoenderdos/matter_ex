@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-49)
+## Completed Phases (1-50)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -51,8 +51,9 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 47 | ElectricalMeasurement, PowerTopology, AirQuality, ConcentrationMeasurement (PM2.5, PM10, CO2, TVOC) | - |
 | 48 | ICD Management (register/unregister clients, stay_active_request) | - |
 | 49 | Device Energy Management + Energy Preference clusters | - |
+| 50 | Media Clusters: MediaPlayback, ContentLauncher, AudioOutput | - |
 
-**Current: 949 tests, 0 failures**
+**Current: 963 tests, 0 failures**
 
 ---
 

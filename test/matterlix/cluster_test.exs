@@ -51,6 +51,9 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.ICDManagement
   alias Matterlix.Cluster.DeviceEnergyManagement
   alias Matterlix.Cluster.EnergyPreference
+  alias Matterlix.Cluster.MediaPlayback
+  alias Matterlix.Cluster.ContentLauncher
+  alias Matterlix.Cluster.AudioOutput
   alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -2479,6 +2482,116 @@ defmodule Matterlix.ClusterTest do
 
       assert :ok = GenServer.call(name, {:write_attribute, :current_energy_balance, 2})
       assert {:ok, 2} = GenServer.call(name, {:read_attribute, :current_energy_balance})
+    end
+  end
+
+  # ── Media Playback Cluster ───────────────────────────────────
+
+  describe "MediaPlayback" do
+    setup do
+      name = :"media_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = MediaPlayback.start_link(name: name)
+      %{name: name}
+    end
+
+    test "metadata" do
+      assert MediaPlayback.cluster_id() == 0x0506
+      assert MediaPlayback.cluster_name() == :media_playback
+    end
+
+    test "default state is NotPlaying (2)", %{name: name} do
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :current_state})
+    end
+
+    test "play sets Playing state", %{name: name} do
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :play, %{}})
+      assert resp[0] == {:uint, 0}
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :current_state})
+    end
+
+    test "pause sets Paused state", %{name: name} do
+      {:ok, _} = GenServer.call(name, {:invoke_command, :play, %{}})
+      {:ok, _} = GenServer.call(name, {:invoke_command, :pause, %{}})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :current_state})
+    end
+
+    test "stop sets NotPlaying state", %{name: name} do
+      {:ok, _} = GenServer.call(name, {:invoke_command, :play, %{}})
+      {:ok, _} = GenServer.call(name, {:invoke_command, :stop, %{}})
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :current_state})
+    end
+
+    test "seek updates sampled position", %{name: name} do
+      {:ok, _} = GenServer.call(name, {:invoke_command, :seek, %{position: 42000}})
+      {:ok, pos} = GenServer.call(name, {:read_attribute, :sampled_position})
+      assert pos.position == 42000
+    end
+  end
+
+  # ── Content Launcher Cluster ─────────────────────────────────
+
+  describe "ContentLauncher" do
+    test "metadata" do
+      assert ContentLauncher.cluster_id() == 0x050A
+      assert ContentLauncher.cluster_name() == :content_launcher
+    end
+
+    test "launch_url returns success" do
+      name = :"cl_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = ContentLauncher.start_link(name: name)
+
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :launch_url, %{
+        content_url: "https://example.com/video.mp4",
+        display_string: "Test Video"
+      }})
+      assert resp[0] == {:uint, 0}
+    end
+
+    test "default accept_header" do
+      name = :"cl_hdr_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = ContentLauncher.start_link(name: name)
+
+      {:ok, headers} = GenServer.call(name, {:read_attribute, :accept_header})
+      assert "video/mp4" in headers
+    end
+  end
+
+  # ── Audio Output Cluster ─────────────────────────────────────
+
+  describe "AudioOutput" do
+    setup do
+      name = :"ao_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = AudioOutput.start_link(name: name)
+      %{name: name}
+    end
+
+    test "metadata" do
+      assert AudioOutput.cluster_id() == 0x050B
+      assert AudioOutput.cluster_name() == :audio_output
+    end
+
+    test "default output list has 3 entries", %{name: name} do
+      {:ok, outputs} = GenServer.call(name, {:read_attribute, :output_list})
+      assert length(outputs) == 3
+    end
+
+    test "select_output changes current output", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :select_output, %{index: 2}})
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :current_output})
+    end
+
+    test "select_output with invalid index returns error", %{name: name} do
+      assert {:error, :constraint_error} =
+               GenServer.call(name, {:invoke_command, :select_output, %{index: 99}})
+    end
+
+    test "rename_output updates name", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :rename_output, %{
+        index: 0, name: "Soundbar"
+      }})
+      {:ok, outputs} = GenServer.call(name, {:read_attribute, :output_list})
+      hdmi1 = Enum.find(outputs, &(&1.index == 0))
+      assert hdmi1.name == "Soundbar"
     end
   end
 end
