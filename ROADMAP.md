@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-34)
+## Completed Phases (1-35)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -36,8 +36,9 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 32 | Group Messaging (group key derivation, group receive, no-reply semantics) | - |
 | 33 | Per-Peer Addressing (dynamic transport update per session) | - |
 | 34 | Additional Clusters: Identify, Binding, PowerSource | - |
+| 35 | Fabric-Scoped Attributes (per-fabric read filtering, write merging) | - |
 
-**Current: 813 tests, 0 failures**
+**Current: 817 tests, 0 failures**
 
 ---
 

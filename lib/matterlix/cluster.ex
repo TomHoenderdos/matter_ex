@@ -31,7 +31,8 @@ defmodule Matterlix.Cluster do
           name: atom(),
           type: atom(),
           default: term(),
-          writable: boolean()
+          writable: boolean(),
+          fabric_scoped: boolean()
         }
 
   @type cmd_def :: %{
@@ -200,7 +201,7 @@ defmodule Matterlix.Cluster do
         global_attrs
       else
         attr_list_value = Enum.sort([0xFFFB | all_attr_ids_so_far])
-        global_attrs ++ [%{id: 0xFFFB, name: :attribute_list, type: :list, default: attr_list_value, writable: false}]
+        global_attrs ++ [%{id: 0xFFFB, name: :attribute_list, type: :list, default: attr_list_value, writable: false, fabric_scoped: false}]
       end
 
     attributes = user_attributes ++ global_attrs
@@ -227,7 +228,7 @@ defmodule Matterlix.Cluster do
     if MapSet.member?(declared_ids, id) do
       acc
     else
-      acc ++ [%{id: id, name: name, type: type, default: default, writable: false}]
+      acc ++ [%{id: id, name: name, type: type, default: default, writable: false, fabric_scoped: false}]
     end
   end
 
@@ -238,19 +239,22 @@ defmodule Matterlix.Cluster do
         name: unquote(name),
         type: unquote(type),
         default: unquote(Keyword.get(opts, :default)),
-        writable: unquote(Keyword.get(opts, :writable, false))
+        writable: unquote(Keyword.get(opts, :writable, false)),
+        fabric_scoped: unquote(Keyword.get(opts, :fabric_scoped, false))
       }
     end
   end
 
   defmacro attribute(id, name, type, default_opts, write_opts) do
+    all_opts = default_opts ++ write_opts
     quote do
       @matter_attributes %{
         id: unquote(id),
         name: unquote(name),
         type: unquote(type),
-        default: unquote(Keyword.get(default_opts ++ write_opts, :default)),
-        writable: unquote(Keyword.get(default_opts ++ write_opts, :writable, false))
+        default: unquote(Keyword.get(all_opts, :default)),
+        writable: unquote(Keyword.get(all_opts, :writable, false)),
+        fabric_scoped: unquote(Keyword.get(all_opts, :fabric_scoped, false))
       }
     end
   end

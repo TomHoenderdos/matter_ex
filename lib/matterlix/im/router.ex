@@ -62,13 +62,14 @@ defmodule Matterlix.IM.Router do
 
   defp read_one_attribute(device, path, context) do
     case resolve_attribute(device, path) do
-      {:ok, gen_name, attr_name, attr_type} ->
+      {:ok, gen_name, attr_name, attr_type, attr_def} ->
         target = {path[:endpoint], path[:cluster]}
 
         case check_acl(device, context, :view, target) do
           :allow ->
             case GenServer.call(gen_name, {:read_attribute, attr_name}) do
               {:ok, value} ->
+                value = maybe_filter_fabric_scoped(value, attr_def, context)
                 data_version = GenServer.call(gen_name, :read_data_version)
 
                 {:data,
@@ -96,13 +97,15 @@ defmodule Matterlix.IM.Router do
     responses =
       Enum.map(req.write_requests, fn write ->
         case resolve_attribute(device, write.path) do
-          {:ok, gen_name, attr_name, _attr_type} ->
+          {:ok, gen_name, attr_name, _attr_type, attr_def} ->
             target = {write.path[:endpoint], write.path[:cluster]}
             privilege = ACL.write_privilege(write.path[:cluster])
 
             case check_acl(device, context, privilege, target) do
               :allow ->
-                case GenServer.call(gen_name, {:write_attribute, attr_name, write.value}) do
+                value = maybe_merge_fabric_scoped(gen_name, attr_name, write.value, attr_def, context)
+
+                case GenServer.call(gen_name, {:write_attribute, attr_name, value}) do
                   :ok ->
                     %{path: write.path, status: Status.status_code(:success), cluster_status: nil}
 
@@ -290,7 +293,7 @@ defmodule Matterlix.IM.Router do
 
         case find_attribute_by_id(cluster_mod, attribute_id) do
           nil -> {:error, :unsupported_attribute}
-          attr -> {:ok, gen_name, attr.name, attr.type}
+          attr -> {:ok, gen_name, attr.name, attr.type, attr}
         end
     end
   end
@@ -385,6 +388,38 @@ defmodule Matterlix.IM.Router do
   defp status_for(:unsupported_write), do: Status.status_code(:unsupported_write)
   defp status_for(:unsupported_access), do: Status.status_code(:unsupported_access)
   defp status_for(_), do: Status.status_code(:failure)
+
+  # ── Fabric-scoped attribute helpers ──────────────────────────────
+
+  # Filter a fabric-scoped list to only entries matching the requester's fabric
+  defp maybe_filter_fabric_scoped(value, %{fabric_scoped: true}, %{fabric_index: fi})
+       when is_list(value) and fi > 0 do
+    Enum.filter(value, fn entry ->
+      entry_fi = entry[:fabric_index] || entry["fabric_index"]
+      entry_fi == fi
+    end)
+  end
+
+  defp maybe_filter_fabric_scoped(value, _attr_def, _context), do: value
+
+  # On write for fabric-scoped attributes: preserve other fabrics' entries,
+  # replace this fabric's entries with the new value
+  defp maybe_merge_fabric_scoped(gen_name, attr_name, new_entries, %{fabric_scoped: true}, %{fabric_index: fi})
+       when is_list(new_entries) and fi > 0 do
+    case GenServer.call(gen_name, {:read_attribute, attr_name}) do
+      {:ok, existing} when is_list(existing) ->
+        other_fabric_entries = Enum.reject(existing, fn entry ->
+          (entry[:fabric_index] || entry["fabric_index"]) == fi
+        end)
+
+        other_fabric_entries ++ new_entries
+
+      _ ->
+        new_entries
+    end
+  end
+
+  defp maybe_merge_fabric_scoped(_gen_name, _attr_name, value, _attr_def, _context), do: value
 
   # ── ACL enforcement ─────────────────────────────────────────────
 
