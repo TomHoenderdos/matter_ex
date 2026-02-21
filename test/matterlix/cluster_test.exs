@@ -54,6 +54,9 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.MediaPlayback
   alias Matterlix.Cluster.ContentLauncher
   alias Matterlix.Cluster.AudioOutput
+  alias Matterlix.Cluster.LaundryWasherControls
+  alias Matterlix.Cluster.DishwasherAlarm
+  alias Matterlix.Cluster.RefrigeratorAlarm
   alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -2592,6 +2595,83 @@ defmodule Matterlix.ClusterTest do
       {:ok, outputs} = GenServer.call(name, {:read_attribute, :output_list})
       hdmi1 = Enum.find(outputs, &(&1.index == 0))
       assert hdmi1.name == "Soundbar"
+    end
+  end
+
+  # ── Laundry Washer Controls Cluster ──────────────────────────
+
+  describe "LaundryWasherControls" do
+    test "metadata" do
+      assert LaundryWasherControls.cluster_id() == 0x0053
+      assert LaundryWasherControls.cluster_name() == :laundry_washer_controls
+    end
+
+    test "default values and writable attributes" do
+      name = :"lwc_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = LaundryWasherControls.start_link(name: name)
+
+      {:ok, speeds} = GenServer.call(name, {:read_attribute, :spin_speeds})
+      assert length(speeds) == 4
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :spin_speed_current})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :number_of_rinses})
+
+      assert :ok = GenServer.call(name, {:write_attribute, :spin_speed_current, 3})
+      assert {:ok, 3} = GenServer.call(name, {:read_attribute, :spin_speed_current})
+
+      assert :ok = GenServer.call(name, {:write_attribute, :number_of_rinses, 2})
+      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :number_of_rinses, 3})
+    end
+  end
+
+  # ── Dishwasher Alarm Cluster ─────────────────────────────────
+
+  describe "DishwasherAlarm" do
+    test "metadata" do
+      assert DishwasherAlarm.cluster_id() == 0x005D
+      assert DishwasherAlarm.cluster_name() == :dishwasher_alarm
+    end
+
+    test "default values" do
+      name = :"dw_alarm_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = DishwasherAlarm.start_link(name: name)
+
+      assert {:ok, 0x07} = GenServer.call(name, {:read_attribute, :mask})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :state})
+      assert {:ok, 0x07} = GenServer.call(name, {:read_attribute, :supported})
+    end
+
+    test "reset clears latched alarms" do
+      name = :"dw_alarm_reset_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = DishwasherAlarm.start_link(name: name)
+
+      # Simulate alarm by writing state directly (in production, this is internal)
+      :sys.replace_state(Process.whereis(name), fn state ->
+        Map.put(state, :state, 0x03)
+      end)
+
+      # Reset bit 0 (WaterLeak is latched)
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :reset, %{alarms: 0x01}})
+      {:ok, alarm_state} = GenServer.call(name, {:read_attribute, :state})
+      # Bit 0 cleared, bit 1 remains (not latched, so reset has no effect)
+      assert Bitwise.band(alarm_state, 0x01) == 0
+    end
+  end
+
+  # ── Refrigerator Alarm Cluster ───────────────────────────────
+
+  describe "RefrigeratorAlarm" do
+    test "metadata" do
+      assert RefrigeratorAlarm.cluster_id() == 0x0057
+      assert RefrigeratorAlarm.cluster_name() == :refrigerator_alarm
+    end
+
+    test "default values" do
+      name = :"fridge_alarm_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = RefrigeratorAlarm.start_link(name: name)
+
+      assert {:ok, 0x01} = GenServer.call(name, {:read_attribute, :mask})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :state})
+      assert {:ok, 0x01} = GenServer.call(name, {:read_attribute, :supported})
     end
   end
 end

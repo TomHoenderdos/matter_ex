@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-50)
+## Completed Phases (1-51)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -52,8 +52,9 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 48 | ICD Management (register/unregister clients, stay_active_request) | - |
 | 49 | Device Energy Management + Energy Preference clusters | - |
 | 50 | Media Clusters: MediaPlayback, ContentLauncher, AudioOutput | - |
+| 51 | Appliance Clusters: LaundryWasherControls, DishwasherAlarm, RefrigeratorAlarm | - |
 
-**Current: 963 tests, 0 failures**
+**Current: 970 tests, 0 failures**
 
 ---
 
