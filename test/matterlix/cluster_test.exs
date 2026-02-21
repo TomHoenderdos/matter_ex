@@ -49,6 +49,8 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.PM25ConcentrationMeasurement
   alias Matterlix.Cluster.CarbonDioxideConcentrationMeasurement
   alias Matterlix.Cluster.ICDManagement
+  alias Matterlix.Cluster.DeviceEnergyManagement
+  alias Matterlix.Cluster.EnergyPreference
   alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -2414,6 +2416,69 @@ defmodule Matterlix.ClusterTest do
         stay_active_duration: 60_000
       }})
       assert resp[0] == {:uint, 30_000}
+    end
+  end
+
+  # ── Device Energy Management Cluster ─────────────────────────
+
+  describe "DeviceEnergyManagement" do
+    setup do
+      name = :"dem_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = DeviceEnergyManagement.start_link(name: name)
+      %{name: name}
+    end
+
+    test "metadata" do
+      assert DeviceEnergyManagement.cluster_id() == 0x0098
+      assert DeviceEnergyManagement.cluster_name() == :device_energy_management
+    end
+
+    test "default esa_state is Online (1)", %{name: name} do
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :esa_state})
+    end
+
+    test "power_adjust_request sets PowerAdjustActive state", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :power_adjust_request, %{
+        power: 5000, duration: 3600, cause: 0
+      }})
+      assert {:ok, 3} = GenServer.call(name, {:read_attribute, :esa_state})
+    end
+
+    test "cancel_power_adjust restores Online state", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :power_adjust_request, %{
+        power: 5000, duration: 3600, cause: 0
+      }})
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :cancel_power_adjust_request, %{}})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :esa_state})
+    end
+
+    test "pause and resume", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :pause_request, %{duration: 300, cause: 0}})
+      assert {:ok, 4} = GenServer.call(name, {:read_attribute, :esa_state})
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :resume_request, %{}})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :esa_state})
+    end
+  end
+
+  # ── Energy Preference Cluster ────────────────────────────────
+
+  describe "EnergyPreference" do
+    test "metadata" do
+      assert EnergyPreference.cluster_id() == 0x009B
+      assert EnergyPreference.cluster_name() == :energy_preference
+    end
+
+    test "default values and writable balance" do
+      name = :"energy_pref_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = EnergyPreference.start_link(name: name)
+
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :current_energy_balance})
+      {:ok, balances} = GenServer.call(name, {:read_attribute, :energy_balances})
+      assert length(balances) == 3
+
+      assert :ok = GenServer.call(name, {:write_attribute, :current_energy_balance, 2})
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :current_energy_balance})
     end
   end
 end
