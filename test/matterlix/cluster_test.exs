@@ -228,9 +228,11 @@ defmodule Matterlix.ClusterTest do
 
     test "OperationalCredentials command_defs" do
       defs = OperationalCredentials.command_defs()
-      assert length(defs) == 3
+      assert length(defs) == 5
       assert Enum.find(defs, &(&1.name == :csr_request)).id == 0x04
       assert Enum.find(defs, &(&1.name == :add_noc)).id == 0x06
+      assert Enum.find(defs, &(&1.name == :remove_fabric)).id == 0x0A
+      assert Enum.find(defs, &(&1.name == :update_fabric_label)).id == 0x09
       assert Enum.find(defs, &(&1.name == :add_trusted_root_cert)).id == 0x0B
     end
 
@@ -856,6 +858,53 @@ defmodule Matterlix.ClusterTest do
 
       # commissioned_fabrics should be 2
       assert {:ok, 2} = GenServer.call(name, {:read_attribute, :commissioned_fabrics})
+    end
+
+    test "remove_fabric removes a fabric by index", %{name: name} do
+      alias Matterlix.CASE.Messages, as: CASEMessages
+
+      # Add a fabric first
+      {:ok, _} = GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: <<0::256>>}})
+      {pub, _} = Map.get(:sys.get_state(name), :_keypair)
+      noc = CASEMessages.encode_noc(42, 1, pub)
+      {:ok, _} = GenServer.call(name, {:invoke_command, :add_noc, %{
+        noc_value: noc, ipk_value: :crypto.strong_rand_bytes(16),
+        case_admin_subject: 100, admin_vendor_id: 0xFFF1
+      }})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :commissioned_fabrics})
+
+      # Remove it
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :remove_fabric, %{fabric_index: 1}})
+      assert {:uint, 0} = resp[0]
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :commissioned_fabrics})
+    end
+
+    test "remove_fabric with invalid index returns error", %{name: name} do
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :remove_fabric, %{fabric_index: 99}})
+      assert {:uint, 11} = resp[0]
+    end
+
+    test "update_fabric_label updates the last fabric's label", %{name: name} do
+      alias Matterlix.CASE.Messages, as: CASEMessages
+
+      {:ok, _} = GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: <<0::256>>}})
+      {pub, _} = Map.get(:sys.get_state(name), :_keypair)
+      noc = CASEMessages.encode_noc(42, 1, pub)
+      {:ok, _} = GenServer.call(name, {:invoke_command, :add_noc, %{
+        noc_value: noc, ipk_value: :crypto.strong_rand_bytes(16),
+        case_admin_subject: 100, admin_vendor_id: 0xFFF1
+      }})
+
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :update_fabric_label, %{label: "My Home"}})
+      assert {:uint, 0} = resp[0]
+
+      {:ok, fabrics} = GenServer.call(name, {:read_attribute, :fabrics})
+      assert hd(fabrics).label == "My Home"
+    end
+
+    test "update_fabric_label with no fabrics returns error", %{name: name} do
+      {:ok, resp} = GenServer.call(name, {:invoke_command, :update_fabric_label, %{label: "Test"}})
+      assert {:uint, 11} = resp[0]
     end
   end
 
