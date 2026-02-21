@@ -32,7 +32,10 @@ defmodule Matterlix.Cluster do
           type: atom(),
           default: term(),
           writable: boolean(),
-          fabric_scoped: boolean()
+          fabric_scoped: boolean(),
+          min: number() | nil,
+          max: number() | nil,
+          enum_values: [non_neg_integer()] | nil
         }
 
   @type cmd_def :: %{
@@ -54,6 +57,23 @@ defmodule Matterlix.Cluster do
   @callback event_defs() :: [event_def()]
   @callback handle_command(atom(), map(), map()) ::
               {:ok, term() | nil, map()} | {:error, atom()}
+
+  @doc false
+  def validate_constraint(attr, value) do
+    cond do
+      attr[:min] != nil and is_number(value) and value < attr.min ->
+        {:error, :constraint_error}
+
+      attr[:max] != nil and is_number(value) and value > attr.max ->
+        {:error, :constraint_error}
+
+      attr[:enum_values] != nil and is_integer(value) and value not in attr.enum_values ->
+        {:error, :constraint_error}
+
+      true ->
+        :ok
+    end
+  end
 
   @doc false
   def dispatch_command_reply(module, name, params, state) do
@@ -125,8 +145,14 @@ defmodule Matterlix.Cluster do
           attr == nil -> {:reply, {:error, :unsupported_attribute}, state}
           !attr.writable -> {:reply, {:error, :unsupported_write}, state}
           true ->
-            state = state |> Map.put(name, value) |> bump_data_version()
-            {:reply, :ok, state}
+            case Matterlix.Cluster.validate_constraint(attr, value) do
+              :ok ->
+                state = state |> Map.put(name, value) |> bump_data_version()
+                {:reply, :ok, state}
+
+              {:error, reason} ->
+                {:reply, {:error, reason}, state}
+            end
         end
       end
 
@@ -201,7 +227,8 @@ defmodule Matterlix.Cluster do
         global_attrs
       else
         attr_list_value = Enum.sort([0xFFFB | all_attr_ids_so_far])
-        global_attrs ++ [%{id: 0xFFFB, name: :attribute_list, type: :list, default: attr_list_value, writable: false, fabric_scoped: false}]
+        global_attrs ++ [%{id: 0xFFFB, name: :attribute_list, type: :list, default: attr_list_value,
+                          writable: false, fabric_scoped: false, min: nil, max: nil, enum_values: nil}]
       end
 
     attributes = user_attributes ++ global_attrs
@@ -228,7 +255,8 @@ defmodule Matterlix.Cluster do
     if MapSet.member?(declared_ids, id) do
       acc
     else
-      acc ++ [%{id: id, name: name, type: type, default: default, writable: false, fabric_scoped: false}]
+      acc ++ [%{id: id, name: name, type: type, default: default, writable: false,
+                fabric_scoped: false, min: nil, max: nil, enum_values: nil}]
     end
   end
 
@@ -240,7 +268,10 @@ defmodule Matterlix.Cluster do
         type: unquote(type),
         default: unquote(Keyword.get(opts, :default)),
         writable: unquote(Keyword.get(opts, :writable, false)),
-        fabric_scoped: unquote(Keyword.get(opts, :fabric_scoped, false))
+        fabric_scoped: unquote(Keyword.get(opts, :fabric_scoped, false)),
+        min: unquote(Keyword.get(opts, :min)),
+        max: unquote(Keyword.get(opts, :max)),
+        enum_values: unquote(Keyword.get(opts, :enum_values))
       }
     end
   end
@@ -254,7 +285,10 @@ defmodule Matterlix.Cluster do
         type: unquote(type),
         default: unquote(Keyword.get(all_opts, :default)),
         writable: unquote(Keyword.get(all_opts, :writable, false)),
-        fabric_scoped: unquote(Keyword.get(all_opts, :fabric_scoped, false))
+        fabric_scoped: unquote(Keyword.get(all_opts, :fabric_scoped, false)),
+        min: unquote(Keyword.get(all_opts, :min)),
+        max: unquote(Keyword.get(all_opts, :max)),
+        enum_values: unquote(Keyword.get(all_opts, :enum_values))
       }
     end
   end

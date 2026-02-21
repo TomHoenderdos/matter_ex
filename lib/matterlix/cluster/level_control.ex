@@ -7,7 +7,7 @@ defmodule Matterlix.Cluster.LevelControl do
 
   use Matterlix.Cluster, id: 0x0008, name: :level_control
 
-  attribute 0x0000, :current_level, :uint8, default: 0, writable: true
+  attribute 0x0000, :current_level, :uint8, default: 0, writable: true, min: 0, max: 254
   attribute 0x0003, :min_level, :uint8, default: 1
   attribute 0x0004, :max_level, :uint8, default: 254
   attribute 0x0011, :on_level, :uint8, default: 255, writable: true

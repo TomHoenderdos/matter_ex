@@ -387,6 +387,7 @@ defmodule Matterlix.IM.Router do
   defp status_for(:unsupported_command), do: Status.status_code(:unsupported_command)
   defp status_for(:unsupported_write), do: Status.status_code(:unsupported_write)
   defp status_for(:unsupported_access), do: Status.status_code(:unsupported_access)
+  defp status_for(:constraint_error), do: Status.status_code(:constraint_error)
   defp status_for(_), do: Status.status_code(:failure)
 
   # ── Fabric-scoped attribute helpers ──────────────────────────────

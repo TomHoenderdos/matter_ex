@@ -1175,4 +1175,72 @@ defmodule Matterlix.ClusterTest do
       assert {:ok, "DC Power"} = GenServer.call(name, {:read_attribute, :description})
     end
   end
+
+  # ── Attribute Constraints ───────────────────────────────────
+
+  describe "attribute constraints" do
+    test "LevelControl current_level rejects out-of-range values" do
+      name = :"level_constraint_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = LevelControl.start_link(name: name)
+
+      # Valid write
+      assert :ok = GenServer.call(name, {:write_attribute, :current_level, 100})
+      assert {:ok, 100} = GenServer.call(name, {:read_attribute, :current_level})
+
+      # Over max (254)
+      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :current_level, 255})
+
+      # Under min (0 is valid for current_level)
+      assert :ok = GenServer.call(name, {:write_attribute, :current_level, 0})
+    end
+
+    test "Thermostat heating setpoint rejects out-of-range values" do
+      name = :"therm_constraint_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = Thermostat.start_link(name: name)
+
+      # Valid
+      assert :ok = GenServer.call(name, {:write_attribute, :occupied_heating_setpoint, 2500})
+
+      # Below min (700)
+      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :occupied_heating_setpoint, 500})
+
+      # Above max (3000)
+      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :occupied_heating_setpoint, 3500})
+    end
+
+    test "Thermostat system_mode rejects invalid enum values" do
+      name = :"therm_enum_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = Thermostat.start_link(name: name)
+
+      # Valid modes: 0=off, 1=auto, 3=cool, 4=heat, 5=emergency_heat, 7=fan_only
+      assert :ok = GenServer.call(name, {:write_attribute, :system_mode, 0})
+      assert :ok = GenServer.call(name, {:write_attribute, :system_mode, 4})
+
+      # Invalid mode (2 is not defined)
+      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :system_mode, 2})
+
+      # Invalid mode (6 is not defined)
+      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :system_mode, 6})
+    end
+
+    test "attributes without constraints accept any value" do
+      name = :"onoff_no_constraint_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = OnOff.start_link(name: name)
+
+      # OnOff has no constraints — boolean values pass
+      assert :ok = GenServer.call(name, {:write_attribute, :on_off, true})
+      assert :ok = GenServer.call(name, {:write_attribute, :on_off, false})
+    end
+
+    test "constraint metadata is stored in attr_def" do
+      defs = LevelControl.attribute_defs()
+      level = Enum.find(defs, &(&1.name == :current_level))
+      assert level.min == 0
+      assert level.max == 254
+
+      defs = Thermostat.attribute_defs()
+      mode = Enum.find(defs, &(&1.name == :system_mode))
+      assert mode.enum_values == [0, 1, 3, 4, 5, 7]
+    end
+  end
 end
