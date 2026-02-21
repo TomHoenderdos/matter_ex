@@ -31,6 +31,8 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.GeneralDiagnostics
   alias Matterlix.Cluster.SoftwareDiagnostics
   alias Matterlix.Cluster.WiFiNetworkDiagnostics
+  alias Matterlix.Cluster.EthernetNetworkDiagnostics
+  alias Matterlix.Cluster.AdminCommissioning
   alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -1889,6 +1891,81 @@ defmodule Matterlix.ClusterTest do
       assert {:ok, 0} = GenServer.call(name, {:read_attribute, :beacon_lost_count})
       assert {:ok, 0} = GenServer.call(name, {:read_attribute, :beacon_rx_count})
       assert {:ok, 0} = GenServer.call(name, {:read_attribute, :overrun_count})
+    end
+  end
+
+  # ── Ethernet Network Diagnostics Cluster ─────────────────────
+
+  describe "EthernetNetworkDiagnostics" do
+    test "metadata" do
+      assert EthernetNetworkDiagnostics.cluster_id() == 0x0037
+      assert EthernetNetworkDiagnostics.cluster_name() == :ethernet_network_diagnostics
+    end
+
+    test "default values and reset_counts" do
+      name = :"eth_diag_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = EthernetNetworkDiagnostics.start_link(name: name)
+
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :phy_rate})
+      assert {:ok, true} = GenServer.call(name, {:read_attribute, :full_duplex})
+      assert {:ok, true} = GenServer.call(name, {:read_attribute, :carrier_detect})
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :reset_counts, %{}})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :packet_rx_count})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :collision_count})
+    end
+  end
+
+  # ── Admin Commissioning Cluster ──────────────────────────────
+
+  describe "AdminCommissioning" do
+    test "metadata" do
+      assert AdminCommissioning.cluster_id() == 0x003C
+      assert AdminCommissioning.cluster_name() == :admin_commissioning
+    end
+
+    test "default window_status is closed (0)" do
+      name = :"admin_comm_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = AdminCommissioning.start_link(name: name)
+
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :window_status})
+    end
+
+    test "open_commissioning_window sets enhanced mode" do
+      name = :"admin_comm_open_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = AdminCommissioning.start_link(name: name)
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :open_commissioning_window, %{
+        commissioning_timeout: 300,
+        pake_passcode_verifier: <<0::256>>,
+        discriminator: 3840,
+        iterations: 1000,
+        salt: :crypto.strong_rand_bytes(32)
+      }})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :window_status})
+    end
+
+    test "open_basic_commissioning_window sets basic mode" do
+      name = :"admin_comm_basic_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = AdminCommissioning.start_link(name: name)
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :open_basic_commissioning_window, %{
+        commissioning_timeout: 180
+      }})
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :window_status})
+    end
+
+    test "revoke_commissioning closes the window" do
+      name = :"admin_comm_revoke_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = AdminCommissioning.start_link(name: name)
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :open_basic_commissioning_window, %{
+        commissioning_timeout: 180
+      }})
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :window_status})
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :revoke_commissioning, %{}})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :window_status})
     end
   end
 end
