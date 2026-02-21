@@ -57,6 +57,9 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.LaundryWasherControls
   alias Matterlix.Cluster.DishwasherAlarm
   alias Matterlix.Cluster.RefrigeratorAlarm
+  alias Matterlix.Cluster.SmokeCOAlarm
+  alias Matterlix.Cluster.BooleanStateConfiguration
+  alias Matterlix.Cluster.ValveConfigurationAndControl
   alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -2672,6 +2675,128 @@ defmodule Matterlix.ClusterTest do
       assert {:ok, 0x01} = GenServer.call(name, {:read_attribute, :mask})
       assert {:ok, 0} = GenServer.call(name, {:read_attribute, :state})
       assert {:ok, 0x01} = GenServer.call(name, {:read_attribute, :supported})
+    end
+  end
+
+  # ── Smoke CO Alarm Cluster ───────────────────────────────────
+
+  describe "SmokeCOAlarm" do
+    setup do
+      name = :"smoke_co_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = SmokeCOAlarm.start_link(name: name)
+      %{name: name}
+    end
+
+    test "metadata" do
+      assert SmokeCOAlarm.cluster_id() == 0x005C
+      assert SmokeCOAlarm.cluster_name() == :smoke_co_alarm
+    end
+
+    test "default values", %{name: name} do
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :expressed_state})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :smoke_state})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :co_state})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :battery_alert})
+      assert {:ok, false} = GenServer.call(name, {:read_attribute, :test_in_progress})
+    end
+
+    test "self_test_request starts test", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :self_test_request, %{}})
+      assert {:ok, true} = GenServer.call(name, {:read_attribute, :test_in_progress})
+      assert {:ok, 4} = GenServer.call(name, {:read_attribute, :expressed_state})
+    end
+
+    test "smoke_sensitivity_level is writable with constraint", %{name: name} do
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :smoke_sensitivity_level})
+      assert :ok = GenServer.call(name, {:write_attribute, :smoke_sensitivity_level, 0})
+      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :smoke_sensitivity_level, 3})
+    end
+  end
+
+  # ── Boolean State Configuration Cluster ──────────────────────
+
+  describe "BooleanStateConfiguration" do
+    setup do
+      name = :"bsc_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = BooleanStateConfiguration.start_link(name: name)
+      %{name: name}
+    end
+
+    test "metadata" do
+      assert BooleanStateConfiguration.cluster_id() == 0x0080
+      assert BooleanStateConfiguration.cluster_name() == :boolean_state_configuration
+    end
+
+    test "default values", %{name: name} do
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :current_sensitivity_level})
+      assert {:ok, 3} = GenServer.call(name, {:read_attribute, :supported_sensitivity_levels})
+      assert {:ok, 0x03} = GenServer.call(name, {:read_attribute, :alarms_enabled})
+    end
+
+    test "suppress_alarm adds to suppressed bitmap", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :suppress_alarm, %{alarms_to_suppress: 0x01}})
+      assert {:ok, 0x01} = GenServer.call(name, {:read_attribute, :alarms_suppressed})
+    end
+
+    test "suppress_alarm only suppresses supported alarms", %{name: name} do
+      # Supported is 0x03, so 0xFF should only set 0x03
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :suppress_alarm, %{alarms_to_suppress: 0xFF}})
+      assert {:ok, 0x03} = GenServer.call(name, {:read_attribute, :alarms_suppressed})
+    end
+
+    test "enable_disable_alarm updates enabled bitmap", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :enable_disable_alarm, %{alarms_to_enable_disable: 0x01}})
+      assert {:ok, 0x01} = GenServer.call(name, {:read_attribute, :alarms_enabled})
+    end
+
+    test "sensitivity_level is writable", %{name: name} do
+      assert :ok = GenServer.call(name, {:write_attribute, :current_sensitivity_level, 2})
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :current_sensitivity_level})
+    end
+  end
+
+  # ── Valve Configuration and Control Cluster ──────────────────
+
+  describe "ValveConfigurationAndControl" do
+    setup do
+      name = :"valve_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = ValveConfigurationAndControl.start_link(name: name)
+      %{name: name}
+    end
+
+    test "metadata" do
+      assert ValveConfigurationAndControl.cluster_id() == 0x0081
+      assert ValveConfigurationAndControl.cluster_name() == :valve_configuration_and_control
+    end
+
+    test "default state is closed", %{name: name} do
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :current_state})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :target_state})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :current_level})
+    end
+
+    test "open command opens valve", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :open, %{}})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :current_state})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :target_state})
+      assert {:ok, 100} = GenServer.call(name, {:read_attribute, :current_level})
+    end
+
+    test "open with target_level sets partial opening", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :open, %{target_level: 50}})
+      assert {:ok, 50} = GenServer.call(name, {:read_attribute, :current_level})
+    end
+
+    test "close command closes valve", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :open, %{}})
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :close, %{}})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :current_state})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :current_level})
+    end
+
+    test "target_level has range constraint", %{name: name} do
+      assert :ok = GenServer.call(name, {:write_attribute, :target_level, 50})
+      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :target_level, 101})
     end
   end
 end
