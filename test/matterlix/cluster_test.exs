@@ -37,6 +37,10 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.TimeFormatLocalization
   alias Matterlix.Cluster.UnitLocalization
   alias Matterlix.Cluster.TimeSynchronization
+  alias Matterlix.Cluster.Switch
+  alias Matterlix.Cluster.ModeSelect
+  alias Matterlix.Cluster.FixedLabel
+  alias Matterlix.Cluster.UserLabel
   alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -2062,6 +2066,99 @@ defmodule Matterlix.ClusterTest do
       assert {:ok, 1_700_000_000_000_000} = GenServer.call(name, {:read_attribute, :utc_time})
       assert {:ok, 4} = GenServer.call(name, {:read_attribute, :granularity})
       assert {:ok, 2} = GenServer.call(name, {:read_attribute, :time_source})
+    end
+  end
+
+  # ── Switch Cluster ───────────────────────────────────────────
+
+  describe "Switch" do
+    test "metadata" do
+      assert Switch.cluster_id() == 0x003B
+      assert Switch.cluster_name() == :switch
+    end
+
+    test "default values" do
+      name = :"switch_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = Switch.start_link(name: name)
+
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :number_of_positions})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :current_position})
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :multi_press_max})
+    end
+  end
+
+  # ── Mode Select Cluster ─────────────────────────────────────
+
+  describe "ModeSelect" do
+    setup do
+      name = :"mode_select_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = ModeSelect.start_link(name: name)
+      %{name: name}
+    end
+
+    test "metadata" do
+      assert ModeSelect.cluster_id() == 0x0050
+      assert ModeSelect.cluster_name() == :mode_select
+    end
+
+    test "default values", %{name: name} do
+      assert {:ok, "Mode"} = GenServer.call(name, {:read_attribute, :description})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :current_mode})
+
+      {:ok, modes} = GenServer.call(name, {:read_attribute, :supported_modes})
+      assert length(modes) == 3
+    end
+
+    test "change_to_mode with valid mode", %{name: name} do
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :change_to_mode, %{new_mode: 1}})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :current_mode})
+    end
+
+    test "change_to_mode with invalid mode returns error", %{name: name} do
+      assert {:error, :constraint_error} =
+               GenServer.call(name, {:invoke_command, :change_to_mode, %{new_mode: 99}})
+    end
+  end
+
+  # ── Fixed Label Cluster ──────────────────────────────────────
+
+  describe "FixedLabel" do
+    test "metadata" do
+      assert FixedLabel.cluster_id() == 0x0040
+      assert FixedLabel.cluster_name() == :fixed_label
+    end
+
+    test "default values" do
+      name = :"fixed_label_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = FixedLabel.start_link(name: name)
+
+      assert {:ok, []} = GenServer.call(name, {:read_attribute, :label_list})
+    end
+
+    test "label_list is not writable" do
+      name = :"fixed_label_rw_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = FixedLabel.start_link(name: name)
+
+      assert {:error, :unsupported_write} =
+               GenServer.call(name, {:write_attribute, :label_list, [%{label: "room", value: "kitchen"}]})
+    end
+  end
+
+  # ── User Label Cluster ───────────────────────────────────────
+
+  describe "UserLabel" do
+    test "metadata" do
+      assert UserLabel.cluster_id() == 0x0041
+      assert UserLabel.cluster_name() == :user_label
+    end
+
+    test "label_list is writable" do
+      name = :"user_label_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = UserLabel.start_link(name: name)
+
+      labels = [%{label: "room", value: "kitchen"}, %{label: "floor", value: "1"}]
+      assert :ok = GenServer.call(name, {:write_attribute, :label_list, labels})
+      assert {:ok, ^labels} = GenServer.call(name, {:read_attribute, :label_list})
     end
   end
 end
