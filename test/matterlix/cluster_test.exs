@@ -33,6 +33,10 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.WiFiNetworkDiagnostics
   alias Matterlix.Cluster.EthernetNetworkDiagnostics
   alias Matterlix.Cluster.AdminCommissioning
+  alias Matterlix.Cluster.LocalizationConfiguration
+  alias Matterlix.Cluster.TimeFormatLocalization
+  alias Matterlix.Cluster.UnitLocalization
+  alias Matterlix.Cluster.TimeSynchronization
   alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -1966,6 +1970,98 @@ defmodule Matterlix.ClusterTest do
 
       {:ok, nil} = GenServer.call(name, {:invoke_command, :revoke_commissioning, %{}})
       assert {:ok, 0} = GenServer.call(name, {:read_attribute, :window_status})
+    end
+  end
+
+  # ── Localization Configuration Cluster ───────────────────────
+
+  describe "LocalizationConfiguration" do
+    test "metadata" do
+      assert LocalizationConfiguration.cluster_id() == 0x002B
+      assert LocalizationConfiguration.cluster_name() == :localization_configuration
+    end
+
+    test "default values and writable locale" do
+      name = :"locale_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = LocalizationConfiguration.start_link(name: name)
+
+      assert {:ok, "en-US"} = GenServer.call(name, {:read_attribute, :active_locale})
+      assert {:ok, ["en-US"]} = GenServer.call(name, {:read_attribute, :supported_locales})
+
+      assert :ok = GenServer.call(name, {:write_attribute, :active_locale, "nl-NL"})
+      assert {:ok, "nl-NL"} = GenServer.call(name, {:read_attribute, :active_locale})
+    end
+  end
+
+  # ── Time Format Localization Cluster ─────────────────────────
+
+  describe "TimeFormatLocalization" do
+    test "metadata" do
+      assert TimeFormatLocalization.cluster_id() == 0x002C
+      assert TimeFormatLocalization.cluster_name() == :time_format_localization
+    end
+
+    test "hour_format is writable with enum constraint" do
+      name = :"time_fmt_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = TimeFormatLocalization.start_link(name: name)
+
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :hour_format})
+      assert :ok = GenServer.call(name, {:write_attribute, :hour_format, 0})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :hour_format})
+
+      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :hour_format, 2})
+    end
+  end
+
+  # ── Unit Localization Cluster ────────────────────────────────
+
+  describe "UnitLocalization" do
+    test "metadata" do
+      assert UnitLocalization.cluster_id() == 0x002D
+      assert UnitLocalization.cluster_name() == :unit_localization
+    end
+
+    test "temperature_unit is writable with enum constraint" do
+      name = :"unit_loc_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = UnitLocalization.start_link(name: name)
+
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :temperature_unit})
+      assert :ok = GenServer.call(name, {:write_attribute, :temperature_unit, 0})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :temperature_unit})
+
+      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :temperature_unit, 3})
+    end
+  end
+
+  # ── Time Synchronization Cluster ─────────────────────────────
+
+  describe "TimeSynchronization" do
+    test "metadata" do
+      assert TimeSynchronization.cluster_id() == 0x0038
+      assert TimeSynchronization.cluster_name() == :time_synchronization
+    end
+
+    test "default values" do
+      name = :"time_sync_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = TimeSynchronization.start_link(name: name)
+
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :utc_time})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :granularity})
+    end
+
+    test "set_utc_time updates time attributes" do
+      name = :"time_sync_set_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = TimeSynchronization.start_link(name: name)
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :set_utc_time, %{
+        utc_time: 1_700_000_000_000_000,
+        granularity: 4,
+        time_source: 2
+      }})
+
+      assert {:ok, 1_700_000_000_000_000} = GenServer.call(name, {:read_attribute, :utc_time})
+      assert {:ok, 4} = GenServer.call(name, {:read_attribute, :granularity})
+      assert {:ok, 2} = GenServer.call(name, {:read_attribute, :time_source})
     end
   end
 end
