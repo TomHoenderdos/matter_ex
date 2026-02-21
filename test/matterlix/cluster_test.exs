@@ -28,6 +28,9 @@ defmodule Matterlix.ClusterTest do
   alias Matterlix.Cluster.PressureMeasurement
   alias Matterlix.Cluster.FlowMeasurement
   alias Matterlix.Cluster.PumpConfigurationAndControl
+  alias Matterlix.Cluster.GeneralDiagnostics
+  alias Matterlix.Cluster.SoftwareDiagnostics
+  alias Matterlix.Cluster.WiFiNetworkDiagnostics
   alias Matterlix.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -1808,6 +1811,84 @@ defmodule Matterlix.ClusterTest do
 
       # Invalid mode
       assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :operation_mode, 4})
+    end
+  end
+
+  # ── General Diagnostics Cluster ──────────────────────────────
+
+  describe "GeneralDiagnostics" do
+    test "metadata" do
+      assert GeneralDiagnostics.cluster_id() == 0x0033
+      assert GeneralDiagnostics.cluster_name() == :general_diagnostics
+    end
+
+    test "attribute_defs" do
+      defs = GeneralDiagnostics.attribute_defs()
+      names = Enum.map(defs, & &1.name)
+      assert :network_interfaces in names
+      assert :reboot_count in names
+      assert :up_time in names
+      assert :boot_reason in names
+      assert :active_hardware_faults in names
+      assert :test_event_triggers_enabled in names
+    end
+
+    test "default values" do
+      name = :"gen_diag_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = GeneralDiagnostics.start_link(name: name)
+
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :reboot_count})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :boot_reason})
+      assert {:ok, []} = GenServer.call(name, {:read_attribute, :active_hardware_faults})
+      assert {:ok, false} = GenServer.call(name, {:read_attribute, :test_event_triggers_enabled})
+    end
+  end
+
+  # ── Software Diagnostics Cluster ─────────────────────────────
+
+  describe "SoftwareDiagnostics" do
+    test "metadata" do
+      assert SoftwareDiagnostics.cluster_id() == 0x0034
+      assert SoftwareDiagnostics.cluster_name() == :software_diagnostics
+    end
+
+    test "default values and reset_watermarks" do
+      name = :"sw_diag_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = SoftwareDiagnostics.start_link(name: name)
+
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :current_heap_free})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :current_heap_high_watermark})
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :reset_watermarks, %{}})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :current_heap_high_watermark})
+    end
+  end
+
+  # ── WiFi Network Diagnostics Cluster ─────────────────────────
+
+  describe "WiFiNetworkDiagnostics" do
+    test "metadata" do
+      assert WiFiNetworkDiagnostics.cluster_id() == 0x0036
+      assert WiFiNetworkDiagnostics.cluster_name() == :wifi_network_diagnostics
+    end
+
+    test "default values" do
+      name = :"wifi_diag_test_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = WiFiNetworkDiagnostics.start_link(name: name)
+
+      assert {:ok, 4} = GenServer.call(name, {:read_attribute, :security_type})
+      assert {:ok, -50} = GenServer.call(name, {:read_attribute, :rssi})
+      assert {:ok, 1} = GenServer.call(name, {:read_attribute, :channel_number})
+    end
+
+    test "reset_counts zeroes all counters" do
+      name = :"wifi_diag_reset_#{System.unique_integer([:positive])}"
+      {:ok, _pid} = WiFiNetworkDiagnostics.start_link(name: name)
+
+      {:ok, nil} = GenServer.call(name, {:invoke_command, :reset_counts, %{}})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :beacon_lost_count})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :beacon_rx_count})
+      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :overrun_count})
     end
   end
 end
