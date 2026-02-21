@@ -2,7 +2,7 @@
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 
-## Completed Phases (1-53)
+## Completed Phases (1-54)
 
 | Phase | Description | Tests |
 |-------|-------------|-------|
@@ -55,8 +55,9 @@ Pure Elixir Matter protocol stack — zero external dependencies.
 | 51 | Appliance Clusters: LaundryWasherControls, DishwasherAlarm, RefrigeratorAlarm | - |
 | 52 | Device Types Registry (25 device types with required/optional cluster validation) | - |
 | 53 | Safety + Valve Clusters: SmokeCOAlarm, BooleanStateConfiguration, ValveConfigurationAndControl | - |
+| 54 | Chunked IM Messages (more_chunked_messages flag, chunk_report_data helper) | - |
 
-**Current: 999 tests, 0 failures**
+**Current: 1006 tests, 0 failures**
 
 ---
 

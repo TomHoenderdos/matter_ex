@@ -496,6 +496,115 @@ defmodule Matterlix.IMTest do
     end
   end
 
+  # ── ReportData more_chunked_messages ──────────────────────────
+
+  describe "ReportData more_chunked_messages" do
+    test "encode/decode with more_chunked_messages=true" do
+      msg = %IM.ReportData{
+        attribute_reports: [
+          {:data, %{
+            version: 1,
+            path: %{endpoint: 1, cluster: 0x0006, attribute: 0x0000},
+            value: {:bool, true}
+          }}
+        ],
+        more_chunked_messages: true
+      }
+
+      {:ok, decoded} = IM.decode(:report_data, IM.encode(msg))
+      assert decoded.more_chunked_messages == true
+    end
+
+    test "defaults to false when not set" do
+      msg = %IM.ReportData{attribute_reports: []}
+      {:ok, decoded} = IM.decode(:report_data, IM.encode(msg))
+      assert decoded.more_chunked_messages == false
+    end
+  end
+
+  # ── chunk_report_data ───────────────────────────────────────
+
+  describe "chunk_report_data/2" do
+    test "returns single chunk for small reports" do
+      reports = for i <- 1..3 do
+        {:data, %{
+          version: 1,
+          path: %{endpoint: 1, cluster: 0x0006, attribute: i},
+          value: {:uint, i}
+        }}
+      end
+
+      msg = %IM.ReportData{attribute_reports: reports}
+      chunks = IM.chunk_report_data(msg, 5)
+      assert length(chunks) == 1
+      assert hd(chunks).more_chunked_messages == false
+    end
+
+    test "splits large reports into multiple chunks" do
+      reports = for i <- 1..10 do
+        {:data, %{
+          version: 1,
+          path: %{endpoint: 1, cluster: 0x0006, attribute: i},
+          value: {:uint, i}
+        }}
+      end
+
+      msg = %IM.ReportData{attribute_reports: reports}
+      chunks = IM.chunk_report_data(msg, 3)
+
+      assert length(chunks) == 4
+      # First 3 chunks have more_chunked_messages=true
+      assert Enum.at(chunks, 0).more_chunked_messages == true
+      assert Enum.at(chunks, 1).more_chunked_messages == true
+      assert Enum.at(chunks, 2).more_chunked_messages == true
+      # Last chunk has more_chunked_messages=false
+      assert Enum.at(chunks, 3).more_chunked_messages == false
+
+      # Total reports across all chunks equals original
+      total = Enum.sum(Enum.map(chunks, fn c -> length(c.attribute_reports) end))
+      assert total == 10
+    end
+
+    test "preserves subscription_id across chunks" do
+      reports = for i <- 1..6 do
+        {:data, %{
+          version: 1,
+          path: %{endpoint: 1, cluster: 0x0006, attribute: i},
+          value: {:uint, i}
+        }}
+      end
+
+      msg = %IM.ReportData{subscription_id: 42, attribute_reports: reports}
+      chunks = IM.chunk_report_data(msg, 2)
+
+      assert length(chunks) == 3
+      assert Enum.all?(chunks, fn c -> c.subscription_id == 42 end)
+    end
+
+    test "empty reports returns single chunk" do
+      msg = %IM.ReportData{attribute_reports: []}
+      chunks = IM.chunk_report_data(msg, 5)
+      assert length(chunks) == 1
+    end
+
+    test "exact multiple of chunk size" do
+      reports = for i <- 1..6 do
+        {:data, %{
+          version: 1,
+          path: %{endpoint: 1, cluster: 0x0006, attribute: i},
+          value: {:uint, i}
+        }}
+      end
+
+      msg = %IM.ReportData{attribute_reports: reports}
+      chunks = IM.chunk_report_data(msg, 3)
+
+      assert length(chunks) == 2
+      assert Enum.at(chunks, 0).more_chunked_messages == true
+      assert Enum.at(chunks, 1).more_chunked_messages == false
+    end
+  end
+
   # ── Error handling ────────────────────────────────────────────
 
   describe "error handling" do

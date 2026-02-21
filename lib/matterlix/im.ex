@@ -38,6 +38,7 @@ defmodule Matterlix.IM do
     defstruct subscription_id: nil,
               attribute_reports: [],
               event_reports: [],
+              more_chunked_messages: false,
               suppress_response: false
   end
 
@@ -80,6 +81,34 @@ defmodule Matterlix.IM do
   end
 
   # ── Public API ─────────────────────────────────────────────────
+
+  @doc """
+  Chunk a ReportData into multiple messages, each with at most `max_reports`
+  attribute reports. All chunks except the last have `more_chunked_messages: true`.
+  """
+  @spec chunk_report_data(%ReportData{}, pos_integer()) :: [%ReportData{}]
+  def chunk_report_data(%ReportData{} = report, max_reports \\ 9) when max_reports > 0 do
+    chunks = Enum.chunk_every(report.attribute_reports, max_reports)
+
+    case chunks do
+      [] ->
+        [report]
+
+      [_single] ->
+        [report]
+
+      _ ->
+        {init, [last]} = Enum.split(chunks, -1)
+
+        init_reports =
+          Enum.map(init, fn chunk ->
+            %ReportData{report | attribute_reports: chunk, more_chunked_messages: true}
+          end)
+
+        last_report = %ReportData{report | attribute_reports: last, more_chunked_messages: false}
+        init_reports ++ [last_report]
+    end
+  end
 
   @spec decode(atom(), binary()) :: {:ok, struct()} | {:error, atom()}
   def decode(opcode, binary) do
@@ -134,6 +163,7 @@ defmodule Matterlix.IM do
       subscription_id: map[0],
       attribute_reports: reports,
       event_reports: event_reports,
+      more_chunked_messages: Map.get(map, 3, false),
       suppress_response: Map.get(map, 4, false)
     }}
   end
@@ -374,6 +404,7 @@ defmodule Matterlix.IM do
         map
       end
 
+    map = if msg.more_chunked_messages, do: Map.put(map, 3, {:bool, true}), else: map
     map = if msg.suppress_response, do: Map.put(map, 4, {:bool, true}), else: map
     TLV.encode(map)
   end
