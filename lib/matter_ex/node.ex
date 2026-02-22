@@ -218,6 +218,45 @@ defmodule MatterEx.Node do
     handle_info({:tcp_closed, tcp_socket}, state)
   end
 
+  # ── BLE messages (from Transport.BLE GenServer) ─────────────────
+
+  def handle_info({:ble_connected, ble_pid}, state) do
+    Logger.info("BLE connection from #{inspect(ble_pid)}")
+    {:noreply, state}
+  end
+
+  def handle_info({:ble_data, ble_pid, data}, state) do
+    transport = {:ble, ble_pid}
+    Logger.debug("BLE RX #{byte_size(data)}B")
+    state = %{state | current_transport: transport}
+    {actions, handler} = MessageHandler.handle_frame(state.handler, data)
+    state = %{state | handler: handler}
+    state = process_actions(actions, state)
+    {:noreply, state}
+  end
+
+  def handle_info({:ble_disconnected, ble_pid}, state) do
+    Logger.info("BLE disconnected: #{inspect(ble_pid)}")
+    ble_transport = {:ble, ble_pid}
+
+    {session_ids, session_transports} =
+      Enum.reduce(state.session_transports, {[], %{}}, fn {sid, t}, {ids, kept} ->
+        if t == ble_transport do
+          {[sid | ids], kept}
+        else
+          {ids, Map.put(kept, sid, t)}
+        end
+      end)
+
+    handler =
+      Enum.reduce(session_ids, state.handler, fn sid, handler ->
+        {_actions, handler} = MessageHandler.close_session(handler, sid)
+        handler
+      end)
+
+    {:noreply, %{state | session_transports: session_transports, handler: handler}}
+  end
+
   # ── MRP timeout ──────────────────────────────────────────────────
 
   def handle_info({:mrp_timeout, session_id, exchange_id, attempt}, state) do
@@ -394,6 +433,11 @@ defmodule MatterEx.Node do
     :gen_tcp.send(tcp_socket, TCPFraming.frame(frame))
   end
 
+  defp send_frame(_state, {:ble, ble_pid}, frame) do
+    Logger.debug("BLE TX #{byte_size(frame)}B")
+    MatterEx.Transport.BLE.send(ble_pid, frame)
+  end
+
   defp send_frame(_state, nil, _frame) do
     Logger.warning("Dropping frame: no transport available")
     :ok
@@ -401,6 +445,7 @@ defmodule MatterEx.Node do
 
   defp transport_name({:udp, _}), do: "UDP"
   defp transport_name({:tcp, _}), do: "TCP"
+  defp transport_name({:ble, _}), do: "BLE"
   defp transport_name(nil), do: "unknown"
 
   # ── Private: Per-peer transport update ──────────────────────
