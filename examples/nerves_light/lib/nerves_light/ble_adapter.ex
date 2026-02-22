@@ -82,6 +82,7 @@ defmodule NervesLight.BLEAdapter do
         write: fn
           {:matter, :rx}, data ->
             send(owner, {:ble_data, :matter_ble, data})
+            :ok
         end,
         subscribe: fn
           {:matter, :tx} ->
