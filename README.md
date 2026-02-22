@@ -99,8 +99,10 @@ via Matter write requests — the cluster GenServer handles this automatically.
 ## Updating State from Your Application
 
 When something changes on your device (a button press, a sensor reading), update the
-Matter attribute so controllers see the new state. Here's a GenServer that watches a
-GPIO button and pushes state into Matter:
+Matter attribute so controllers see the new state.
+
+Using the `MyApp.Light` from the Quick Start example above, here's a GenServer that
+watches a GPIO button and pushes state into Matter:
 
 ```elixir
 defmodule MyApp.ButtonWatcher do
@@ -109,7 +111,6 @@ defmodule MyApp.ButtonWatcher do
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
   def init(_opts) do
-    # Poll the button every 100ms (or use interrupts on real hardware)
     :timer.send_interval(100, :check_button)
     {:ok, %{last_state: false}}
   end
@@ -118,7 +119,7 @@ defmodule MyApp.ButtonWatcher do
     pressed = MyApp.GPIO.read_pin(4) == :high
 
     if pressed != state.last_state do
-      # Toggle the light in Matter — any subscribed controller gets notified
+      # Update OnOff on endpoint 1 — any subscribed controller gets notified
       MyApp.Light.write_attribute(1, :on_off, :on_off, pressed)
     end
 
@@ -127,10 +128,26 @@ defmodule MyApp.ButtonWatcher do
 end
 ```
 
-A temperature sensor pushing periodic readings:
+For a temperature sensor, first define the device:
 
 ```elixir
-defmodule MyApp.TempSensor do
+defmodule MyApp.Sensor do
+  use MatterEx.Device,
+    vendor_name: "Acme",
+    product_name: "Temp Sensor",
+    vendor_id: 0xFFF1,
+    product_id: 0x8002
+
+  endpoint 1, device_type: 0x0302 do
+    cluster MatterEx.Cluster.TemperatureMeasurement
+  end
+end
+```
+
+Then push readings from your hardware:
+
+```elixir
+defmodule MyApp.TempPoller do
   use GenServer
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
