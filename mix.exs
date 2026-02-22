@@ -8,7 +8,22 @@ defmodule MatterEx.MixProject do
       elixir: "~> 1.17",
       description: "A Matter (smart home) protocol stack in pure Elixir",
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      deps: deps(),
+      package: package(),
+      source_url: "https://github.com/TomHoenderdos/matter_ex",
+      homepage_url: "https://github.com/TomHoenderdos/matter_ex",
+      docs: [
+        main: "readme",
+        extras: ["README.md"]
+      ]
+    ]
+  end
+
+  defp package do
+    [
+      licenses: ["Apache-2.0"],
+      links: %{"GitHub" => "https://github.com/TomHoenderdos/matter_ex"},
+      files: ~w(lib mix.exs README.md LICENSE)
     ]
   end
 
