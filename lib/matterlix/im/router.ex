@@ -137,7 +137,7 @@ defmodule Matterlix.IM.Router do
               :allow ->
                 params = decode_command_params(invoke.fields, cmd_def)
 
-                case GenServer.call(gen_name, {:invoke_command, cmd_name, params}) do
+                case GenServer.call(gen_name, {:invoke_command, cmd_name, params, context}) do
                   {:ok, nil} ->
                     {:status,
                      %{
@@ -360,7 +360,16 @@ defmodule Matterlix.IM.Router do
   defp to_tlv(:bitmap8, value), do: {:uint, value}
   defp to_tlv(:bitmap16, value), do: {:uint, value}
   defp to_tlv(:struct, value) when is_map(value), do: {:struct, value}
-  defp to_tlv(:list, value), do: {:array, Enum.map(value, &{:uint, &1})}
+  defp to_tlv(:list, value) when is_list(value) do
+    {:array, Enum.map(value, fn
+      v when is_map(v) -> {:struct, v}
+      v when is_integer(v) -> {:uint, v}
+      v when is_binary(v) -> {:bytes, v}
+      v when is_boolean(v) -> {:bool, v}
+      {_, _} = tagged -> tagged
+      v -> {:uint, v}
+    end)}
+  end
   defp to_tlv(_type, value), do: {:uint, value}
 
   # ── Error helpers ──────────────────────────────────────────────
@@ -396,12 +405,24 @@ defmodule Matterlix.IM.Router do
   defp maybe_filter_fabric_scoped(value, %{fabric_scoped: true}, %{fabric_index: fi})
        when is_list(value) and fi > 0 do
     Enum.filter(value, fn entry ->
-      entry_fi = entry[:fabric_index] || entry["fabric_index"]
+      entry_fi = extract_fabric_index(entry)
       entry_fi == fi
     end)
   end
 
   defp maybe_filter_fabric_scoped(value, _attr_def, _context), do: value
+
+  # Extract fabric_index from an entry that may use atom key :fabric_index,
+  # integer key 254 (Matter FabricIndex tag), or tagged value {:uint, n}
+  defp extract_fabric_index(entry) when is_map(entry) do
+    case entry[:fabric_index] || entry[254] do
+      {:uint, n} -> n
+      n when is_integer(n) -> n
+      _ -> nil
+    end
+  end
+
+  defp extract_fabric_index(_), do: nil
 
   # On write for fabric-scoped attributes: preserve other fabrics' entries,
   # replace this fabric's entries with the new value
@@ -410,7 +431,7 @@ defmodule Matterlix.IM.Router do
     case GenServer.call(gen_name, {:read_attribute, attr_name}) do
       {:ok, existing} when is_list(existing) ->
         other_fabric_entries = Enum.reject(existing, fn entry ->
-          (entry[:fabric_index] || entry["fabric_index"]) == fi
+          extract_fabric_index(entry) == fi
         end)
 
         other_fabric_entries ++ new_entries

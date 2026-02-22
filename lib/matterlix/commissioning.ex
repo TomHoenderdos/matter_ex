@@ -15,6 +15,7 @@ defmodule Matterlix.Commissioning do
   @type credentials :: %{
     fabric_index: non_neg_integer(),
     noc: binary(),
+    icac: binary() | nil,
     private_key: binary(),
     ipk: binary(),
     node_id: integer(),
@@ -75,19 +76,32 @@ defmodule Matterlix.Commissioning do
     Agent.get(name, & &1.pending_root_cert)
   end
 
-  @spec store_noc(non_neg_integer(), binary(), binary(), integer(), integer(), GenServer.server()) :: :ok
-  def store_noc(fabric_index, noc, ipk, node_id, fabric_id, name \\ @default_name) do
+  @spec store_noc(non_neg_integer(), binary(), binary() | nil, binary(), integer(), integer(), GenServer.server()) :: :ok
+  def store_noc(fabric_index, noc, icac, ipk, node_id, fabric_id, name \\ @default_name) do
+    require Logger
+    Logger.debug("Commissioning.store_noc: fabric=#{fabric_index} node=#{node_id} fabric_id=#{fabric_id} ipk=#{Base.encode16(ipk)}(#{byte_size(ipk)}B)")
+
     Agent.update(name, fn state ->
       {_pub, priv} = state.pending_keypair
+      root_cert = state.pending_root_cert
+
+      if root_cert do
+        alias Matterlix.CASE.Messages, as: CASEMessages
+        rpk = CASEMessages.extract_public_key(root_cert)
+        Logger.debug("Commissioning.store_noc: root_cert=#{byte_size(root_cert)}B root_pub_key=#{if rpk, do: "#{Base.encode16(rpk)}(#{byte_size(rpk)}B)", else: "nil"}")
+      else
+        Logger.debug("Commissioning.store_noc: root_cert=nil")
+      end
 
       fabric_entry = %{
         fabric_index: fabric_index,
         noc: noc,
+        icac: icac,
         ipk: ipk,
         node_id: node_id,
         fabric_id: fabric_id,
         private_key: priv,
-        root_cert: state.pending_root_cert,
+        root_cert: root_cert,
         case_admin_subject: nil
       }
 
@@ -202,6 +216,7 @@ defmodule Matterlix.Commissioning do
     %{
       fabric_index: entry.fabric_index,
       noc: entry.noc,
+      icac: entry.icac,
       private_key: entry.private_key,
       ipk: entry.ipk,
       node_id: entry.node_id,

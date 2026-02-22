@@ -22,6 +22,7 @@ defmodule Matterlix.Cluster.BasicInformation do
   event 0x00, :start_up, :critical
   event 0x01, :shut_down, :critical
 
+  @impl true
   def init(opts) do
     {:ok, state} = super(opts)
 

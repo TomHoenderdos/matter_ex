@@ -25,6 +25,7 @@ defmodule Matterlix.Cluster.GroupKeyManagement do
   command 0x03, :key_set_remove, [group_key_set_id: :uint16]
   command 0x04, :key_set_read_all_indices, []
 
+  @impl true
   def init(opts) do
     {:ok, state} = super(opts)
     # Internal storage: key_set_id => %{epoch_key0: binary, ...}

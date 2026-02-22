@@ -51,7 +51,7 @@ defmodule Matterlix.ACL do
            matches_auth_mode?(entry, context) &&
            matches_subject?(entry, context) &&
            matches_target?(entry, target) &&
-           entry.privilege >= required_level
+           get_field(entry, :privilege, 1) >= required_level
        end) do
       :allow
     else
@@ -77,27 +77,54 @@ defmodule Matterlix.ACL do
   def write_privilege(_cluster_id), do: :operate
 
   # ── Private matching helpers ──────────────────────────────────────
+  # ACL entries may use atom keys (internal) or integer keys with tagged
+  # values (TLV format: 1=privilege, 2=authMode, 3=subjects, 4=targets, 254=fabricIndex).
 
-  defp matches_fabric?(entry, context), do: entry.fabric_index == context.fabric_index
+  defp matches_fabric?(entry, context), do: get_field(entry, :fabric_index, 254) == context.fabric_index
 
   defp matches_auth_mode?(entry, context) do
     case context.auth_mode do
-      :case -> entry.auth_mode == 2
-      :group -> entry.auth_mode == 3
+      :case -> get_field(entry, :auth_mode, 2) == 2
+      :group -> get_field(entry, :auth_mode, 2) == 3
       _ -> false
     end
   end
 
   defp matches_subject?(entry, context) do
-    entry.subjects == nil || context.subject in entry.subjects
+    subjects = get_field(entry, :subjects, 3)
+    subjects == nil || context.subject in unwrap_subjects(subjects)
   end
 
-  defp matches_target?(%{targets: nil}, _target), do: true
+  defp matches_target?(entry, _target) when not is_map(entry), do: false
 
-  defp matches_target?(%{targets: targets}, {endpoint_id, cluster_id}) do
-    Enum.any?(targets, fn t ->
-      (t[:endpoint] == nil || t[:endpoint] == endpoint_id) &&
-        (t[:cluster] == nil || t[:cluster] == cluster_id)
-    end)
+  defp matches_target?(entry, {endpoint_id, cluster_id}) do
+    targets = get_field(entry, :targets, 4)
+
+    case targets do
+      nil -> true
+      targets when is_list(targets) ->
+        Enum.any?(targets, fn t ->
+          (t[:endpoint] == nil || t[:endpoint] == endpoint_id) &&
+            (t[:cluster] == nil || t[:cluster] == cluster_id)
+        end)
+      _ -> true
+    end
   end
+
+  # Get a field from an entry that may use atom or integer keys, with possibly tagged values
+  defp get_field(entry, atom_key, int_key) do
+    case Map.get(entry, atom_key) do
+      nil -> unwrap_tagged(Map.get(entry, int_key))
+      value -> value
+    end
+  end
+
+  defp unwrap_tagged({:uint, n}), do: n
+  defp unwrap_tagged({:array, _} = arr), do: arr
+  defp unwrap_tagged(nil), do: nil
+  defp unwrap_tagged(value), do: value
+
+  defp unwrap_subjects({:array, items}), do: Enum.map(items, &unwrap_tagged/1)
+  defp unwrap_subjects(list) when is_list(list), do: list
+  defp unwrap_subjects(_), do: []
 end

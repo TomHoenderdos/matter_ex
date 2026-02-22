@@ -41,6 +41,7 @@ defmodule Matterlix.Cluster.ICDManagement do
   command 0x02, :unregister_client, [check_in_node_id: :uint64, verification_key: :bytes]
   command 0x03, :stay_active_request, [stay_active_duration: :uint32]
 
+  @impl true
   def init(opts) do
     {:ok, state} = super(opts)
     {:ok, state}

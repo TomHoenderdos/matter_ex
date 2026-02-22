@@ -45,7 +45,7 @@ defmodule Matterlix.CommissioningTest do
 
       Commissioning.store_keypair({pub, priv}, name)
       Commissioning.store_root_cert(:crypto.strong_rand_bytes(200), name)
-      Commissioning.store_noc(1, noc, ipk, 42, 1, name)
+      Commissioning.store_noc(1, noc, nil, ipk, 42, 1, name)
       Commissioning.complete(name)
 
       assert Commissioning.commissioned?(name)
@@ -58,7 +58,7 @@ defmodule Matterlix.CommissioningTest do
       ipk = :crypto.strong_rand_bytes(16)
 
       Commissioning.store_keypair({pub, priv}, name)
-      Commissioning.store_noc(1, noc, ipk, 42, 1, name)
+      Commissioning.store_noc(1, noc, nil, ipk, 42, 1, name)
       Commissioning.complete(name)
 
       creds = Commissioning.get_credentials(name)
@@ -84,11 +84,11 @@ defmodule Matterlix.CommissioningTest do
 
       noc1 = :crypto.strong_rand_bytes(100)
       ipk1 = :crypto.strong_rand_bytes(16)
-      Commissioning.store_noc(1, noc1, ipk1, 42, 1, name)
+      Commissioning.store_noc(1, noc1, nil, ipk1, 42, 1, name)
 
       noc2 = :crypto.strong_rand_bytes(100)
       ipk2 = :crypto.strong_rand_bytes(16)
-      Commissioning.store_noc(2, noc2, ipk2, 99, 2, name)
+      Commissioning.store_noc(2, noc2, nil, ipk2, 99, 2, name)
 
       assert Commissioning.commissioned?(name)
       assert Enum.sort(Commissioning.get_fabric_indices(name)) == [1, 2]
@@ -107,10 +107,10 @@ defmodule Matterlix.CommissioningTest do
       priv = :crypto.strong_rand_bytes(32)
       Commissioning.store_keypair({pub, priv}, name)
 
-      Commissioning.store_noc(1, <<1>>, <<2>>, 1, 1, name)
+      Commissioning.store_noc(1, <<1>>, nil, <<2>>, 1, 1, name)
       assert Commissioning.last_added_fabric(name) == 1
 
-      Commissioning.store_noc(2, <<3>>, <<4>>, 2, 2, name)
+      Commissioning.store_noc(2, <<3>>, nil, <<4>>, 2, 2, name)
       assert Commissioning.last_added_fabric(name) == 2
 
       Commissioning.clear_last_added(name)
@@ -122,8 +122,8 @@ defmodule Matterlix.CommissioningTest do
       priv = :crypto.strong_rand_bytes(32)
       Commissioning.store_keypair({pub, priv}, name)
 
-      Commissioning.store_noc(1, <<1>>, <<2>>, 10, 1, name)
-      Commissioning.store_noc(2, <<3>>, <<4>>, 20, 2, name)
+      Commissioning.store_noc(1, <<1>>, nil, <<2>>, 10, 1, name)
+      Commissioning.store_noc(2, <<3>>, nil, <<4>>, 20, 2, name)
 
       all = Commissioning.get_all_credentials(name)
       assert length(all) == 2
@@ -136,7 +136,7 @@ defmodule Matterlix.CommissioningTest do
     test "clears all state", %{name: name} do
       Commissioning.arm(name)
       Commissioning.store_keypair({<<1>>, <<2>>}, name)
-      Commissioning.store_noc(1, <<3>>, <<4>>, 1, 1, name)
+      Commissioning.store_noc(1, <<3>>, nil, <<4>>, 1, 1, name)
       Commissioning.complete(name)
 
       Commissioning.reset(name)

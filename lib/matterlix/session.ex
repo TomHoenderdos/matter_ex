@@ -55,8 +55,9 @@ defmodule Matterlix.Session do
   def new(opts) do
     ke = Keyword.fetch!(opts, :encryption_key)
     role = Keyword.get(opts, :role, :responder)
+    salt = Keyword.get(opts, :salt, <<>>)
 
-    {i2r, r2i, challenge} = derive_session_keys(ke)
+    {i2r, r2i, challenge} = derive_session_keys(ke, salt)
 
     {encrypt_key, decrypt_key} =
       case role do
@@ -80,10 +81,13 @@ defmodule Matterlix.Session do
 
   @doc """
   Derive I2R_Key, R2I_Key, and AttestationChallenge from session Ke.
+
+  For PASE sessions, salt is empty. For CASE sessions, salt is
+  `IPK(16) || SHA256(sigma1 || sigma2 || sigma3)(32)` = 48 bytes.
   """
-  @spec derive_session_keys(binary()) :: {binary(), binary(), binary()}
-  def derive_session_keys(ke) when is_binary(ke) and byte_size(ke) >= 16 do
-    keys = KDF.hkdf(<<>>, ke, "SessionKeys", 48)
+  @spec derive_session_keys(binary(), binary()) :: {binary(), binary(), binary()}
+  def derive_session_keys(ke, salt \\ <<>>) when is_binary(ke) and byte_size(ke) >= 16 do
+    keys = KDF.hkdf(salt, ke, "SessionKeys", 48)
     i2r = binary_part(keys, 0, 16)
     r2i = binary_part(keys, 16, 16)
     challenge = binary_part(keys, 32, 16)

@@ -154,6 +154,35 @@ defmodule Matterlix.TLV.Encoder do
     [control(tc, @list_type), tag, inner, <<@end_of_container>>]
   end
 
+  # Auto-tag raw values (from TLV decoder round-trip)
+  defp encode_with_tag(tc, tag, b) when is_boolean(b) do
+    encode_with_tag(tc, tag, {:bool, b})
+  end
+
+  defp encode_with_tag(tc, tag, n) when is_integer(n) and n >= 0 do
+    encode_with_tag(tc, tag, {:uint, n})
+  end
+
+  defp encode_with_tag(tc, tag, n) when is_integer(n) do
+    encode_with_tag(tc, tag, {:int, n})
+  end
+
+  defp encode_with_tag(tc, tag, s) when is_binary(s) do
+    encode_with_tag(tc, tag, {:bytes, s})
+  end
+
+  defp encode_with_tag(tc, tag, nil) do
+    encode_with_tag(tc, tag, :null)
+  end
+
+  defp encode_with_tag(tc, tag, list) when is_list(list) do
+    encode_with_tag(tc, tag, {:array, list})
+  end
+
+  defp encode_with_tag(tc, tag, map) when is_map(map) do
+    encode_with_tag(tc, tag, {:struct, map})
+  end
+
   # Build control byte: (tag_control << 5) | element_type
   defp control(tag_control, elem_type) do
     <<(tag_control <<< 5) ||| elem_type>>

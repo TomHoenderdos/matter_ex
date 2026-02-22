@@ -114,6 +114,7 @@ defmodule Matterlix.Cluster do
         GenServer.start_link(__MODULE__, opts, name: opts[:name])
       end
 
+      @impl true
       def init(opts) do
         state =
           Enum.reduce(attribute_defs(), %{__data_version__: 0}, fn attr, acc ->
@@ -124,6 +125,7 @@ defmodule Matterlix.Cluster do
         {:ok, state}
       end
 
+      @impl true
       def handle_call({:read_attribute, name}, _from, state) do
         attr = Enum.find(attribute_defs(), &(&1.name == name))
 
@@ -154,6 +156,12 @@ defmodule Matterlix.Cluster do
                 {:reply, {:error, reason}, state}
             end
         end
+      end
+
+      def handle_call({:invoke_command, name, params, context}, from, state) do
+        # Merge session context into params so clusters can access it
+        params = Map.put(params, :_context, context)
+        handle_call({:invoke_command, name, params}, from, state)
       end
 
       def handle_call({:invoke_command, name, params}, _from, state) do

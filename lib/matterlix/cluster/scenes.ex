@@ -27,6 +27,7 @@ defmodule Matterlix.Cluster.Scenes do
   command 0x05, :recall_scene, [group_id: :uint16, scene_id: :uint8]
   command 0x06, :get_scene_membership, [group_id: :uint16], response_id: 0x06
 
+  @impl true
   def init(opts) do
     {:ok, state} = super(opts)
     # Internal: %{{group_id, scene_id} => scene_data}

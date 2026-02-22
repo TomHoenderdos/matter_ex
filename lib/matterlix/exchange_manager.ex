@@ -46,7 +46,8 @@ defmodule Matterlix.ExchangeManager do
             mrp: MRP.new(),
             next_exchange_id: 1,
             pending_acks: [],
-            timed_exchanges: %{}
+            timed_exchanges: %{},
+            pending_subscribe_responses: %{}
 
   @doc """
   Create a new ExchangeManager.
@@ -173,13 +174,35 @@ defmodule Matterlix.ExchangeManager do
   # ── Private: IM handling ──────────────────────────────────────────
 
   defp handle_im_message(state, proto, opcode, message_counter) do
-    # Register exchange
-    exchanges = Map.put(state.exchanges, proto.exchange_id, %{
-      role: :responder,
-      protocol: :interaction_model
-    })
-    state = %{state | exchanges: exchanges}
+    # Handle piggybacked ACK if present (clears MRP retransmit for our previous message)
+    state = if proto.ack_counter do
+      case MRP.on_ack(state.mrp, proto.exchange_id) do
+        {:ok, mrp} -> %{state | mrp: mrp}
+        {:error, :not_found} -> state
+      end
+    else
+      state
+    end
 
+    # Check for pending subscribe completion: status_response on an exchange
+    # with a stored SubscribeResponse means the client ACKed our priming ReportData
+    case Map.get(state.pending_subscribe_responses, proto.exchange_id) do
+      sub_payload when is_binary(sub_payload) and opcode == :status_response ->
+        complete_subscribe(state, proto, sub_payload, message_counter)
+
+      _ ->
+        # Register exchange
+        exchanges = Map.put(state.exchanges, proto.exchange_id, %{
+          role: :responder,
+          protocol: :interaction_model
+        })
+        state = %{state | exchanges: exchanges}
+
+        handle_im_message_normal(state, proto, opcode, message_counter)
+    end
+  end
+
+  defp handle_im_message_normal(state, proto, opcode, message_counter) do
     case IM.decode(opcode, proto.payload) do
       {:ok, request} ->
         suppress? = Map.get(request, :suppress_response, false)
@@ -215,6 +238,9 @@ defmodule Matterlix.ExchangeManager do
     response = state.handler.(opcode, request)
     response_payload = IM.encode(response)
 
+    Logger.debug("IM response #{inspect(resp_opcode_name)}: #{inspect(response)}")
+    Logger.debug("IM response TLV (#{byte_size(response_payload)}B): #{Base.encode16(response_payload)}")
+
     resp_opcode_num = ProtocolID.opcode(:interaction_model, resp_opcode_name)
 
     reply_proto = %ProtoHeader{
@@ -232,14 +258,49 @@ defmodule Matterlix.ExchangeManager do
     timeout = MRP.backoff_ms(state.mrp, 0, deterministic: true)
     state = %{state | mrp: mrp}
 
-    # For timed requests, keep exchange open and record deadline
+    # For timed requests / subscribe, keep exchange open
     state =
-      if opcode == :timed_request do
-        deadline = System.monotonic_time(:millisecond) + request.timeout_ms
-        %{state | timed_exchanges: Map.put(state.timed_exchanges, proto.exchange_id, deadline)}
-      else
-        close_exchange(state, proto.exchange_id)
+      cond do
+        opcode == :timed_request ->
+          deadline = System.monotonic_time(:millisecond) + request.timeout_ms
+          %{state | timed_exchanges: Map.put(state.timed_exchanges, proto.exchange_id, deadline)}
+
+        opcode == :subscribe_request ->
+          # Keep exchange open — SubscribeResponse will be sent after client ACKs priming ReportData
+          state
+
+        true ->
+          close_exchange(state, proto.exchange_id)
       end
+
+    {[{:reply, reply_proto}, {:schedule_mrp, proto.exchange_id, 0, timeout}], state}
+  end
+
+  # ── Private: Subscribe completion (phase 2) ────────────────────────
+
+  defp complete_subscribe(state, proto, sub_payload, message_counter) do
+    Logger.debug("IM subscribe: sending SubscribeResponse (completing subscribe on exchange #{proto.exchange_id})")
+
+    resp_opcode_num = ProtocolID.opcode(:interaction_model, :subscribe_response)
+
+    reply_proto = %ProtoHeader{
+      initiator: false,
+      needs_ack: true,
+      ack_counter: if(proto.needs_ack, do: message_counter, else: nil),
+      opcode: resp_opcode_num,
+      exchange_id: proto.exchange_id,
+      protocol_id: ProtocolID.protocol_id(:interaction_model),
+      payload: sub_payload
+    }
+
+    mrp = MRP.record_send(state.mrp, proto.exchange_id, :erlang.term_to_binary(reply_proto))
+    timeout = MRP.backoff_ms(state.mrp, 0, deterministic: true)
+
+    state = %{state |
+      mrp: mrp,
+      pending_subscribe_responses: Map.delete(state.pending_subscribe_responses, proto.exchange_id)
+    }
+    state = close_exchange(state, proto.exchange_id)
 
     {[{:reply, reply_proto}, {:schedule_mrp, proto.exchange_id, 0, timeout}], state}
   end
@@ -285,7 +346,7 @@ defmodule Matterlix.ExchangeManager do
   defp response_opcode(:read_request), do: {:ok, :report_data}
   defp response_opcode(:write_request), do: {:ok, :write_response}
   defp response_opcode(:invoke_request), do: {:ok, :invoke_response}
-  defp response_opcode(:subscribe_request), do: {:ok, :subscribe_response}
+  defp response_opcode(:subscribe_request), do: {:ok, :report_data}
   defp response_opcode(:timed_request), do: {:ok, :status_response}
   defp response_opcode(_), do: :no_response
 end

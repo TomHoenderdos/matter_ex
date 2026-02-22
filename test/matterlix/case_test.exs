@@ -161,7 +161,8 @@ defmodule Matterlix.CASETest do
     test "wrong IPK causes destination_id mismatch" do
       device = new_device(1, 10)
 
-      # Initiator uses different IPK
+      # Initiator uses different IPK — destination_id won't match because
+      # it's derived from HMAC-SHA256(IPK, ...)
       {noc, priv, _pub} = generate_credentials(2)
       wrong_ipk = :crypto.strong_rand_bytes(16)
 
@@ -172,6 +173,7 @@ defmodule Matterlix.CASETest do
       )
 
       {:send, :case_sigma1, sigma1, _init} = CASE.initiate(init)
+      # Device rejects Sigma1 because destination_id doesn't match
       assert {:error, :destination_mismatch} = CASE.handle(device, :case_sigma1, sigma1)
     end
 

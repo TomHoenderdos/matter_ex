@@ -338,16 +338,19 @@ defmodule Matterlix.IM do
 
   # ── Encoders ───────────────────────────────────────────────────
 
+  # Matter spec requires InteractionModelRevision (tag 0xFF) in all IM messages
+  @im_revision {0xFF, {:uint, 11}}
+
   defp encode_status_response(%StatusResponse{status: s}) do
-    TLV.encode(%{0 => {:uint, s}})
+    TLV.encode(%{0 => {:uint, s}, elem(@im_revision, 0) => elem(@im_revision, 1)})
   end
 
   defp encode_timed_request(%TimedRequest{timeout_ms: t}) do
-    TLV.encode(%{0 => {:uint, t}})
+    TLV.encode(%{0 => {:uint, t}, 0xFF => {:uint, 11}})
   end
 
   defp encode_read_request(%ReadRequest{} = req) do
-    map = %{3 => {:bool, req.fabric_filtered}}
+    map = %{3 => {:bool, req.fabric_filtered}, 0xFF => {:uint, 11}}
 
     map =
       if req.attribute_paths != [] do
@@ -406,13 +409,15 @@ defmodule Matterlix.IM do
 
     map = if msg.more_chunked_messages, do: Map.put(map, 3, {:bool, true}), else: map
     map = if msg.suppress_response, do: Map.put(map, 4, {:bool, true}), else: map
+    map = Map.put(map, 0xFF, {:uint, 11})
     TLV.encode(map)
   end
 
   defp encode_write_request(%WriteRequest{} = msg) do
     map = %{
       0 => {:bool, msg.suppress_response},
-      1 => {:bool, msg.timed_request}
+      1 => {:bool, msg.timed_request},
+      0xFF => {:uint, 11}
     }
 
     map =
@@ -428,13 +433,14 @@ defmodule Matterlix.IM do
 
   defp encode_write_response(%WriteResponse{} = msg) do
     responses = Enum.map(msg.write_responses, &{:struct, encode_attribute_status(&1)})
-    TLV.encode(%{0 => {:array, responses}})
+    TLV.encode(%{0 => {:array, responses}, 0xFF => {:uint, 11}})
   end
 
   defp encode_invoke_request(%InvokeRequest{} = msg) do
     map = %{
       0 => {:bool, msg.suppress_response},
-      1 => {:bool, msg.timed_request}
+      1 => {:bool, msg.timed_request},
+      0xFF => {:uint, 11}
     }
 
     map =
@@ -450,7 +456,7 @@ defmodule Matterlix.IM do
 
   defp encode_invoke_response(%InvokeResponse{} = msg) do
     responses = Enum.map(msg.invoke_responses, &{:struct, encode_invoke_response_ib(&1)})
-    TLV.encode(%{1 => {:array, responses}})
+    TLV.encode(%{0 => {:bool, false}, 1 => {:array, responses}, 0xFF => {:uint, 11}})
   end
 
   defp encode_subscribe_request(%SubscribeRequest{} = msg) do
@@ -458,7 +464,8 @@ defmodule Matterlix.IM do
       0 => {:bool, msg.keep_subscriptions},
       1 => {:uint, msg.min_interval},
       2 => {:uint, msg.max_interval},
-      7 => {:bool, msg.fabric_filtered}
+      7 => {:bool, msg.fabric_filtered},
+      0xFF => {:uint, 11}
     }
 
     map =
@@ -475,7 +482,8 @@ defmodule Matterlix.IM do
   defp encode_subscribe_response(%SubscribeResponse{} = msg) do
     TLV.encode(%{
       0 => {:uint, msg.subscription_id},
-      2 => {:uint, msg.max_interval}
+      2 => {:uint, msg.max_interval},
+      0xFF => {:uint, 11}
     })
   end
 

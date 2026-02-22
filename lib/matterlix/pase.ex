@@ -298,9 +298,7 @@ defmodule Matterlix.PASE do
   # existing hash from the request we sent, second is the response we received.
   @pake_context "CHIP PAKE V1 Commissioning"
 
-  defp hash_context(first, second \\ nil)
-
-  defp hash_context(first, nil) do
+  defp hash_context(first, nil) when is_binary(first) do
     :crypto.hash(:sha256, @pake_context <> first)
   end
 

@@ -121,6 +121,28 @@ defmodule Matterlix.MessageHandlerTest do
     {comm_session, handler}
   end
 
+  # Helper: complete the subscribe two-phase flow by sending StatusResponse
+  # and receiving the SubscribeResponse. `priming_msg` is the decrypted priming
+  # ReportData message from the first phase.
+  defp complete_subscribe(comm_session, handler, priming_msg, exchange_id) do
+    status_resp = IM.encode(%IM.StatusResponse{status: 0})
+    status_proto = %ProtoHeader{
+      initiator: true,
+      needs_ack: true,
+      ack_counter: priming_msg.header.message_counter,
+      opcode: ProtocolID.opcode(:interaction_model, :status_response),
+      exchange_id: exchange_id,
+      protocol_id: ProtocolID.protocol_id(:interaction_model),
+      payload: status_resp
+    }
+
+    {status_frame, comm_session} = SecureChannel.seal(comm_session, status_proto)
+    {actions, handler} = MessageHandler.handle_frame(handler, status_frame)
+    [{:send, sub_resp_frame} | _] = actions
+    {:ok, _sub_msg, comm_session} = SecureChannel.open(comm_session, sub_resp_frame)
+    {comm_session, handler}
+  end
+
   # ── PASE via MessageHandler ─────────────────────────────────────
 
   describe "PASE via MessageHandler" do
@@ -331,7 +353,7 @@ defmodule Matterlix.MessageHandlerTest do
       %{handler: handler, comm_session: comm_session}
     end
 
-    test "SubscribeRequest → SubscribeResponse with valid subscription_id",
+    test "SubscribeRequest → priming ReportData → StatusResponse → SubscribeResponse",
          %{handler: handler, comm_session: comm_session} do
       sub_req = IM.encode(%IM.SubscribeRequest{
         attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
@@ -351,14 +373,41 @@ defmodule Matterlix.MessageHandlerTest do
       {frame, comm_session} = SecureChannel.seal(comm_session, proto)
       {actions, handler} = MessageHandler.handle_frame(handler, frame)
 
+      # Phase 1: priming ReportData
       send_actions = Enum.filter(actions, &match?({:send, _}, &1))
       assert length(send_actions) == 1
 
       [{:send, resp_frame}] = send_actions
-      {:ok, msg, _comm_session} = SecureChannel.open(comm_session, resp_frame)
-      assert msg.proto.opcode == ProtocolID.opcode(:interaction_model, :subscribe_response)
+      {:ok, msg, comm_session} = SecureChannel.open(comm_session, resp_frame)
+      assert msg.proto.opcode == ProtocolID.opcode(:interaction_model, :report_data)
 
-      {:ok, sub_resp} = IM.decode(:subscribe_response, msg.proto.payload)
+      {:ok, report} = IM.decode(:report_data, msg.proto.payload)
+      assert report.subscription_id == 1
+
+      # Phase 2: send StatusResponse to ACK the priming report
+      status_resp = IM.encode(%IM.StatusResponse{status: 0})
+      status_proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        ack_counter: msg.header.message_counter,
+        opcode: ProtocolID.opcode(:interaction_model, :status_response),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: status_resp
+      }
+
+      {status_frame, comm_session} = SecureChannel.seal(comm_session, status_proto)
+      {actions2, handler} = MessageHandler.handle_frame(handler, status_frame)
+
+      # Phase 3: SubscribeResponse
+      send_actions2 = Enum.filter(actions2, &match?({:send, _}, &1))
+      assert length(send_actions2) == 1
+
+      [{:send, sub_resp_frame}] = send_actions2
+      {:ok, sub_msg, _comm_session} = SecureChannel.open(comm_session, sub_resp_frame)
+      assert sub_msg.proto.opcode == ProtocolID.opcode(:interaction_model, :subscribe_response)
+
+      {:ok, sub_resp} = IM.decode(:subscribe_response, sub_msg.proto.payload)
       assert sub_resp.subscription_id == 1
       assert sub_resp.max_interval == 60
 
@@ -369,7 +418,7 @@ defmodule Matterlix.MessageHandlerTest do
 
     test "multiple subscriptions get incrementing IDs",
          %{handler: handler, comm_session: comm_session} do
-      # First subscription
+      # First subscription — phase 1: priming ReportData
       sub_req1 = IM.encode(%IM.SubscribeRequest{
         attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
         min_interval: 0,
@@ -387,10 +436,13 @@ defmodule Matterlix.MessageHandlerTest do
       {actions1, handler} = MessageHandler.handle_frame(handler, frame1)
       [{:send, resp1} | _] = actions1
       {:ok, msg1, comm_session} = SecureChannel.open(comm_session, resp1)
-      {:ok, sub_resp1} = IM.decode(:subscribe_response, msg1.proto.payload)
-      assert sub_resp1.subscription_id == 1
+      {:ok, report1} = IM.decode(:report_data, msg1.proto.payload)
+      assert report1.subscription_id == 1
 
-      # Second subscription
+      # First subscription — phase 2: StatusResponse → SubscribeResponse
+      {comm_session, handler} = complete_subscribe(comm_session, handler, msg1, 1)
+
+      # Second subscription — phase 1: priming ReportData
       sub_req2 = IM.encode(%IM.SubscribeRequest{
         attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
         min_interval: 5,
@@ -407,9 +459,12 @@ defmodule Matterlix.MessageHandlerTest do
       {frame2, comm_session} = SecureChannel.seal(comm_session, proto2)
       {actions2, handler} = MessageHandler.handle_frame(handler, frame2)
       [{:send, resp2} | _] = actions2
-      {:ok, msg2, _comm_session} = SecureChannel.open(comm_session, resp2)
-      {:ok, sub_resp2} = IM.decode(:subscribe_response, msg2.proto.payload)
-      assert sub_resp2.subscription_id == 2
+      {:ok, msg2, comm_session} = SecureChannel.open(comm_session, resp2)
+      {:ok, report2} = IM.decode(:report_data, msg2.proto.payload)
+      assert report2.subscription_id == 2
+
+      # Second subscription — phase 2: StatusResponse → SubscribeResponse
+      {_comm_session, handler} = complete_subscribe(comm_session, handler, msg2, 2)
 
       # Both subscriptions stored
       entry = handler.sessions[1]
@@ -1127,9 +1182,9 @@ defmodule Matterlix.MessageHandlerTest do
       [{:command, cmd_data}] = response.invoke_responses
       nocsr_elements = cmd_data.fields[0]
 
-      # Decode NOCSR to get the public key
+      # Decode NOCSR to get the public key from the PKCS#10 CSR
       nocsr_decoded = Matterlix.TLV.decode(nocsr_elements)
-      pub_key = nocsr_decoded[1]
+      pub_key = Matterlix.Crypto.Certificate.pubkey_from_csr(nocsr_decoded[1])
 
       # 3. AddTrustedRootCert (endpoint 0, cluster 0x003E, command 0x0B)
       root_cert = :crypto.strong_rand_bytes(200)
@@ -1142,7 +1197,7 @@ defmodule Matterlix.MessageHandlerTest do
       ipk = :crypto.strong_rand_bytes(16)
       {response, comm_session, handler} =
         send_invoke(handler, comm_session, 0, 0x003E, 0x06,
-          %{0 => {:bytes, noc}, 1 => {:bytes, ipk}, 2 => {:uint, 112233}, 3 => {:uint, 0xFFF1}})
+          %{0 => {:bytes, noc}, 2 => {:bytes, ipk}, 3 => {:uint, 112233}, 4 => {:uint, 0xFFF1}})
 
       [{:command, noc_resp}] = response.invoke_responses
       assert noc_resp.fields[0] == 0  # StatusCode=Success
@@ -1180,7 +1235,7 @@ defmodule Matterlix.MessageHandlerTest do
 
       [{:command, cmd_data}] = response.invoke_responses
       nocsr_decoded = Matterlix.TLV.decode(cmd_data.fields[0])
-      pub_key = nocsr_decoded[1]
+      pub_key = Matterlix.Crypto.Certificate.pubkey_from_csr(nocsr_decoded[1])
 
       root_cert = :crypto.strong_rand_bytes(200)
       {_response, comm_session, handler} =
@@ -1190,7 +1245,7 @@ defmodule Matterlix.MessageHandlerTest do
       noc = Matterlix.CASE.Messages.encode_noc(42, 1, pub_key)
       {_response, comm_session, handler} =
         send_invoke(handler, comm_session, 0, 0x003E, 0x06,
-          %{0 => {:bytes, noc}, 1 => {:bytes, ipk}, 2 => {:uint, 112233}, 3 => {:uint, 0xFFF1}})
+          %{0 => {:bytes, noc}, 2 => {:bytes, ipk}, 3 => {:uint, 112233}, 4 => {:uint, 0xFFF1}})
 
       {_response, _comm_session, handler} =
         send_invoke(handler, comm_session, 0, 0x0030, 0x04, nil)

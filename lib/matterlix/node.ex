@@ -484,12 +484,14 @@ defmodule Matterlix.Node do
     acl_name = device.__process_name__(0, :access_control)
 
     if acl_name && Process.whereis(acl_name) do
+      # ACL entry with Matter TLV context tags:
+      # 1=Privilege, 2=AuthMode, 3=Subjects, 4=Targets, 254=FabricIndex
       admin_entry = %{
-        privilege: 5,
-        auth_mode: 2,
-        subjects: [admin_subject],
-        targets: nil,
-        fabric_index: fabric_index
+        1 => {:uint, 5},
+        2 => {:uint, 2},
+        3 => {:array, [{:uint, admin_subject}]},
+        4 => nil,
+        254 => {:uint, fabric_index}
       }
 
       GenServer.call(acl_name, {:write_attribute, :acl, [admin_entry]})
@@ -509,7 +511,9 @@ defmodule Matterlix.Node do
     root_pub = if creds[:root_cert], do: CASEMessages.extract_public_key(creds.root_cert)
 
     if root_pub && creds[:fabric_id] && creds[:node_id] do
+      Logger.debug("mDNS transition: root_pub=#{byte_size(root_pub)}B #{Base.encode16(root_pub)} fabric_id=#{creds.fabric_id} node_id=#{creds.node_id}")
       cfid = MDNS.compressed_fabric_id(root_pub, creds.fabric_id)
+      Logger.debug("mDNS transition: cfid=#{Base.encode16(cfid)}")
 
       service = MDNS.operational_service(
         port: port,
@@ -519,6 +523,8 @@ defmodule Matterlix.Node do
 
       MDNS.advertise(mdns, service)
       Logger.info("mDNS: transitioned to operational (_matter._tcp)")
+    else
+      Logger.warning("mDNS transition skipped: root_pub=#{inspect(root_pub && byte_size(root_pub))} fabric_id=#{inspect(creds[:fabric_id])} node_id=#{inspect(creds[:node_id])}")
     end
   end
 end

@@ -414,7 +414,7 @@ defmodule Matterlix.NodeTest do
   # ── Subscribe over UDP ─────────────────────────────────────────
 
   describe "subscribe over UDP" do
-    test "SubscribeRequest → encrypted SubscribeResponse", %{client: client, port: port} do
+    test "SubscribeRequest → priming ReportData → StatusResponse → SubscribeResponse", %{client: client, port: port} do
       comm_session = run_pase_over_udp(client, port)
 
       sub_req = IM.encode(%IM.SubscribeRequest{
@@ -430,13 +430,33 @@ defmodule Matterlix.NodeTest do
         payload: sub_req
       }
 
+      # Phase 1: priming ReportData
       {frame, comm_session} = SecureChannel.seal(comm_session, proto)
       resp = send_and_receive(client, port, frame)
 
-      {:ok, msg, _comm_session} = SecureChannel.open(comm_session, resp)
-      assert msg.proto.opcode == ProtocolID.opcode(:interaction_model, :subscribe_response)
+      {:ok, msg, comm_session} = SecureChannel.open(comm_session, resp)
+      assert msg.proto.opcode == ProtocolID.opcode(:interaction_model, :report_data)
 
-      {:ok, sub_resp} = IM.decode(:subscribe_response, msg.proto.payload)
+      {:ok, report} = IM.decode(:report_data, msg.proto.payload)
+      assert report.subscription_id == 1
+
+      # Phase 2: send StatusResponse → receive SubscribeResponse
+      status_resp = IM.encode(%IM.StatusResponse{status: 0})
+      status_proto = %ProtoHeader{
+        initiator: true, needs_ack: true,
+        ack_counter: msg.header.message_counter,
+        opcode: ProtocolID.opcode(:interaction_model, :status_response),
+        exchange_id: 10, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: status_resp
+      }
+
+      {status_frame, comm_session} = SecureChannel.seal(comm_session, status_proto)
+      sub_resp_raw = send_and_receive(client, port, status_frame)
+
+      {:ok, sub_msg, _comm_session} = SecureChannel.open(comm_session, sub_resp_raw)
+      assert sub_msg.proto.opcode == ProtocolID.opcode(:interaction_model, :subscribe_response)
+
+      {:ok, sub_resp} = IM.decode(:subscribe_response, sub_msg.proto.payload)
       assert sub_resp.subscription_id == 1
       assert sub_resp.max_interval == 60
     end

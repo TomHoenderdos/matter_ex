@@ -260,7 +260,9 @@ defmodule Matterlix.ClusterTest do
 
     test "OperationalCredentials command_defs" do
       defs = OperationalCredentials.command_defs()
-      assert length(defs) == 5
+      assert length(defs) == 7
+      assert Enum.find(defs, &(&1.name == :attestation_request)).id == 0x00
+      assert Enum.find(defs, &(&1.name == :certificate_chain_request)).id == 0x02
       assert Enum.find(defs, &(&1.name == :csr_request)).id == 0x04
       assert Enum.find(defs, &(&1.name == :add_noc)).id == 0x06
       assert Enum.find(defs, &(&1.name == :remove_fabric)).id == 0x0A
@@ -803,9 +805,10 @@ defmodule Matterlix.ClusterTest do
       {:ok, csr_response} = GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: nonce}})
       {:bytes, nocsr_elements} = csr_response[0]
 
-      # Decode NOCSR to get the public key
+      # Decode NOCSR to get the public key from the PKCS#10 CSR
       nocsr_decoded = Matterlix.TLV.decode(nocsr_elements)
-      pub_key = nocsr_decoded[1]
+      csr_der = nocsr_decoded[1]
+      pub_key = Matterlix.Crypto.Certificate.pubkey_from_csr(csr_der)
 
       # 2. AddTrustedRootCert
       root_cert = :crypto.strong_rand_bytes(200)
@@ -931,7 +934,7 @@ defmodule Matterlix.ClusterTest do
       assert {:uint, 0} = resp[0]
 
       {:ok, fabrics} = GenServer.call(name, {:read_attribute, :fabrics})
-      assert hd(fabrics).label == "My Home"
+      assert hd(fabrics)[5] == {:string, "My Home"}
     end
 
     test "update_fabric_label with no fabrics returns error", %{name: name} do

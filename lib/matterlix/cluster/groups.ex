@@ -21,6 +21,7 @@ defmodule Matterlix.Cluster.Groups do
   command 0x03, :remove_group, [group_id: :uint16], response_id: 0x03
   command 0x04, :remove_all_groups, []
 
+  @impl true
   def init(opts) do
     {:ok, state} = super(opts)
     # Internal: %{group_id => group_name}

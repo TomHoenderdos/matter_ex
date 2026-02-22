@@ -6,6 +6,8 @@ defmodule Matterlix.CASE.Messages do
   Encoding produces a TLV binary; decoding returns a plain map.
   """
 
+  require Logger
+
   alias Matterlix.TLV
   alias Matterlix.Crypto.{KDF, Session}
 
@@ -170,6 +172,14 @@ defmodule Matterlix.CASE.Messages do
     _ -> nil
   end
 
+  def extract_public_key(data) when is_binary(data) do
+    # Try Matter TLV cert format: tag 9 = EllipticCurvePublicKey
+    case safe_decode(data) do
+      {:ok, %{9 => pubkey}} when is_binary(pubkey) -> pubkey
+      _ -> nil
+    end
+  end
+
   def extract_public_key(_), do: nil
 
   @doc """
@@ -186,9 +196,24 @@ defmodule Matterlix.CASE.Messages do
   end
 
   defp decode_tlv_noc(data) do
-    with {:ok, decoded} <- safe_decode(data),
-         %{1 => node_id, 2 => fabric_id, 3 => public_key} <- decoded do
-      {:ok, %{node_id: node_id, fabric_id: fabric_id, public_key: public_key}}
+    with {:ok, decoded} when is_map(decoded) <- safe_decode(data) do
+      cond do
+        # Matter TLV cert format: tag 9 = public key, tag 6 = subject (nested map)
+        # Subject DN: tag 17 = node_id, tag 21 = fabric_id
+        Map.has_key?(decoded, 9) ->
+          public_key = Map.get(decoded, 9)
+          subject = Map.get(decoded, 6, %{})
+          node_id = if is_map(subject), do: Map.get(subject, 17), else: 0
+          fabric_id = if is_map(subject), do: Map.get(subject, 21), else: 0
+          {:ok, %{node_id: node_id || 0, fabric_id: fabric_id || 0, public_key: public_key}}
+
+        # Simple TLV format: tag 1 = node_id, tag 2 = fabric_id, tag 3 = public_key
+        Map.has_key?(decoded, 3) ->
+          {:ok, %{node_id: decoded[1], fabric_id: decoded[2], public_key: decoded[3]}}
+
+        true ->
+          {:error, :invalid_message}
+      end
     else
       _ -> {:error, :invalid_message}
     end
@@ -203,8 +228,13 @@ defmodule Matterlix.CASE.Messages do
 
     # Subject DN is at index 6 in TBSCertificate record
     {:rdnSequence, rdns} = elem(tbs, 6)
+
+    Logger.debug("decode_x509_noc: rdns=#{inspect(rdns, limit: :infinity)}")
+
     node_id = find_matter_dn_attr(rdns, @matter_node_id_oid)
     fabric_id = find_matter_dn_attr(rdns, @matter_fabric_id_oid)
+
+    Logger.debug("decode_x509_noc: node_id=#{inspect(node_id)} fabric_id=#{inspect(fabric_id)} pub_key=#{if public_key, do: byte_size(public_key), else: "nil"}B")
 
     if node_id && fabric_id && public_key do
       {:ok, %{node_id: node_id, fabric_id: fabric_id, public_key: public_key}}
@@ -212,7 +242,9 @@ defmodule Matterlix.CASE.Messages do
       {:error, :invalid_message}
     end
   rescue
-    _ -> {:error, :invalid_message}
+    e ->
+      Logger.warning("decode_x509_noc rescue: #{inspect(e)}")
+      {:error, :invalid_message}
   end
 
   defp normalize_bitstring(bin) when is_binary(bin), do: bin
@@ -271,25 +303,64 @@ defmodule Matterlix.CASE.Messages do
   @doc """
   Compute CASE destination identifier.
 
-  `dest_id = HMAC-SHA256(IPK, initiator_random || node_id_le64 || fabric_id_le64)`
+  `dest_id = HMAC-SHA256(IPK, initiator_random || root_public_key || fabric_id_le64 || node_id_le64)`
+
+  The root_public_key is the full 65-byte uncompressed EC point (including 0x04 prefix).
   """
-  @spec compute_destination_id(binary(), binary(), non_neg_integer(), non_neg_integer()) :: binary()
-  def compute_destination_id(ipk, initiator_random, node_id, fabric_id) do
-    data = initiator_random <> <<node_id::little-64>> <> <<fabric_id::little-64>>
+  @spec compute_destination_id(binary(), binary(), binary(), non_neg_integer(), non_neg_integer()) :: binary()
+  def compute_destination_id(ipk, initiator_random, root_public_key, fabric_id, node_id) do
+    data = initiator_random <> root_public_key <> <<fabric_id::little-64>> <> <<node_id::little-64>>
     :crypto.mac(:hmac, :sha256, ipk, data)
   end
 
   # ── TBE Encryption Helpers ─────────────────────────────────────
 
-  @sigma2_nonce "NCASE_Sig2N\0\0"
-  @sigma3_nonce "NCASE_Sig3N\0\0"
+  @sigma2_nonce "NCASE_Sigma2N"
+  @sigma3_nonce "NCASE_Sigma3N"
 
   @doc """
-  Derive S2K or S3K from shared secret and IPK.
+  Derive S2K key for Sigma2 TBE encryption.
+
+  Salt = IPK(16) || responder_random(32) || responder_eph_pub(65) || transcript_hash(32) = 145 bytes.
+  The transcript_hash is SHA256 of sigma1 payload only.
   """
-  @spec derive_key(binary(), binary(), String.t()) :: binary()
-  def derive_key(ipk, shared_secret, info) do
-    KDF.hkdf(ipk, shared_secret, info, 16)
+  @spec derive_sigma2_key(binary(), binary(), binary(), binary(), binary()) :: binary()
+  def derive_sigma2_key(ipk, shared_secret, responder_random, responder_eph_pub, transcript_hash) do
+    salt = ipk <> responder_random <> responder_eph_pub <> transcript_hash
+    KDF.hkdf(salt, shared_secret, "Sigma2", 16)
+  end
+
+  @doc """
+  Derive S3K key for Sigma3 TBE encryption.
+
+  Salt = IPK(16) || transcript_hash(32) = 48 bytes.
+  The transcript_hash is SHA256 of sigma1 || sigma2 payloads.
+  """
+  @spec derive_sigma3_key(binary(), binary(), binary()) :: binary()
+  def derive_sigma3_key(ipk, shared_secret, transcript_hash) do
+    salt = ipk <> transcript_hash
+    KDF.hkdf(salt, shared_secret, "Sigma3", 16)
+  end
+
+  @doc """
+  Build TBS (to-be-signed) data as a TLV structure.
+
+  Matter CASE TBS contains:
+  - Tag 1: Sender NOC certificate
+  - Tag 2: Sender ICAC certificate (optional)
+  - Tag 3: Sender ephemeral public key (65 bytes)
+  - Tag 4: Receiver ephemeral public key (65 bytes)
+  """
+  @spec build_tbs(binary(), binary() | nil, binary(), binary()) :: binary()
+  def build_tbs(noc, icac, sender_eph_pub, receiver_eph_pub) do
+    fields = %{
+      1 => {:bytes, noc},
+      3 => {:bytes, sender_eph_pub},
+      4 => {:bytes, receiver_eph_pub}
+    }
+
+    fields = if icac, do: Map.put(fields, 2, {:bytes, icac}), else: fields
+    TLV.encode(fields)
   end
 
   @doc """

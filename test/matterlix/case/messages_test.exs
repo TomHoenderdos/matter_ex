@@ -186,13 +186,15 @@ defmodule Matterlix.CASE.MessagesTest do
   end
 
   describe "destination_id" do
+    @root_pub :crypto.strong_rand_bytes(65)
+
     test "deterministic computation" do
       random = :crypto.strong_rand_bytes(32)
       node_id = 1
       fabric_id = 1
 
-      id1 = Messages.compute_destination_id(@ipk, random, node_id, fabric_id)
-      id2 = Messages.compute_destination_id(@ipk, random, node_id, fabric_id)
+      id1 = Messages.compute_destination_id(@ipk, random, @root_pub, fabric_id, node_id)
+      id2 = Messages.compute_destination_id(@ipk, random, @root_pub, fabric_id, node_id)
 
       assert id1 == id2
       assert byte_size(id1) == 32
@@ -202,8 +204,8 @@ defmodule Matterlix.CASE.MessagesTest do
       random = :crypto.strong_rand_bytes(32)
       ipk2 = :crypto.strong_rand_bytes(16)
 
-      id1 = Messages.compute_destination_id(@ipk, random, 1, 1)
-      id2 = Messages.compute_destination_id(ipk2, random, 1, 1)
+      id1 = Messages.compute_destination_id(@ipk, random, @root_pub, 1, 1)
+      id2 = Messages.compute_destination_id(ipk2, random, @root_pub, 1, 1)
 
       assert id1 != id2
     end
@@ -243,10 +245,29 @@ defmodule Matterlix.CASE.MessagesTest do
       assert :error = Messages.decrypt_tbe(:sigma3, key, encrypted)
     end
 
-    test "derive_key produces 16-byte key" do
+    test "derive_sigma2_key produces 16-byte key" do
       shared_secret = :crypto.strong_rand_bytes(32)
-      key = Messages.derive_key(@ipk, shared_secret, "Sigma2")
+      random = :crypto.strong_rand_bytes(32)
+      eph_pub = :crypto.strong_rand_bytes(65)
+      transcript_hash = :crypto.hash(:sha256, "sigma1")
+      key = Messages.derive_sigma2_key(@ipk, shared_secret, random, eph_pub, transcript_hash)
       assert byte_size(key) == 16
+    end
+
+    test "derive_sigma3_key produces 16-byte key" do
+      shared_secret = :crypto.strong_rand_bytes(32)
+      transcript_hash = :crypto.hash(:sha256, "sigma1sigma2")
+      key = Messages.derive_sigma3_key(@ipk, shared_secret, transcript_hash)
+      assert byte_size(key) == 16
+    end
+
+    test "build_tbs produces TLV structure" do
+      noc = "test_noc"
+      eph_pub = :crypto.strong_rand_bytes(65)
+      peer_pub = :crypto.strong_rand_bytes(65)
+      tbs = Messages.build_tbs(noc, nil, eph_pub, peer_pub)
+      assert is_binary(tbs)
+      assert byte_size(tbs) > 0
     end
   end
 

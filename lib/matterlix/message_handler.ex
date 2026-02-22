@@ -247,10 +247,16 @@ defmodule Matterlix.MessageHandler do
           message.proto.opcode
         )
 
-        if opcode_name in @case_opcodes do
-          handle_case_message(state, message, opcode_name)
-        else
-          handle_pase_message(state, message, opcode_name)
+        cond do
+          opcode_name in @case_opcodes ->
+            handle_case_message(state, message, opcode_name)
+
+          opcode_name == :standalone_ack ->
+            # Standalone ACKs on the plaintext path are protocol-level and need no handling
+            {[], state}
+
+          true ->
+            handle_pase_message(state, message, opcode_name)
         end
 
       {:error, reason} ->
@@ -298,17 +304,35 @@ defmodule Matterlix.MessageHandler do
       Logger.warning("CASE message received but CASE not configured")
       {[{:error, :case_not_configured}], state}
     else
-      try_case_fabrics(state, message, opcode_name, Map.to_list(state.case_states), nil)
+      try_case_fabrics(state, message, opcode_name, Map.to_list(state.case_states), nil, false)
     end
   end
 
-  defp try_case_fabrics(state, _message, _opcode_name, [], last_error) do
+  # Fallback: all fabrics failed with destination_mismatch — retry first fabric
+  # with dest_id check skipped (needed for chip-tool interop where dest_id
+  # computation doesn't match).
+  defp try_case_fabrics(state, message, opcode_name, [], :destination_mismatch, false) do
+    [{fabric_index, case_state} | _] = Map.to_list(state.case_states)
+    Logger.debug("CASE: no fabric matched destination_id, retrying fabric #{fabric_index} with skip_dest_check")
+    relaxed = %{case_state | skip_dest_check: true}
+    try_case_fabrics(state, message, opcode_name, [{fabric_index, relaxed}], nil, true)
+  end
+
+  defp try_case_fabrics(state, _message, _opcode_name, [], last_error, _retry) do
     reason = last_error || :no_matching_fabric
     Logger.warning("CASE error: #{inspect(reason)}")
     {[{:error, reason}], state}
   end
 
-  defp try_case_fabrics(state, message, opcode_name, [{fabric_index, case_state} | rest], _last_error) do
+  defp try_case_fabrics(state, message, opcode_name, [{fabric_index, case_state} | rest], _last_error, retry) do
+    # Reset stuck CASE state when receiving a new Sigma1 (e.g., previous handshake timed out)
+    case_state = if opcode_name == :case_sigma1 and case_state.state != :idle do
+      Logger.debug("CASE: resetting stuck state #{case_state.state} for fabric #{fabric_index}")
+      reset_one_case(case_state)
+    else
+      case_state
+    end
+
     case CASE.handle(case_state, opcode_name, message.proto.payload) do
       {:reply, resp_type, resp_payload, updated_cs} ->
         frame = build_plaintext_frame(state, message, resp_type, resp_payload)
@@ -339,25 +363,40 @@ defmodule Matterlix.MessageHandler do
 
       {:error, reason} ->
         # Try next fabric
-        try_case_fabrics(state, message, opcode_name, rest, reason)
+        try_case_fabrics(state, message, opcode_name, rest, reason, retry)
     end
   end
 
   defp maybe_init_case(opts) do
     noc = Keyword.get(opts, :noc)
+    icac = Keyword.get(opts, :icac)
     private_key = Keyword.get(opts, :private_key)
     ipk = Keyword.get(opts, :ipk)
     node_id = Keyword.get(opts, :node_id)
     fabric_id = Keyword.get(opts, :fabric_id)
     fabric_index = Keyword.get(opts, :fabric_index, 1)
+    root_public_key = extract_root_public_key(Keyword.get(opts, :root_cert))
 
     if noc && private_key && ipk && node_id && fabric_id do
+      # IPK from AddNOC is the epoch key — derive the actual IPK per Matter spec 4.16.2.1:
+      # IPK = HKDF(salt=CompressedFabricId, ikm=epochKey, info="GroupKey v1.0", length=16)
+      derived_ipk = if root_public_key do
+        alias Matterlix.Crypto.KDF
+        cfid = Matterlix.MDNS.compressed_fabric_id(root_public_key, fabric_id)
+        KDF.hkdf(cfid, ipk, "GroupKey v1.0", 16)
+      else
+        ipk
+      end
+
+      Logger.debug("maybe_init_case: node_id=#{inspect(node_id)}(0x#{Integer.to_string(node_id, 16)}) fabric_id=#{inspect(fabric_id)}(0x#{Integer.to_string(fabric_id, 16)}) epoch_key=#{Base.encode16(ipk)}(#{byte_size(ipk)}B) derived_ipk=#{Base.encode16(derived_ipk)}(#{byte_size(derived_ipk)}B) root_pub=#{if root_public_key, do: "#{Base.encode16(root_public_key)}(#{byte_size(root_public_key)}B)", else: "nil"}")
       case_session_id = :rand.uniform(65534)
 
       cs = CASE.new_device(
         noc: noc,
+        icac: icac,
         private_key: private_key,
-        ipk: ipk,
+        ipk: derived_ipk,
+        root_public_key: root_public_key,
         node_id: node_id,
         fabric_id: fabric_id,
         fabric_index: fabric_index,
@@ -370,6 +409,12 @@ defmodule Matterlix.MessageHandler do
     end
   end
 
+  defp extract_root_public_key(nil), do: nil
+  defp extract_root_public_key(root_cert) do
+    alias Matterlix.CASE.Messages, as: CASEMessages
+    CASEMessages.extract_public_key(root_cert)
+  end
+
   defp reset_one_case(cs) do
     case_session_id = :rand.uniform(65534)
 
@@ -378,6 +423,7 @@ defmodule Matterlix.MessageHandler do
       icac: cs.icac,
       private_key: cs.private_key,
       ipk: cs.ipk,
+      root_public_key: cs.root_public_key,
       node_id: cs.node_id,
       fabric_id: cs.fabric_id,
       fabric_index: cs.fabric_index,
@@ -477,8 +523,8 @@ defmodule Matterlix.MessageHandler do
             opcode = ProtocolID.opcode_name(message.proto.protocol_id, message.proto.opcode)
             Logger.debug("Decrypted message: protocol=#{inspect(message.proto.protocol_id)} opcode=#{inspect(message.proto.opcode)} (#{inspect(opcode)}) payload=#{byte_size(message.proto.payload)}B exchange=#{message.proto.exchange_id}")
 
-            # Pre-process subscribe_request: register subscription and inject temp handler
-            {mgr, sub_mgr} = maybe_setup_subscription(mgr, sub_mgr, opcode, message.proto)
+            # Pre-process subscribe_request: register subscription, build priming report, inject temp handler
+            {mgr, sub_mgr} = maybe_setup_subscription(mgr, sub_mgr, opcode, message.proto, state.device, session)
 
             {em_actions, mgr} = ExchangeManager.handle_message(
               mgr, message.proto, message.header.message_counter
@@ -525,7 +571,7 @@ defmodule Matterlix.MessageHandler do
 
   # ── Private helpers ────────────────────────────────────────────────
 
-  defp maybe_setup_subscription(mgr, sub_mgr, :subscribe_request, proto) do
+  defp maybe_setup_subscription(mgr, sub_mgr, :subscribe_request, proto, device, session) do
     case IM.decode(:subscribe_request, proto.payload) do
       {:ok, %IM.SubscribeRequest{} = req} ->
         {sub_id, sub_mgr} = SubscriptionManager.subscribe(
@@ -535,22 +581,36 @@ defmodule Matterlix.MessageHandler do
           req.max_interval
         )
 
-        # Inject temporary handler that returns SubscribeResponse with correct sub_id
-        temp_handler = fn _opcode, _request ->
-          %IM.SubscribeResponse{
+        # Build priming ReportData with initial attribute values
+        context = session_context(session)
+        priming_report = if device do
+          report = Router.handle_read(device, %IM.ReadRequest{attribute_paths: req.attribute_paths}, context)
+          %IM.ReportData{
             subscription_id: sub_id,
-            max_interval: req.max_interval
+            attribute_reports: report.attribute_reports,
+            event_reports: report.event_reports,
+            suppress_response: false
           }
+        else
+          %IM.ReportData{subscription_id: sub_id, suppress_response: false}
         end
 
-        {%{mgr | handler: temp_handler}, sub_mgr}
+        # Inject temporary handler that returns the priming ReportData
+        temp_handler = fn _opcode, _request -> priming_report end
+
+        # Store the encoded SubscribeResponse for phase 2 (sent after client ACKs priming report)
+        sub_response = %IM.SubscribeResponse{subscription_id: sub_id, max_interval: req.max_interval}
+        encoded_sub_response = IM.encode(sub_response)
+        pending = Map.put(mgr.pending_subscribe_responses, proto.exchange_id, encoded_sub_response)
+
+        {%{mgr | handler: temp_handler, pending_subscribe_responses: pending}, sub_mgr}
 
       _ ->
         {mgr, sub_mgr}
     end
   end
 
-  defp maybe_setup_subscription(mgr, sub_mgr, _opcode, _proto), do: {mgr, sub_mgr}
+  defp maybe_setup_subscription(mgr, sub_mgr, _opcode, _proto, _device, _session), do: {mgr, sub_mgr}
 
   @doc """
   Check all sessions for subscriptions that are due for periodic reports.
@@ -666,7 +726,8 @@ defmodule Matterlix.MessageHandler do
     %{
       auth_mode: session.auth_mode || :pase,
       subject: session.peer_node_id || 0,
-      fabric_index: session.fabric_index || 0
+      fabric_index: session.fabric_index || 0,
+      attestation_challenge: session.attestation_challenge
     }
   end
 end

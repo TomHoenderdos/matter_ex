@@ -19,24 +19,66 @@ defmodule Matterlix.Cluster.OperationalCredentials do
   attribute 0x0004, :commissioned_fabrics, :uint8, default: 0
   attribute 0xFFFD, :cluster_revision, :uint16, default: 1
 
-  command 0x04, :csr_request, [csr_nonce: :bytes]
-  command 0x06, :add_noc, [noc_value: :bytes, ipk_value: :bytes, case_admin_subject: :uint64, admin_vendor_id: :uint16]
-  command 0x0A, :remove_fabric, [fabric_index: :uint8]
-  command 0x09, :update_fabric_label, [label: :string]
+  command 0x00, :attestation_request, [attestation_nonce: :bytes], response_id: 0x01
+  command 0x02, :certificate_chain_request, [certificate_type: :uint8], response_id: 0x03
+  command 0x04, :csr_request, [csr_nonce: :bytes], response_id: 0x05
+  command 0x06, :add_noc, [noc_value: :bytes, icac_value: :bytes, ipk_value: :bytes, case_admin_subject: :uint64, admin_vendor_id: :uint16], response_id: 0x08
+  command 0x0A, :remove_fabric, [fabric_index: :uint8], response_id: 0x08
+  command 0x09, :update_fabric_label, [label: :string], response_id: 0x08
   command 0x0B, :add_trusted_root_cert, [root_ca_cert: :bytes]
 
+  @impl true
   def init(opts) do
     {:ok, state} = super(opts)
-    # Track next available fabric index (internal, not an attribute)
-    {:ok, Map.put(state, :_next_fabric_index, 1)}
+    # Generate persistent DAC keypair for attestation signing
+    dac_keypair = Certificate.generate_keypair()
+    state = state
+      |> Map.put(:_next_fabric_index, 1)
+      |> Map.put(:_dac_keypair, dac_keypair)
+    {:ok, state}
   end
 
   @impl Matterlix.Cluster
+  def handle_command(:attestation_request, params, state) do
+    attestation_nonce = params[:attestation_nonce] || :crypto.strong_rand_bytes(32)
+
+    # Build AttestationElements TLV: certification_declaration + attestation_nonce + timestamp
+    certification_declaration = <<>>
+    attestation_elements = TLV.encode(%{
+      1 => {:bytes, certification_declaration},
+      2 => {:bytes, attestation_nonce},
+      3 => {:uint, System.system_time(:second)}
+    })
+
+    # TBS = AttestationElements || AttestationChallenge (from session)
+    # chip-tool verifies: ECDSA_verify(SHA256(TBS), signature, dac_pubkey)
+    {_pub, priv} = Map.fetch!(state, :_dac_keypair)
+    challenge = get_in(params, [:_context, :attestation_challenge]) || <<>>
+    tbs = attestation_elements <> challenge
+    attestation_signature = Certificate.sign_raw(tbs, priv)
+
+    # AttestationResponse: AttestationElements, AttestationSignature
+    {:ok, %{0 => {:bytes, attestation_elements}, 1 => {:bytes, attestation_signature}}, state}
+  end
+
+  def handle_command(:certificate_chain_request, params, state) do
+    cert_type = params[:certificate_type] || 1
+
+    # Use persistent DAC keypair for both PAI (type 1) and DAC (type 2)
+    {pub, priv} = Map.fetch!(state, :_dac_keypair)
+
+    # Build a minimal DER-encoded self-signed X.509 certificate
+    cert = Certificate.self_signed_der(pub, priv, "Matterlix #{if cert_type == 1, do: "PAI", else: "DAC"}")
+
+    # CertificateChainResponse: Certificate
+    {:ok, %{0 => {:bytes, cert}}, state}
+  end
+
   def handle_command(:csr_request, params, state) do
     csr_nonce = params[:csr_nonce] || :crypto.strong_rand_bytes(32)
     {pub, priv} = Certificate.generate_keypair()
 
-    # Store keypair in cluster state for AddNOC verification
+    # Store CSR keypair for AddNOC verification (separate from DAC keypair)
     state = Map.put(state, :_keypair, {pub, priv})
 
     # Also store in Commissioning Agent if available
@@ -44,11 +86,16 @@ defmodule Matterlix.Cluster.OperationalCredentials do
       Commissioning.store_keypair({pub, priv})
     end
 
-    # Build NOCSR elements: TLV struct with public key and nonce
-    nocsr_elements = TLV.encode(%{1 => {:bytes, pub}, 2 => {:bytes, csr_nonce}})
+    # Build NOCSR elements: TLV struct with PKCS#10 CSR and nonce
+    csr = Certificate.build_csr(pub, priv)
+    nocsr_elements = TLV.encode(%{1 => {:bytes, csr}, 2 => {:bytes, csr_nonce}})
 
-    # Self-sign the NOCSR elements (simplified attestation)
-    attestation_signature = Certificate.sign(nocsr_elements, priv)
+    # TBS = NOCSRElements || AttestationChallenge (from session)
+    # chip-tool verifies: ECDSA_verify(SHA256(TBS), signature, dac_pubkey)
+    {_dac_pub, dac_priv} = Map.fetch!(state, :_dac_keypair)
+    challenge = get_in(params, [:_context, :attestation_challenge]) || <<>>
+    tbs = nocsr_elements <> challenge
+    attestation_signature = Certificate.sign_raw(tbs, dac_priv)
 
     # NOCSRResponse: NOCSRElements, AttestationSignature
     {:ok, %{0 => {:bytes, nocsr_elements}, 1 => {:bytes, attestation_signature}}, state}
@@ -56,6 +103,11 @@ defmodule Matterlix.Cluster.OperationalCredentials do
 
   def handle_command(:add_trusted_root_cert, params, state) do
     root_cert = params[:root_ca_cert]
+
+    if root_cert do
+      require Logger
+      Logger.debug("AddTrustedRootCert: #{byte_size(root_cert)}B")
+    end
 
     if root_cert && Process.whereis(Commissioning) do
       Commissioning.store_root_cert(root_cert)
@@ -70,9 +122,11 @@ defmodule Matterlix.Cluster.OperationalCredentials do
     nocs = Map.get(state, :nocs, [])
     fabrics = Map.get(state, :fabrics, [])
 
-    if Enum.any?(fabrics, &(&1.fabric_index == fabric_index)) do
-      nocs = Enum.reject(nocs, &(&1.fabric_index == fabric_index))
-      fabrics = Enum.reject(fabrics, &(&1.fabric_index == fabric_index))
+    get_fi = fn entry -> entry[254] |> elem(1) end
+
+    if Enum.any?(fabrics, &(get_fi.(&1) == fabric_index)) do
+      nocs = Enum.reject(nocs, &(get_fi.(&1) == fabric_index))
+      fabrics = Enum.reject(fabrics, &(get_fi.(&1) == fabric_index))
 
       state = state
         |> Map.put(:nocs, nocs)
@@ -99,19 +153,22 @@ defmodule Matterlix.Cluster.OperationalCredentials do
 
       _ ->
         # Update the last fabric's label (in production, derive from session)
-        updated = List.update_at(fabrics, -1, &Map.put(&1, :label, label))
+        updated = List.update_at(fabrics, -1, &Map.put(&1, 5, {:string, label}))
         state = Map.put(state, :fabrics, updated)
-        last_fi = List.last(updated).fabric_index
+        {:uint, last_fi} = List.last(updated)[254]
         {:ok, %{0 => {:uint, 0}, 1 => {:uint, last_fi}, 2 => {:string, ""}}, state}
     end
   end
 
   def handle_command(:add_noc, params, state) do
+    require Logger
     noc_value = params[:noc_value]
     ipk_value = params[:ipk_value]
+    Logger.debug("AddNOC: noc=#{if noc_value, do: byte_size(noc_value)}B ipk=#{if ipk_value, do: "#{Base.encode16(ipk_value)}(#{byte_size(ipk_value)}B)", else: "nil"} all_keys=#{inspect(Map.keys(params) -- [:_context])}")
 
     case CASEMessages.decode_noc(noc_value) do
       {:ok, %{node_id: node_id, fabric_id: fabric_id, public_key: pub_key}} ->
+        Logger.debug("AddNOC decoded: node_id=#{inspect(node_id)}(0x#{Integer.to_string(node_id || 0, 16)}) fabric_id=#{inspect(fabric_id)}(0x#{Integer.to_string(fabric_id || 0, 16)}) pub_key=#{if pub_key, do: byte_size(pub_key), else: "nil"}B")
         # Verify public key matches the keypair we generated during CSRRequest
         stored_keypair = Map.get(state, :_keypair)
 
@@ -120,7 +177,8 @@ defmodule Matterlix.Cluster.OperationalCredentials do
           fabric_index = Map.get(state, :_next_fabric_index, 1)
 
           if Process.whereis(Commissioning) do
-            Commissioning.store_noc(fabric_index, noc_value, ipk_value, node_id, fabric_id)
+            icac_value = params[:icac_value]
+            Commissioning.store_noc(fabric_index, noc_value, icac_value, ipk_value, node_id, fabric_id)
 
             # Store the admin subject for ACL seeding
             case_admin_subject = params[:case_admin_subject]
@@ -130,20 +188,24 @@ defmodule Matterlix.Cluster.OperationalCredentials do
             end
           end
 
-          # Update nocs list
+          # Update nocs list (TLV-tagged: tag 0=NOC, 1=ICAC, 254=FabricIndex)
           nocs = Map.get(state, :nocs, [])
-          noc_entry = %{fabric_index: fabric_index, noc: noc_value, icac: nil}
+          noc_entry = %{
+            0 => {:bytes, noc_value},
+            1 => {:bytes, params[:icac_value] || <<>>},
+            254 => {:uint, fabric_index}
+          }
           nocs = nocs ++ [noc_entry]
 
-          # Update fabrics list
+          # Update fabrics list (TLV-tagged: 1=RootPubKey, 2=VendorID, 3=FabricID, 4=NodeID, 5=Label, 254=FabricIndex)
           fabrics = Map.get(state, :fabrics, [])
           fabric_entry = %{
-            fabric_index: fabric_index,
-            root_public_key: <<>>,
-            vendor_id: params[:admin_vendor_id] || 0,
-            fabric_id: fabric_id,
-            node_id: node_id,
-            label: ""
+            1 => {:bytes, <<>>},
+            2 => {:uint, params[:admin_vendor_id] || 0},
+            3 => {:uint, fabric_id},
+            4 => {:uint, node_id},
+            5 => {:string, ""},
+            254 => {:uint, fabric_index}
           }
           fabrics = fabrics ++ [fabric_entry]
 

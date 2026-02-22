@@ -205,14 +205,22 @@ defmodule Matterlix.MDNS do
   @doc """
   Compute the Matter compressed fabric identifier.
 
-  Uses HKDF-SHA256 with the fabric root public key as input keying material,
-  the fabric ID (big-endian 64-bit) as salt, and "CompressedFabric" as info.
-  Returns 8 bytes.
+  Uses HKDF-SHA256 with the 64-byte x||y coordinates of the root public key
+  (stripping the 0x04 SEC1 uncompressed prefix) as IKM, the fabric ID
+  (big-endian 64-bit) as salt, and "CompressedFabric" as info. Returns 8 bytes.
   """
   @spec compressed_fabric_id(binary(), non_neg_integer()) :: binary()
   def compressed_fabric_id(root_public_key, fabric_id) do
     alias Matterlix.Crypto.KDF
-    KDF.hkdf(<<fabric_id::unsigned-big-64>>, root_public_key, "CompressedFabric", 8)
+
+    # Strip the 0x04 uncompressed point prefix if present
+    ikm = case root_public_key do
+      <<0x04, xy::binary-size(64)>> -> xy
+      <<xy::binary-size(64)>> -> xy
+      other -> other
+    end
+
+    KDF.hkdf(<<fabric_id::unsigned-big-64>>, ikm, "CompressedFabric", 8)
   end
 
   # ── GenServer Callbacks ─────────────────────────────────────────
