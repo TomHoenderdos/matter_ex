@@ -1,0 +1,17 @@
+## Customize flags given to the VM: https://www.erlang.org/doc/man/erl.html
+## Use separate lines for each flag. Flags that take arguments use the
+## form: -flag value
+
+-mode embedded
+
+## Increase number of concurrent ports/sockets
+-env ERL_MAX_PORTS 4096
+
+## Tweak GC to run more often
+-env ERL_FULLSWEEP_AFTER 10
+
+## Use Ctrl+C to exit the IEx prompt
++Bc
+
+## Enable heart to restart the VM on failure
+-heart -env HEART_BEAT_TIMEOUT 30
