@@ -66,8 +66,9 @@ defmodule NervesLight.BLEAdapter do
           BlueHeron.GATT.Characteristic.new(%{
             id: {:matter, :rx},
             type: @rx_char_uuid,
-            # Write Without Response (0x04) + Write (0x08)
-            properties: 0x0C
+            # Write only (0x08) — BlueHeron's GATT server doesn't handle
+            # Write Without Response (ATT WriteCommand), so we only advertise Write
+            properties: 0x08
           }),
           BlueHeron.GATT.Characteristic.new(%{
             id: {:matter, :tx},
