@@ -73,7 +73,10 @@ defmodule NervesLight.BLEAdapter do
             id: {:matter, :tx},
             type: @tx_char_uuid,
             # Notify — spec wants Indicate but BlueHeron only supports notify
-            properties: 0x10
+            properties: 0x10,
+            # CCCD descriptor is required so clients can enable notifications
+            # by writing <<0x01, 0x00>> — this triggers the subscribe callback
+            descriptor: BlueHeron.GATT.Characteristic.Descriptor.new(%{permissions: 0})
           })
         ],
         write: fn
