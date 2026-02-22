@@ -17,7 +17,7 @@ defmodule NervesLight.Application do
         NervesLight.Device,
 
         # mDNS responder for IP-based discovery
-        MatterEx.MDNS,
+        {MatterEx.MDNS, name: MatterEx.MDNS},
 
         # Matter protocol stack (UDP + TCP + BLE)
         {MatterEx.Node,
@@ -31,6 +31,20 @@ defmodule NervesLight.Application do
 
     opts = [strategy: :one_for_one, name: NervesLight.Supervisor]
     result = Supervisor.start_link(children, opts)
+
+    # Advertise commissioning service via mDNS
+    port = MatterEx.Node.port(MatterEx.Node)
+
+    service =
+      MatterEx.MDNS.commissioning_service(
+        port: port,
+        discriminator: discriminator,
+        vendor_id: vendor_id,
+        product_id: product_id,
+        device_name: "NervesLight"
+      )
+
+    MatterEx.MDNS.advertise(MatterEx.MDNS, service)
 
     # Print commissioning info after boot
     print_commissioning_info()
