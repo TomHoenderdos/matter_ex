@@ -1,4 +1,4 @@
-# Matterlix Roadmap
+# MatterEx Roadmap
 
 Pure Elixir Matter protocol stack — zero external dependencies.
 

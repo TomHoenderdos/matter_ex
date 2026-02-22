@@ -4,7 +4,7 @@ A pure Elixir implementation of the Matter (CHIP) smart home protocol, replacing
 
 ## Motivation
 
-The current matterlix wraps the C++ Matter SDK via NIFs. This works, but:
+The current matter_ex wraps the C++ Matter SDK via NIFs. This works, but:
 
 - **Elixir is a second-class citizen** — the C++ SDK controls everything (BLE, commissioning, data model, sessions). Elixir only gets thin callbacks.
 - **BlueZ/D-Bus dependency** — BLE commissioning requires a custom Nerves system with kernel Bluetooth drivers, BlueZ, and D-Bus. This is the #1 barrier for new users.
@@ -14,8 +14,8 @@ The current matterlix wraps the C++ Matter SDK via NIFs. This works, but:
 
 ## Decisions
 
-1. **Mono-repo** — single `matterlix` hex package with clear module boundaries (not umbrella)
-2. **Name** — `matterlix` (same package, major version bump for the rewrite)
+1. **Mono-repo** — single `matter_ex` hex package with clear module boundaries (not umbrella)
+2. **Name** — `matter_ex` (same package, major version bump for the rewrite)
 3. **Replaces current project** — the C++ NIF approach is superseded by native Elixir
 4. **First device type** — On/Off Light, but the cluster system must make adding new types trivial (declarative macros, ~10-20 lines per cluster)
 5. **blue_heron viability** — needs prototyping for GATT server role in Phase 2
@@ -36,49 +36,49 @@ The current matterlix wraps the C++ Matter SDK via NIFs. This works, but:
 ┌─────────────────────────────────────────────────────────────┐
 │                    Your Application                         │
 │                                                             │
-│   use Matterlix.Cluster.OnOff                                  │
-│   use Matterlix.Cluster.LevelControl                           │
+│   use MatterEx.Cluster.OnOff                                  │
+│   use MatterEx.Cluster.LevelControl                           │
 │   def handle_on(_ctx), do: GPIO.write(pin, 1)              │
 │                                                             │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│   Matterlix.Device  — supervision tree for a Matter device     │
-│   ├── Matterlix.Endpoint (per endpoint, e.g. endpoint 1)       │
-│   │   ├── Matterlix.Cluster.OnOff (GenServer)                  │
-│   │   ├── Matterlix.Cluster.LevelControl (GenServer)           │
+│   MatterEx.Device  — supervision tree for a Matter device     │
+│   ├── MatterEx.Endpoint (per endpoint, e.g. endpoint 1)       │
+│   │   ├── MatterEx.Cluster.OnOff (GenServer)                  │
+│   │   ├── MatterEx.Cluster.LevelControl (GenServer)           │
 │   │   └── ...                                               │
-│   ├── Matterlix.SessionManager (active sessions)               │
-│   ├── Matterlix.SubscriptionManager (active subscriptions)     │
-│   └── Matterlix.CommissioningManager (state machine)           │
+│   ├── MatterEx.SessionManager (active sessions)               │
+│   ├── MatterEx.SubscriptionManager (active subscriptions)     │
+│   └── MatterEx.CommissioningManager (state machine)           │
 │                                                             │
 ├──────────────── Interaction Model ──────────────────────────┤
 │                                                             │
-│   Matterlix.IM  — Read, Write, Subscribe, Invoke, Report       │
+│   MatterEx.IM  — Read, Write, Subscribe, Invoke, Report       │
 │   Encodes/decodes IM messages, routes to clusters            │
 │                                                             │
 ├──────────────── Security ────────────────────────────────────┤
 │                                                             │
-│   Matterlix.Crypto.PASE  — SPAKE2+ (commissioning)           │
-│   Matterlix.Crypto.CASE  — Certificate-based (operational)   │
-│   Matterlix.Crypto.Session — Encrypt/decrypt/verify           │
+│   MatterEx.Crypto.PASE  — SPAKE2+ (commissioning)           │
+│   MatterEx.Crypto.CASE  — Certificate-based (operational)   │
+│   MatterEx.Crypto.Session — Encrypt/decrypt/verify           │
 │   Uses Erlang :crypto (P-256, AES-CCM, HKDF, HMAC)         │
 │                                                             │
 ├──────────────── Message Layer ───────────────────────────────┤
 │                                                             │
-│   Matterlix.Protocol.MRP  — Message Reliability Protocol       │
-│   Matterlix.Protocol.MessageCodec — Frame encode/decode         │
-│   Matterlix.Protocol.Exchange — Request/response tracking       │
+│   MatterEx.Protocol.MRP  — Message Reliability Protocol       │
+│   MatterEx.Protocol.MessageCodec — Frame encode/decode         │
+│   MatterEx.Protocol.Exchange — Request/response tracking       │
 │   UDP for operational, BLE for commissioning                 │
 │                                                             │
 ├──────────────── Transport ───────────────────────────────────┤
 │                                                             │
-│   Matterlix.Transport.BLE   — CHIPoBLE via HCI (blue_heron)    │
-│   Matterlix.Transport.UDP   — gen_udp, port 5540               │
-│   Matterlix.Transport.MDNS  — mdns_lite for discovery          │
+│   MatterEx.Transport.BLE   — CHIPoBLE via HCI (blue_heron)    │
+│   MatterEx.Transport.UDP   — gen_udp, port 5540               │
+│   MatterEx.Transport.MDNS  — mdns_lite for discovery          │
 │                                                             │
 ├──────────────── Encoding ────────────────────────────────────┤
 │                                                             │
-│   Matterlix.TLV  — Tag-Length-Value binary codec             │
+│   MatterEx.TLV  — Tag-Length-Value binary codec             │
 │   Pure Elixir, zero dependencies                             │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
@@ -109,7 +109,7 @@ Control byte encodes:
 
 ```elixir
 # Encoding
-Matterlix.TLV.encode(%{
+MatterEx.TLV.encode(%{
   1 => {:uint, 42},
   2 => {:string, "hello"},
   3 => {:struct, %{
@@ -120,11 +120,11 @@ Matterlix.TLV.encode(%{
 # => <<...binary...>>
 
 # Decoding
-Matterlix.TLV.decode(<<...binary...>>)
+MatterEx.TLV.decode(<<...binary...>>)
 # => %{1 => 42, 2 => "hello", 3 => %{0 => true, 1 => <<0xDE, 0xAD>>}}
 
 # Streaming decode (for large payloads)
-Matterlix.TLV.decode_stream(binary, fn element, acc -> ... end, initial_acc)
+MatterEx.TLV.decode_stream(binary, fn element, acc -> ... end, initial_acc)
 ```
 
 ### Implementation
@@ -132,7 +132,7 @@ Matterlix.TLV.decode_stream(binary, fn element, acc -> ... end, initial_acc)
 Pattern matching on the control byte:
 
 ```elixir
-defmodule Matterlix.TLV do
+defmodule MatterEx.TLV do
   # Signed integers
   def decode_element(<<control, rest::binary>>) do
     {tag, rest} = decode_tag(control, rest)
@@ -158,7 +158,7 @@ end
 
 ### Deliverable
 
-Module `Matterlix.TLV` — zero external dependencies.
+Module `MatterEx.TLV` — zero external dependencies.
 
 **Estimated effort**: 2-3 weeks.
 
@@ -226,7 +226,7 @@ BLE packets are fragmented using BTP (BLE Transport Protocol):
 
 ```elixir
 # Start BLE commissioning advertisement
-{:ok, ble} = Matterlix.Transport.BLE.start_link(
+{:ok, ble} = MatterEx.Transport.BLE.start_link(
   discriminator: 3840,
   vendor_id: 0xFFF1,
   product_id: 0x8001
@@ -239,16 +239,16 @@ BLE packets are fragmented using BTP (BLE Transport Protocol):
 #   {:ble_disconnected, transport_pid}
 
 # Send data back (fragmented automatically via BTP)
-Matterlix.Transport.BLE.send(transport_pid, response_data)
+MatterEx.Transport.BLE.send(transport_pid, response_data)
 
 # Stop advertising
-Matterlix.Transport.BLE.stop_advertising(ble)
+MatterEx.Transport.BLE.stop_advertising(ble)
 ```
 
 ### BTP (BLE Transport Protocol) Implementation
 
 ```elixir
-defmodule Matterlix.Transport.BTP do
+defmodule MatterEx.Transport.BTP do
   @moduledoc "BLE Transport Protocol - fragmentation and reassembly"
 
   defstruct [
@@ -285,7 +285,7 @@ end
 
 ### Deliverable
 
-Module `Matterlix.Transport.BLE` — uses `Matterlix.TLV` and optionally `blue_heron`.
+Module `MatterEx.Transport.BLE` — uses `MatterEx.TLV` and optionally `blue_heron`.
 
 **Estimated effort**: 4-6 weeks.
 
@@ -314,7 +314,7 @@ Module `Matterlix.Transport.BLE` — uses `Matterlix.TLV` and optionally `blue_h
 SPAKE2+ is the core of PASE (Passcode-Authenticated Session Establishment). It lets two parties prove they know the same passcode without revealing it.
 
 ```elixir
-defmodule Matterlix.Crypto.SPAKE2Plus do
+defmodule MatterEx.Crypto.SPAKE2Plus do
   @moduledoc """
   SPAKE2+ implementation for Matter PASE commissioning.
 
@@ -378,7 +378,7 @@ end
 Once PASE or CASE establishes a session, all messages are encrypted with AES-128-CCM:
 
 ```elixir
-defmodule Matterlix.Crypto.Session do
+defmodule MatterEx.Crypto.Session do
   @doc "Encrypt a message for a session"
   def encrypt(plaintext, session_key, nonce, aad) do
     :crypto.crypto_one_time_aead(:aes_128_ccm, session_key, nonce, plaintext, aad, 16, true)
@@ -400,7 +400,7 @@ end
 
 ### Deliverable
 
-Module `Matterlix.Crypto.*` — depends on Erlang `:crypto` (ships with OTP). No C++ NIFs needed.
+Module `MatterEx.Crypto.*` — depends on Erlang `:crypto` (ships with OTP). No C++ NIFs needed.
 
 **Estimated effort**: 3-4 weeks.
 
@@ -442,7 +442,7 @@ Every Matter message has this structure:
 MRP provides reliable delivery over UDP (which is unreliable):
 
 ```elixir
-defmodule Matterlix.Protocol.MRP do
+defmodule MatterEx.Protocol.MRP do
   @moduledoc """
   Message Reliability Protocol.
 
@@ -493,7 +493,7 @@ end
 An "exchange" is a request-response pair (like an HTTP transaction):
 
 ```elixir
-defmodule Matterlix.Protocol.ExchangeManager do
+defmodule MatterEx.Protocol.ExchangeManager do
   @moduledoc """
   Manages active exchanges (request/response pairs).
 
@@ -527,7 +527,7 @@ end
 
 ### Deliverable
 
-Module `Matterlix.Protocol.*` — uses `Matterlix.TLV` and `Matterlix.Crypto`.
+Module `MatterEx.Protocol.*` — uses `MatterEx.TLV` and `MatterEx.Crypto`.
 
 **Estimated effort**: 3-4 weeks.
 
@@ -550,7 +550,7 @@ Module `Matterlix.Protocol.*` — uses `Matterlix.TLV` and `Matterlix.Crypto`.
 ### Elixir API
 
 ```elixir
-defmodule Matterlix.IM do
+defmodule MatterEx.IM do
   @moduledoc """
   Interaction Model message handling.
 
@@ -561,7 +561,7 @@ defmodule Matterlix.IM do
   # Handle incoming Read Request
   def handle_read_request(request, device) do
     results = Enum.map(request.attribute_paths, fn path ->
-      case Matterlix.Device.read_attribute(device, path) do
+      case MatterEx.Device.read_attribute(device, path) do
         {:ok, value} -> %{path: path, value: value, status: :success}
         {:error, status} -> %{path: path, status: status}
       end
@@ -572,7 +572,7 @@ defmodule Matterlix.IM do
   # Handle incoming Write Request
   def handle_write_request(request, device) do
     results = Enum.map(request.write_requests, fn write ->
-      Matterlix.Device.write_attribute(device, write.path, write.value)
+      MatterEx.Device.write_attribute(device, write.path, write.value)
     end)
     encode_write_response(results)
   end
@@ -580,7 +580,7 @@ defmodule Matterlix.IM do
   # Handle incoming Invoke Request
   def handle_invoke_request(request, device) do
     results = Enum.map(request.invoke_requests, fn invoke ->
-      Matterlix.Device.invoke_command(device, invoke.path, invoke.fields)
+      MatterEx.Device.invoke_command(device, invoke.path, invoke.fields)
     end)
     encode_invoke_response(results)
   end
@@ -590,7 +590,7 @@ end
 ### Subscription Manager
 
 ```elixir
-defmodule Matterlix.IM.SubscriptionManager do
+defmodule MatterEx.IM.SubscriptionManager do
   @moduledoc """
   Manages active subscriptions from controllers.
 
@@ -623,7 +623,7 @@ end
 
 ### Deliverable
 
-Module `Matterlix.IM.*` — uses `Matterlix.TLV` and `Matterlix.Protocol`.
+Module `MatterEx.IM.*` — uses `MatterEx.TLV` and `MatterEx.Protocol`.
 
 **Estimated effort**: 4-6 weeks.
 
@@ -639,7 +639,7 @@ Module `Matterlix.IM.*` — uses `Matterlix.TLV` and `Matterlix.Protocol`.
 
 ```elixir
 defmodule MyApp.Light do
-  use Matterlix.Device,
+  use MatterEx.Device,
     vendor_name: "My Company",
     product_name: "Smart Light",
     vendor_id: 0xFFF1,
@@ -647,8 +647,8 @@ defmodule MyApp.Light do
 
   # Endpoint 1: a dimmable light
   endpoint 1 do
-    cluster Matterlix.Cluster.OnOff
-    cluster Matterlix.Cluster.LevelControl
+    cluster MatterEx.Cluster.OnOff
+    cluster MatterEx.Cluster.LevelControl
   end
 
   # React to attribute changes (optional — only implement what you need)
@@ -661,7 +661,7 @@ defmodule MyApp.Light do
 end
 ```
 
-The `use Matterlix.Device` macro:
+The `use MatterEx.Device` macro:
 - Auto-generates endpoint 0 (root) with Descriptor + BasicInformation clusters
 - Creates a supervision tree with all endpoints and clusters as children
 - Provides `start_link/1` and `child_spec/1` for use in your app's supervisor
@@ -672,8 +672,8 @@ The `use Matterlix.Device` macro:
 This is the most important API decision. Adding a new cluster must be **one module, ~20-50 lines**:
 
 ```elixir
-defmodule Matterlix.Cluster.OnOff do
-  use Matterlix.Cluster, id: 0x0006, name: :on_off
+defmodule MatterEx.Cluster.OnOff do
+  use MatterEx.Cluster, id: 0x0006, name: :on_off
 
   # Attributes — declarative, type-safe
   attribute 0x0000, :on_off,      :boolean, default: false, writable: true
@@ -706,7 +706,7 @@ defmodule Matterlix.Cluster.OnOff do
 end
 ```
 
-### What `use Matterlix.Cluster` Generates
+### What `use MatterEx.Cluster` Generates
 
 The macro provides:
 - A GenServer that holds attribute state
@@ -716,7 +716,7 @@ The macro provides:
 - TLV encoding hints from the type declarations
 
 ```elixir
-defmodule Matterlix.Cluster do
+defmodule MatterEx.Cluster do
   @type attribute_def :: %{
     id: non_neg_integer(),
     name: atom(),
@@ -741,9 +741,9 @@ defmodule Matterlix.Cluster do
 
   defmacro __using__(opts) do
     quote do
-      @behaviour Matterlix.Cluster
+      @behaviour MatterEx.Cluster
       use GenServer
-      import Matterlix.Cluster, only: [attribute: 4, attribute: 3, command: 3]
+      import MatterEx.Cluster, only: [attribute: 4, attribute: 3, command: 3]
 
       Module.register_attribute(__MODULE__, :matter_attributes, accumulate: true)
       Module.register_attribute(__MODULE__, :matter_commands, accumulate: true)
@@ -751,7 +751,7 @@ defmodule Matterlix.Cluster do
       @cluster_id unquote(opts[:id])
       @cluster_name unquote(opts[:name])
 
-      @before_compile Matterlix.Cluster
+      @before_compile MatterEx.Cluster
 
       # GenServer API
       def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: opts[:name])
@@ -760,7 +760,7 @@ defmodule Matterlix.Cluster do
 
       def set_attribute(state, name, value) do
         # Notify subscribers via Registry
-        Matterlix.AttributeRegistry.notify(
+        MatterEx.AttributeRegistry.notify(
           self(), @cluster_name, name, value
         )
         Map.put(state, name, value)
@@ -807,16 +807,16 @@ defmodule Matterlix.Cluster do
     commands = Module.get_attribute(env.module, :matter_commands) |> Enum.reverse()
 
     quote do
-      @impl Matterlix.Cluster
+      @impl MatterEx.Cluster
       def cluster_id, do: @cluster_id
 
-      @impl Matterlix.Cluster
+      @impl MatterEx.Cluster
       def cluster_name, do: @cluster_name
 
-      @impl Matterlix.Cluster
+      @impl MatterEx.Cluster
       def attribute_defs, do: unquote(Macro.escape(attributes))
 
-      @impl Matterlix.Cluster
+      @impl MatterEx.Cluster
       def command_defs, do: unquote(Macro.escape(commands))
     end
   end
@@ -851,8 +851,8 @@ end
 This is how easy it is to add a completely new cluster type:
 
 ```elixir
-defmodule Matterlix.Cluster.TemperatureMeasurement do
-  use Matterlix.Cluster, id: 0x0402, name: :temperature_measurement
+defmodule MatterEx.Cluster.TemperatureMeasurement do
+  use MatterEx.Cluster, id: 0x0402, name: :temperature_measurement
 
   # All attributes from the Matter spec for this cluster
   attribute 0x0000, :measured_value,    :int16,  default: nil    # nil = unknown
@@ -880,8 +880,8 @@ That's it. **13 lines** for a complete cluster. The macro system handles:
 
 **Door Lock:**
 ```elixir
-defmodule Matterlix.Cluster.DoorLock do
-  use Matterlix.Cluster, id: 0x0101, name: :door_lock
+defmodule MatterEx.Cluster.DoorLock do
+  use MatterEx.Cluster, id: 0x0101, name: :door_lock
 
   attribute 0x0000, :lock_state,   :enum8,  default: 1  # 0=not_locked, 1=locked, 2=unlocked
   attribute 0x0001, :lock_type,    :enum8,  default: 0
@@ -904,8 +904,8 @@ end
 
 **Boolean State (contact sensor):**
 ```elixir
-defmodule Matterlix.Cluster.BooleanState do
-  use Matterlix.Cluster, id: 0x0045, name: :boolean_state
+defmodule MatterEx.Cluster.BooleanState do
+  use MatterEx.Cluster, id: 0x0045, name: :boolean_state
 
   attribute 0x0000, :state_value, :boolean, default: false
   attribute 0xFFFD, :cluster_revision, :uint16, default: 1
@@ -919,14 +919,14 @@ end
 ### Device Macro — Wiring It All Together
 
 ```elixir
-defmodule Matterlix.Device do
+defmodule MatterEx.Device do
   defmacro __using__(opts) do
     quote do
-      import Matterlix.Device, only: [endpoint: 2]
+      import MatterEx.Device, only: [endpoint: 2]
       Module.register_attribute(__MODULE__, :matter_endpoints, accumulate: true)
 
       @device_opts unquote(opts)
-      @before_compile Matterlix.Device
+      @before_compile MatterEx.Device
     end
   end
 
@@ -1011,8 +1011,8 @@ defmodule MyApp.Application do
       # Your Matter device — starts all endpoints and clusters
       MyApp.Light,
 
-      # Matterlix handles BLE, commissioning, sessions, etc.
-      {Matterlix, device: MyApp.Light, setup_pin: 20202021, discriminator: 3840}
+      # MatterEx handles BLE, commissioning, sessions, etc.
+      {MatterEx, device: MyApp.Light, setup_pin: 20202021, discriminator: 3840}
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one)
@@ -1023,23 +1023,23 @@ end
 ### Device Supervision Tree
 
 ```
-Matterlix.Device.Supervisor
-├── Matterlix.CommissioningManager (GenStateMachine)
+MatterEx.Device.Supervisor
+├── MatterEx.CommissioningManager (GenStateMachine)
 │   States: :uncommissioned → :commissioning → :commissioned
-├── Matterlix.SessionManager
-│   └── Matterlix.Session (per active session, DynamicSupervisor)
-├── Matterlix.SubscriptionManager
-├── Matterlix.Transport.Supervisor
-│   ├── Matterlix.Transport.BLE (only during commissioning)
-│   ├── Matterlix.Transport.UDP (operational, port 5540)
-│   └── Matterlix.Transport.MDNS
-└── Matterlix.Endpoint.Supervisor
-    ├── Matterlix.Endpoint.0 (root)
-    │   ├── Matterlix.Cluster.Descriptor
-    │   └── Matterlix.Cluster.BasicInformation
-    └── Matterlix.Endpoint.1 (application)
-        ├── Matterlix.Cluster.OnOff
-        └── Matterlix.Cluster.LevelControl
+├── MatterEx.SessionManager
+│   └── MatterEx.Session (per active session, DynamicSupervisor)
+├── MatterEx.SubscriptionManager
+├── MatterEx.Transport.Supervisor
+│   ├── MatterEx.Transport.BLE (only during commissioning)
+│   ├── MatterEx.Transport.UDP (operational, port 5540)
+│   └── MatterEx.Transport.MDNS
+└── MatterEx.Endpoint.Supervisor
+    ├── MatterEx.Endpoint.0 (root)
+    │   ├── MatterEx.Cluster.Descriptor
+    │   └── MatterEx.Cluster.BasicInformation
+    └── MatterEx.Endpoint.1 (application)
+        ├── MatterEx.Cluster.OnOff
+        └── MatterEx.Cluster.LevelControl
 ```
 
 ### Testing
@@ -1051,7 +1051,7 @@ Matterlix.Device.Supervisor
 
 ### Deliverable
 
-Module `Matterlix.Device` + `Matterlix.Cluster` — the developer-facing API.
+Module `MatterEx.Device` + `MatterEx.Cluster` — the developer-facing API.
 
 **Estimated effort**: 4-6 weeks.
 
@@ -1065,13 +1065,13 @@ After all phases, the full commissioning flow works end-to-end:
 Commissioner (phone/chip-tool)          Device (Elixir)
          │                                    │
          │     BLE: Discover (CHIPoBLE)       │
-         │◄───────────────────────────────────│  Matterlix.Transport.BLE advertises
+         │◄───────────────────────────────────│  MatterEx.Transport.BLE advertises
          │                                    │
          │     BLE: Connect                   │
-         │───────────────────────────────────►│  Matterlix.Transport.BLE accepts
+         │───────────────────────────────────►│  MatterEx.Transport.BLE accepts
          │                                    │
          │     PASE: pbkdfParamRequest        │
-         │───────────────────────────────────►│  Matterlix.Crypto.SPAKE2Plus
+         │───────────────────────────────────►│  MatterEx.Crypto.SPAKE2Plus
          │     PASE: pbkdfParamResponse       │
          │◄───────────────────────────────────│
          │     PASE: pake1 (pA)               │
@@ -1084,12 +1084,12 @@ Commissioner (phone/chip-tool)          Device (Elixir)
          │     Secure session established      │
          │                                    │
          │     IM: Write(WiFi credentials)     │
-         │───────────────────────────────────►│  Matterlix.IM → VintageNet.configure
+         │───────────────────────────────────►│  MatterEx.IM → VintageNet.configure
          │     IM: WriteResponse(success)      │
          │◄───────────────────────────────────│
          │                                    │  Device joins WiFi
          │     IM: InvokeCommand(CommArm)      │
-         │───────────────────────────────────►│  Matterlix.CommissioningManager
+         │───────────────────────────────────►│  MatterEx.CommissioningManager
          │                                    │
          │ ─ ─ BLE disconnects ─ ─ ─ ─ ─ ─ ─ │
          │                                    │
@@ -1097,24 +1097,24 @@ Commissioner (phone/chip-tool)          Device (Elixir)
          │◄───────────────────────────────────│  mdns_lite
          │                                    │
          │     CASE: Sigma1/Sigma2/Sigma3      │
-         │◄──────────────────────────────────►│  Matterlix.Crypto.CASE (over UDP)
+         │◄──────────────────────────────────►│  MatterEx.Crypto.CASE (over UDP)
          │                                    │
          │     Operational session established  │
          │                                    │
          │     IM: Read(OnOff)                 │
-         │───────────────────────────────────►│  Matterlix.IM → Matterlix.Cluster.OnOff
+         │───────────────────────────────────►│  MatterEx.IM → MatterEx.Cluster.OnOff
          │     IM: ReportData(on=false)        │
          │◄───────────────────────────────────│
 ```
 
 ## Project Structure (Mono-repo)
 
-Single `matterlix` hex package with clear module boundaries:
+Single `matter_ex` hex package with clear module boundaries:
 
 ```
-matterlix/
+matter_ex/
 ├── lib/
-│   └── matterlix/
+│   └── matter_ex/
 │       ├── tlv.ex                    # TLV encoder/decoder (Phase 1)
 │       ├── tlv/
 │       │   ├── encoder.ex            # Binary encoding
@@ -1169,7 +1169,7 @@ matterlix/
 │           └── session.ex
 │
 ├── test/
-│   └── matterlix/
+│   └── matter_ex/
 │       ├── tlv_test.exs
 │       ├── tlv/
 │       │   ├── encoder_test.exs
@@ -1245,12 +1245,12 @@ Total: **6-9 months** for a working Elixir Matter device that can be commissione
 Phase 1 (TLV) is the foundation — every other layer depends on it. Start here:
 
 ```bash
-# In the matterlix directory
+# In the matter_ex directory
 # 1. Create a new branch for the rewrite
 git checkout -b elixir-native
 
 # 2. The TLV module has zero external dependencies
-#    Start by implementing lib/matterlix/tlv.ex and tests
+#    Start by implementing lib/matter_ex/tlv.ex and tests
 
 # 3. Validate against Matter SDK test vectors:
 #    deps/connectedhomeip/src/lib/core/tests/TestCHIPTLV.cpp

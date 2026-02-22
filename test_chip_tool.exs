@@ -1,25 +1,25 @@
-# test_chip_tool.exs — chip-tool integration test for Matterlix
+# test_chip_tool.exs — chip-tool integration test for MatterEx
 #
 # Usage:  mix run test_chip_tool.exs
 #
-# Starts a Matterlix OnOff light device with mDNS discovery,
+# Starts a MatterEx OnOff light device with mDNS discovery,
 # then runs chip-tool commands to commission and control it.
 
 defmodule TestChipTool do
   # ── Device definition ─────────────────────────────────────────
 
   defmodule Light do
-    use Matterlix.Device,
-      vendor_name: "Matterlix",
+    use MatterEx.Device,
+      vendor_name: "MatterEx",
       product_name: "Test Light",
       vendor_id: 0xFFF1,
       product_id: 0x8001
 
     endpoint 1, device_type: 0x0100 do
-      cluster Matterlix.Cluster.OnOff
-      cluster Matterlix.Cluster.Identify
-      cluster Matterlix.Cluster.Groups
-      cluster Matterlix.Cluster.Scenes
+      cluster MatterEx.Cluster.OnOff
+      cluster MatterEx.Cluster.Identify
+      cluster MatterEx.Cluster.Groups
+      cluster MatterEx.Cluster.Scenes
     end
   end
 
@@ -31,7 +31,7 @@ defmodule TestChipTool do
   @salt :crypto.strong_rand_bytes(32)
   @iterations 1000
   @node_id 1  # chip-tool node assignment
-  @kvs_path "/tmp/matterlix_chip_tool_kvs"
+  @kvs_path "/tmp/matter_ex_chip_tool_kvs"
 
   # ── Helpers ────────────────────────────────────────────────────
 
@@ -124,23 +124,23 @@ defmodule TestChipTool do
     {:ok, _} = Light.start_link()
 
     log("Starting mDNS responder...")
-    {:ok, mdns} = Matterlix.MDNS.start_link(addresses: [ip_tuple])
+    {:ok, mdns} = MatterEx.MDNS.start_link(addresses: [ip_tuple])
 
-    service = Matterlix.MDNS.commissioning_service(
+    service = MatterEx.MDNS.commissioning_service(
       port: @port,
       discriminator: @discriminator,
       vendor_id: 0xFFF1,
       product_id: 0x8001,
-      device_name: "Matterlix Test Light",
+      device_name: "MatterEx Test Light",
       device_type: 0x0100
     )
 
     instance = Keyword.fetch!(service, :instance)
-    Matterlix.MDNS.advertise(mdns, service)
+    MatterEx.MDNS.advertise(mdns, service)
     log("mDNS commissioning advertisement active (discriminator=#{@discriminator})")
 
     log("Starting Matter node on UDP port #{@port}...")
-    {:ok, node} = Matterlix.Node.start_link(
+    {:ok, node} = MatterEx.Node.start_link(
       device: Light,
       passcode: @passcode,
       salt: @salt,
@@ -150,7 +150,7 @@ defmodule TestChipTool do
       commissioning_instance: instance
     )
 
-    actual_port = Matterlix.Node.port(node)
+    actual_port = MatterEx.Node.port(node)
     log("Node listening on port #{actual_port}")
 
     {node, mdns}
@@ -305,8 +305,8 @@ defmodule TestChipTool do
     )
 
     if status == 0 do
-      if String.contains?(output, "Matterlix") do
-        pass("VendorName = \"Matterlix\"")
+      if String.contains?(output, "MatterEx") do
+        pass("VendorName = \"MatterEx\"")
       else
         pass("BasicInformation read succeeded (exit 0)")
         IO.puts("  Output: #{String.trim(output)}")
@@ -698,7 +698,7 @@ defmodule TestChipTool do
 
     if status == 0 do
       has_onoff = String.contains?(output, "OnOff") or String.contains?(output, "Endpoint: 1")
-      has_basic = String.contains?(output, "BasicInformation") or String.contains?(output, "VendorName") or String.contains?(output, "Matterlix")
+      has_basic = String.contains?(output, "BasicInformation") or String.contains?(output, "VendorName") or String.contains?(output, "MatterEx")
       has_descriptor = String.contains?(output, "Descriptor") or String.contains?(output, "PartsList") or String.contains?(output, "ServerList")
 
       if has_onoff and has_basic and has_descriptor do
@@ -799,7 +799,7 @@ defmodule TestChipTool do
 
   # ── Failure tracking ──────────────────────────────────────────
 
-  @failures_path "/tmp/matterlix_chip_tool_failures"
+  @failures_path "/tmp/matter_ex_chip_tool_failures"
 
   defp load_retest_filter do
     case File.read(@failures_path) do
@@ -825,7 +825,7 @@ defmodule TestChipTool do
 
     IO.puts("")
     IO.puts(color(:cyan, "╔══════════════════════════════════════════════════╗"))
-    IO.puts(color(:cyan, "║  Matterlix chip-tool Integration Test           ║"))
+    IO.puts(color(:cyan, "║  MatterEx chip-tool Integration Test           ║"))
     IO.puts(color(:cyan, "╚══════════════════════════════════════════════════╝"))
     IO.puts("")
 

@@ -5,6 +5,7 @@
 # Generated on crash or test coverage
 /cover/
 /doc/
+erl_crash.dump
 
 # Mix lock (keep mix.lock if it exists)
 # /mix.lock
@@ -18,3 +19,5 @@
 *~
 .idea/
 .vscode/
+.elixir_ls/
+.claude/
