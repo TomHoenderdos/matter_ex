@@ -15,8 +15,10 @@ defmodule Matterlix.Cluster.OperationalCredentials do
 
   attribute 0x0000, :nocs, :list, default: []
   attribute 0x0001, :fabrics, :list, default: []
-  attribute 0x0003, :supported_fabrics, :uint8, default: 5
-  attribute 0x0004, :commissioned_fabrics, :uint8, default: 0
+  attribute 0x0002, :supported_fabrics, :uint8, default: 5
+  attribute 0x0003, :commissioned_fabrics, :uint8, default: 0
+  attribute 0x0004, :trusted_root_certificates, :list, default: []
+  attribute 0x0005, :current_fabric_index, :uint8, default: 0
   attribute 0xFFFD, :cluster_revision, :uint16, default: 1
 
   command 0x00, :attestation_request, [attestation_nonce: :bytes], response_id: 0x01
@@ -112,6 +114,15 @@ defmodule Matterlix.Cluster.OperationalCredentials do
     if root_cert && Process.whereis(Commissioning) do
       Commissioning.store_root_cert(root_cert)
     end
+
+    # Store root cert in the trusted_root_certificates attribute
+    state =
+      if root_cert do
+        certs = Map.get(state, :trusted_root_certificates, [])
+        Map.put(state, :trusted_root_certificates, certs ++ [root_cert])
+      else
+        state
+      end
 
     {:ok, nil, state}
   end
