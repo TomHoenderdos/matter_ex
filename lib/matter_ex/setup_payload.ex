@@ -27,8 +27,11 @@ defmodule MatterEx.SetupPayload do
 
   import Bitwise
 
-  # Base-38 alphabet (Matter spec Table 39)
-  @base38_alphabet ~c"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-."
+  # Base-38 alphabet as tuple for O(1) lookup (Matter spec Table 39)
+  @base38_alphabet {?0, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                    ?A, ?B, ?C, ?D, ?E, ?F, ?G, ?H, ?I, ?J,
+                    ?K, ?L, ?M, ?N, ?O, ?P, ?Q, ?R, ?S, ?T,
+                    ?U, ?V, ?W, ?X, ?Y, ?Z, ?-, ?.}
 
   # ── QR Code Payload ──────────────────────────────────────────────────
 
@@ -149,40 +152,40 @@ defmodule MatterEx.SetupPayload do
   defp do_base38(_value, 0, acc), do: acc
 
   defp do_base38(value, remaining, acc) do
-    char = Enum.at(@base38_alphabet, rem(value, 38))
+    char = elem(@base38_alphabet, rem(value, 38))
     do_base38(div(value, 38), remaining - 1, [acc, char])
   end
 
   # ── Verhoeff Algorithm ───────────────────────────────────────────────
 
-  # Multiplication table for dihedral group D5
-  @verhoeff_d [
-    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    [1, 2, 3, 4, 0, 6, 7, 8, 9, 5],
-    [2, 3, 4, 0, 1, 7, 8, 9, 5, 6],
-    [3, 4, 0, 1, 2, 8, 9, 5, 6, 7],
-    [4, 0, 1, 2, 3, 9, 5, 6, 7, 8],
-    [5, 9, 8, 7, 6, 0, 4, 3, 2, 1],
-    [6, 5, 9, 8, 7, 1, 0, 4, 3, 2],
-    [7, 6, 5, 9, 8, 2, 1, 0, 4, 3],
-    [8, 7, 6, 5, 9, 3, 2, 1, 0, 4],
-    [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
-  ]
+  # Multiplication table for dihedral group D5 (tuples for O(1) lookup)
+  @verhoeff_d {
+    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+    {1, 2, 3, 4, 0, 6, 7, 8, 9, 5},
+    {2, 3, 4, 0, 1, 7, 8, 9, 5, 6},
+    {3, 4, 0, 1, 2, 8, 9, 5, 6, 7},
+    {4, 0, 1, 2, 3, 9, 5, 6, 7, 8},
+    {5, 9, 8, 7, 6, 0, 4, 3, 2, 1},
+    {6, 5, 9, 8, 7, 1, 0, 4, 3, 2},
+    {7, 6, 5, 9, 8, 2, 1, 0, 4, 3},
+    {8, 7, 6, 5, 9, 3, 2, 1, 0, 4},
+    {9, 8, 7, 6, 5, 4, 3, 2, 1, 0}
+  }
 
   # Inverse table
-  @verhoeff_inv [0, 4, 3, 2, 1, 5, 6, 7, 8, 9]
+  @verhoeff_inv {0, 4, 3, 2, 1, 5, 6, 7, 8, 9}
 
   # Permutation table
-  @verhoeff_p [
-    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    [1, 5, 7, 6, 2, 8, 3, 0, 9, 4],
-    [5, 8, 0, 3, 7, 9, 6, 1, 4, 2],
-    [8, 9, 1, 6, 0, 4, 3, 5, 2, 7],
-    [9, 4, 5, 3, 1, 2, 6, 8, 7, 0],
-    [4, 2, 8, 6, 5, 7, 3, 9, 0, 1],
-    [2, 7, 9, 3, 8, 0, 6, 4, 1, 5],
-    [7, 0, 4, 6, 9, 1, 3, 2, 5, 8]
-  ]
+  @verhoeff_p {
+    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+    {1, 5, 7, 6, 2, 8, 3, 0, 9, 4},
+    {5, 8, 0, 3, 7, 9, 6, 1, 4, 2},
+    {8, 9, 1, 6, 0, 4, 3, 5, 2, 7},
+    {9, 4, 5, 3, 1, 2, 6, 8, 7, 0},
+    {4, 2, 8, 6, 5, 7, 3, 9, 0, 1},
+    {2, 7, 9, 3, 8, 0, 6, 4, 1, 5},
+    {7, 0, 4, 6, 9, 1, 3, 2, 5, 8}
+  }
 
   defp verhoeff_generate(number_string) do
     digits =
@@ -195,10 +198,10 @@ defmodule MatterEx.SetupPayload do
       digits
       |> Enum.with_index()
       |> Enum.reduce(0, fn {digit, i}, c ->
-        p_val = @verhoeff_p |> Enum.at(rem(i, 8)) |> Enum.at(digit)
-        @verhoeff_d |> Enum.at(c) |> Enum.at(p_val)
+        p_val = @verhoeff_p |> elem(rem(i, 8)) |> elem(digit)
+        @verhoeff_d |> elem(c) |> elem(p_val)
       end)
 
-    Enum.at(@verhoeff_inv, c)
+    elem(@verhoeff_inv, c)
   end
 end
