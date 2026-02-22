@@ -98,27 +98,63 @@ via Matter write requests — the cluster GenServer handles this automatically.
 
 ## Updating State from Your Application
 
-To push state changes from your application to Matter (e.g., a physical button was
-pressed, a sensor reading changed), write to the cluster GenServer directly:
+When something changes on your device (a button press, a sensor reading), update the
+Matter attribute so controllers see the new state. Here's a GenServer that watches a
+GPIO button and pushes state into Matter:
 
 ```elixir
-# A physical button was pressed — update the OnOff attribute
-MyApp.Light.write_attribute(1, :on_off, :on_off, true)
+defmodule MyApp.ButtonWatcher do
+  use GenServer
 
-# Read the current state
-{:ok, true} = MyApp.Light.read_attribute(1, :on_off, :on_off)
+  def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
-# Update a sensor reading
-MyApp.Sensor.write_attribute(1, :temperature_measurement, :measured_value, 2350)
+  def init(_opts) do
+    # Poll the button every 100ms (or use interrupts on real hardware)
+    :timer.send_interval(100, :check_button)
+    {:ok, %{last_state: false}}
+  end
+
+  def handle_info(:check_button, state) do
+    pressed = MyApp.GPIO.read_pin(4) == :high
+
+    if pressed != state.last_state do
+      # Toggle the light in Matter — any subscribed controller gets notified
+      MyApp.Light.write_attribute(1, :on_off, :on_off, pressed)
+    end
+
+    {:noreply, %{state | last_state: pressed}}
+  end
+end
 ```
 
-Any Matter controller with an active subscription will be notified of the change
-automatically.
-
-You can also invoke commands programmatically:
+A temperature sensor pushing periodic readings:
 
 ```elixir
-MyApp.Light.invoke_command(1, :on_off, :toggle)
+defmodule MyApp.TempSensor do
+  use GenServer
+
+  def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+
+  def init(_opts) do
+    :timer.send_interval(5_000, :read_sensor)
+    {:ok, %{}}
+  end
+
+  def handle_info(:read_sensor, state) do
+    # Matter temperatures are in 0.01 C units (e.g., 2350 = 23.50 C)
+    temp = MyApp.I2C.read_temperature() |> round()
+    MyApp.Sensor.write_attribute(1, :temperature_measurement, :measured_value, temp)
+    {:noreply, state}
+  end
+end
+```
+
+The Device API for reading and writing from Elixir:
+
+```elixir
+MyApp.Light.read_attribute(1, :on_off, :on_off)        # {:ok, true}
+MyApp.Light.write_attribute(1, :on_off, :on_off, false) # :ok
+MyApp.Light.invoke_command(1, :on_off, :toggle)         # {:ok, nil}
 ```
 
 ## Architecture
