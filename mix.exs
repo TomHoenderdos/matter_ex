@@ -14,7 +14,7 @@ defmodule MatterEx.MixProject do
       homepage_url: "https://github.com/TomHoenderdos/matter_ex",
       docs: [
         main: "readme",
-        extras: ["README.md"]
+        extras: ["README.md", "LICENSE"]
       ]
     ]
   end
