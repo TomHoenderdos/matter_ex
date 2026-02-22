@@ -24,6 +24,7 @@ defmodule NervesLight.Application do
          name: MatterEx.Node,
          device: NervesLight.Device,
          passcode: passcode,
+         # TODO: persist salt to filesystem for stable PASE verifier across reboots
          salt: :crypto.strong_rand_bytes(32),
          iterations: 1000,
          port: 5540}
