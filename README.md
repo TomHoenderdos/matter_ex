@@ -56,6 +56,71 @@ The node will advertise via mDNS and accept commissioning from any Matter contro
 Endpoint 0 is auto-generated with Descriptor, BasicInformation, GeneralCommissioning,
 OperationalCredentials, AccessControl, NetworkCommissioning, and GroupKeyManagement.
 
+## Handling Incoming Commands
+
+When a Matter controller (phone app, Alexa, Home Assistant, etc.) sends a command to
+your device, the cluster's `handle_command/3` callback is invoked. This is where you
+bridge Matter to your actual hardware or application logic:
+
+```elixir
+defmodule MyApp.Cluster.OnOff do
+  use MatterEx.Cluster, id: 0x0006, name: :on_off
+
+  attribute 0x0000, :on_off, :boolean, default: false, writable: true
+  attribute 0xFFFD, :cluster_revision, :uint16, default: 4
+
+  command 0x00, :off, []
+  command 0x01, :on, []
+  command 0x02, :toggle, []
+
+  @impl MatterEx.Cluster
+  def handle_command(:on, _params, state) do
+    # Control your hardware here
+    MyApp.GPIO.set_pin(17, :high)
+    {:ok, nil, set_attribute(state, :on_off, true)}
+  end
+
+  def handle_command(:off, _params, state) do
+    MyApp.GPIO.set_pin(17, :low)
+    {:ok, nil, set_attribute(state, :on_off, false)}
+  end
+
+  def handle_command(:toggle, _params, state) do
+    new_value = !get_attribute(state, :on_off)
+    if new_value, do: MyApp.GPIO.set_pin(17, :high), else: MyApp.GPIO.set_pin(17, :low)
+    {:ok, nil, set_attribute(state, :on_off, new_value)}
+  end
+end
+```
+
+Writable attributes (like `node_label`) can also be changed directly by controllers
+via Matter write requests — the cluster GenServer handles this automatically.
+
+## Updating State from Your Application
+
+To push state changes from your application to Matter (e.g., a physical button was
+pressed, a sensor reading changed), write to the cluster GenServer directly:
+
+```elixir
+# A physical button was pressed — update the OnOff attribute
+MyApp.Light.write_attribute(1, :on_off, :on_off, true)
+
+# Read the current state
+{:ok, true} = MyApp.Light.read_attribute(1, :on_off, :on_off)
+
+# Update a sensor reading
+MyApp.Sensor.write_attribute(1, :temperature_measurement, :measured_value, 2350)
+```
+
+Any Matter controller with an active subscription will be notified of the change
+automatically.
+
+You can also invoke commands programmatically:
+
+```elixir
+MyApp.Light.invoke_command(1, :on_off, :toggle)
+```
+
 ## Architecture
 
 ```
