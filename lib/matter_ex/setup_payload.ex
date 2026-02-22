@@ -33,6 +33,13 @@ defmodule MatterEx.SetupPayload do
                     ?K, ?L, ?M, ?N, ?O, ?P, ?Q, ?R, ?S, ?T,
                     ?U, ?V, ?W, ?X, ?Y, ?Z, ?-, ?.}
 
+  # Invalid passcodes per Matter spec 5.1.7.1
+  @invalid_passcodes MapSet.new([
+    0, 11111111, 22222222, 33333333, 44444444,
+    55555555, 66666666, 77777777, 88888888, 99999999,
+    12345678, 87654321
+  ])
+
   # ── QR Code Payload ──────────────────────────────────────────────────
 
   @doc """
@@ -47,15 +54,18 @@ defmodule MatterEx.SetupPayload do
     * `:flow` — commissioning flow, 0..3 (default 0 = standard)
     * `:discovery` — discovery capabilities bitmask (default 2 = BLE)
     * `:version` — payload version, 0..7 (default 0)
+
+  Raises `ArgumentError` if any value is out of range or the passcode is
+  on the Matter spec invalid list.
   """
   def qr_code_payload(opts) do
-    version = Keyword.get(opts, :version, 0) &&& 0x7
-    vendor_id = Keyword.fetch!(opts, :vendor_id) &&& 0xFFFF
-    product_id = Keyword.fetch!(opts, :product_id) &&& 0xFFFF
-    flow = Keyword.get(opts, :flow, 0) &&& 0x3
-    discovery = Keyword.get(opts, :discovery, 2) &&& 0xFF
-    discriminator = Keyword.fetch!(opts, :discriminator) &&& 0xFFF
-    passcode = Keyword.fetch!(opts, :passcode) &&& 0x7FFFFFF
+    vendor_id = validate!(:vendor_id, Keyword.fetch!(opts, :vendor_id), 0..0xFFFF)
+    product_id = validate!(:product_id, Keyword.fetch!(opts, :product_id), 0..0xFFFF)
+    discriminator = validate!(:discriminator, Keyword.fetch!(opts, :discriminator), 0..0xFFF)
+    passcode = validate_passcode!(Keyword.fetch!(opts, :passcode))
+    version = validate!(:version, Keyword.get(opts, :version, 0), 0..7)
+    flow = validate!(:flow, Keyword.get(opts, :flow, 0), 0..3)
+    discovery = validate!(:discovery, Keyword.get(opts, :discovery, 2), 0..0xFF)
 
     # Pack 88 bits using LSB-first bit ordering:
     #   bits  0-2:  version (3)
@@ -95,8 +105,8 @@ defmodule MatterEx.SetupPayload do
       When non-zero, the vid_pid_present bit is set.
   """
   def manual_pairing_code(opts) do
-    discriminator = Keyword.fetch!(opts, :discriminator)
-    passcode = Keyword.fetch!(opts, :passcode)
+    discriminator = validate!(:discriminator, Keyword.fetch!(opts, :discriminator), 0..0xFFF)
+    passcode = validate_passcode!(Keyword.fetch!(opts, :passcode))
     flow = Keyword.get(opts, :flow, 0)
 
     # Short discriminator: top 4 bits of the 12-bit discriminator
@@ -203,5 +213,41 @@ defmodule MatterEx.SetupPayload do
       end)
 
     elem(@verhoeff_inv, c)
+  end
+
+  # ── Validation ─────────────────────────────────────────────────────
+
+  defp validate!(field, value, range) when is_integer(value) do
+    if value in range do
+      value
+    else
+      raise ArgumentError,
+            "#{field} must be an integer in #{inspect(range)}, got: #{inspect(value)}"
+    end
+  end
+
+  defp validate!(field, value, _range) do
+    raise ArgumentError,
+          "#{field} must be an integer, got: #{inspect(value)}"
+  end
+
+  defp validate_passcode!(value) when is_integer(value) do
+    cond do
+      value < 1 or value > 0x5F5E0FE ->
+        raise ArgumentError,
+              "passcode must be an integer in 1..99999998, got: #{inspect(value)}"
+
+      MapSet.member?(@invalid_passcodes, value) ->
+        raise ArgumentError,
+              "passcode #{value} is on the Matter spec invalid passcode list"
+
+      true ->
+        value
+    end
+  end
+
+  defp validate_passcode!(value) do
+    raise ArgumentError,
+          "passcode must be an integer, got: #{inspect(value)}"
   end
 end
