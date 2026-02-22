@@ -1,11 +1,12 @@
 defmodule MatterEx.Protocol.MessageCodec.Header do
-  @moduledoc false
+  @moduledoc """
+  Matter message header (plaintext).
 
-  # Matter message header (plaintext).
-  #
-  # Wire format (Matter spec section 4.4.1):
-  #   [msg_flags:8] [session_id:16LE] [sec_flags:8] [counter:32LE]
-  #   [source_node_id:64LE if S] [dest_node_id:64LE if DSIZ=01 | dest_group_id:16LE if DSIZ=10]
+  Wire format (Matter spec section 4.4.1):
+
+      [msg_flags:8] [session_id:16LE] [sec_flags:8] [counter:32LE]
+      [source_node_id:64LE if S] [dest_node_id:64LE if DSIZ=01 | dest_group_id:16LE if DSIZ=10]
+  """
 
   import Bitwise
 

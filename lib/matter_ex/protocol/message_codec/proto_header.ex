@@ -1,12 +1,13 @@
 defmodule MatterEx.Protocol.MessageCodec.ProtoHeader do
-  @moduledoc false
+  @moduledoc """
+  Matter protocol header (part of encrypted payload).
 
-  # Matter protocol header (part of encrypted payload).
-  #
-  # Wire format (Matter spec section 4.4.2):
-  #   [exch_flags:8] [opcode:8] [exchange_id:16LE]
-  #   [vendor_id:16LE if V] [protocol_id:16LE]
-  #   [ack_counter:32LE if A] [payload]
+  Wire format (Matter spec section 4.4.2):
+
+      [exch_flags:8] [opcode:8] [exchange_id:16LE]
+      [vendor_id:16LE if V] [protocol_id:16LE]
+      [ack_counter:32LE if A] [payload]
+  """
 
   import Bitwise
 
