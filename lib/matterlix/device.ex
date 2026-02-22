@@ -195,8 +195,17 @@ defmodule Matterlix.Device do
     [event_store_spec | cluster_specs]
   end
 
+  # Matter DeviceTypeStruct context tags (spec section 11.1.5.1)
+  @device_type_tag 0
+  @revision_tag 1
+
+  defp device_type_struct(id, revision \\ 1) do
+    %{@device_type_tag => {:uint, id}, @revision_tag => {:uint, revision}}
+  end
+
   defp cluster_init_opts(Matterlix.Cluster.Descriptor, ep_id, ep_opts, _device_opts, parts_list, endpoint_server_lists) do
-    device_types = if ep_id == 0, do: [%{device_type: 0x0016, revision: 1}], else: [%{device_type: Keyword.get(ep_opts, :device_type, 0), revision: 1}]
+    device_type_id = if ep_id == 0, do: 0x0016, else: Keyword.get(ep_opts, :device_type, 0)
+    device_types = [device_type_struct(device_type_id)]
 
     [
       device_type_list: device_types,

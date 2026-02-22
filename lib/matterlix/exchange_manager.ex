@@ -47,7 +47,8 @@ defmodule Matterlix.ExchangeManager do
             next_exchange_id: 1,
             pending_acks: [],
             timed_exchanges: %{},
-            pending_subscribe_responses: %{}
+            pending_subscribe_responses: %{},
+            pending_chunks: %{}
 
   @doc """
   Create a new ExchangeManager.
@@ -184,13 +185,23 @@ defmodule Matterlix.ExchangeManager do
       state
     end
 
-    # Check for pending subscribe completion: status_response on an exchange
-    # with a stored SubscribeResponse means the client ACKed our priming ReportData
-    case Map.get(state.pending_subscribe_responses, proto.exchange_id) do
-      sub_payload when is_binary(sub_payload) and opcode == :status_response ->
-        complete_subscribe(state, proto, sub_payload, message_counter)
+    # Handle piggybacked status_response for pending chunked reports or subscribe completion
+    cond do
+      opcode == :status_response and Map.get(state.pending_chunks, proto.exchange_id) == :done ->
+        # Final StatusResponse after last chunk — ACK and close
+        state = ack_and_clear_mrp(state, proto)
+        state = %{state | pending_chunks: Map.delete(state.pending_chunks, proto.exchange_id)}
+        state = close_exchange(state, proto.exchange_id)
+        actions = if proto.needs_ack, do: [{:ack, build_standalone_ack(proto, message_counter)}], else: []
+        {actions, state}
 
-      _ ->
+      opcode == :status_response and Map.has_key?(state.pending_chunks, proto.exchange_id) ->
+        send_next_chunk(state, proto, message_counter)
+
+      opcode == :status_response and Map.has_key?(state.pending_subscribe_responses, proto.exchange_id) ->
+        complete_subscribe(state, proto, Map.fetch!(state.pending_subscribe_responses, proto.exchange_id), message_counter)
+
+      true ->
         # Register exchange
         exchanges = Map.put(state.exchanges, proto.exchange_id, %{
           role: :responder,
@@ -234,8 +245,34 @@ defmodule Matterlix.ExchangeManager do
     end
   end
 
+  # Max IM payload size for UDP (leaving room for message header + encryption overhead)
+  @max_im_payload 1150
+
   defp dispatch_and_reply(state, proto, opcode, request, resp_opcode_name, message_counter) do
     response = state.handler.(opcode, request)
+
+    # Chunk ReportData if it exceeds the UDP payload limit
+    case maybe_chunk_report(response, resp_opcode_name) do
+      [first_chunk | remaining] when remaining != [] ->
+        dispatch_chunked(state, proto, opcode, request, resp_opcode_name, message_counter, first_chunk, remaining)
+
+      _ ->
+        dispatch_single(state, proto, opcode, request, resp_opcode_name, message_counter, response)
+    end
+  end
+
+  defp maybe_chunk_report(%IM.ReportData{} = report, :report_data) do
+    payload = IM.encode(report)
+    if byte_size(payload) > @max_im_payload do
+      IM.chunk_report_data(report, 4)
+    else
+      [report]
+    end
+  end
+
+  defp maybe_chunk_report(response, _opcode), do: [response]
+
+  defp dispatch_single(state, proto, opcode, request, resp_opcode_name, message_counter, response) do
     response_payload = IM.encode(response)
 
     Logger.debug("IM response #{inspect(resp_opcode_name)}: #{inspect(response)}")
@@ -272,6 +309,76 @@ defmodule Matterlix.ExchangeManager do
         true ->
           close_exchange(state, proto.exchange_id)
       end
+
+    {[{:reply, reply_proto}, {:schedule_mrp, proto.exchange_id, 0, timeout}], state}
+  end
+
+  defp dispatch_chunked(state, proto, _opcode, _request, resp_opcode_name, message_counter, first_chunk, remaining) do
+    response_payload = IM.encode(first_chunk)
+
+    Logger.debug("IM chunked response (chunk 1/#{1 + length(remaining)}): #{byte_size(response_payload)}B")
+
+    resp_opcode_num = ProtocolID.opcode(:interaction_model, resp_opcode_name)
+
+    reply_proto = %ProtoHeader{
+      initiator: false,
+      needs_ack: true,
+      ack_counter: if(proto.needs_ack, do: message_counter, else: nil),
+      opcode: resp_opcode_num,
+      exchange_id: proto.exchange_id,
+      protocol_id: proto.protocol_id,
+      payload: response_payload
+    }
+
+    mrp = MRP.record_send(state.mrp, proto.exchange_id, :erlang.term_to_binary(reply_proto))
+    timeout = MRP.backoff_ms(state.mrp, 0, deterministic: true)
+    state = %{state | mrp: mrp}
+
+    # Store remaining chunks — exchange stays open until all chunks are sent
+    state = %{state | pending_chunks: Map.put(state.pending_chunks, proto.exchange_id, remaining)}
+
+    {[{:reply, reply_proto}, {:schedule_mrp, proto.exchange_id, 0, timeout}], state}
+  end
+
+  defp send_next_chunk(state, proto, message_counter) do
+    state = if proto.ack_counter do
+      case MRP.on_ack(state.mrp, proto.exchange_id) do
+        {:ok, mrp} -> %{state | mrp: mrp}
+        {:error, :not_found} -> state
+      end
+    else
+      state
+    end
+
+    [next_chunk | remaining] = Map.fetch!(state.pending_chunks, proto.exchange_id)
+    chunk_num = if remaining == [], do: "last", else: "#{length(remaining)} remaining"
+    response_payload = IM.encode(next_chunk)
+
+    Logger.debug("IM chunked response (#{chunk_num}): #{byte_size(response_payload)}B")
+
+    resp_opcode_num = ProtocolID.opcode(:interaction_model, :report_data)
+
+    reply_proto = %ProtoHeader{
+      initiator: false,
+      needs_ack: true,
+      ack_counter: if(proto.needs_ack, do: message_counter, else: nil),
+      opcode: resp_opcode_num,
+      exchange_id: proto.exchange_id,
+      protocol_id: proto.protocol_id,
+      payload: response_payload
+    }
+
+    mrp = MRP.record_send(state.mrp, proto.exchange_id, :erlang.term_to_binary(reply_proto))
+    timeout = MRP.backoff_ms(state.mrp, 0, deterministic: true)
+    state = %{state | mrp: mrp}
+
+    # When remaining is empty, keep a :done marker so the final StatusResponse
+    # from the client gets properly ACKed before closing the exchange
+    state = if remaining == [] do
+      %{state | pending_chunks: Map.put(state.pending_chunks, proto.exchange_id, :done)}
+    else
+      %{state | pending_chunks: Map.put(state.pending_chunks, proto.exchange_id, remaining)}
+    end
 
     {[{:reply, reply_proto}, {:schedule_mrp, proto.exchange_id, 0, timeout}], state}
   end
@@ -315,6 +422,17 @@ defmodule Matterlix.ExchangeManager do
 
       {:error, :not_found} ->
         {[], state}
+    end
+  end
+
+  defp ack_and_clear_mrp(state, proto) do
+    if proto.ack_counter do
+      case MRP.on_ack(state.mrp, proto.exchange_id) do
+        {:ok, mrp} -> %{state | mrp: mrp}
+        {:error, :not_found} -> state
+      end
+    else
+      state
     end
   end
 

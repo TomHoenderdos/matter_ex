@@ -111,7 +111,7 @@ defmodule Matterlix.DeviceTest do
 
     test "has device_type_list" do
       {:ok, device_types} = TestLight.read_attribute(1, :descriptor, :device_type_list)
-      assert [%{device_type: 0x0100, revision: 1}] = device_types
+      assert [%{0 => {:uint, 0x0100}, 1 => {:uint, 1}}] = device_types  # DeviceTypeStruct: 0=type, 1=revision
     end
   end
 

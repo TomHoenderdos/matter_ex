@@ -421,7 +421,7 @@ defmodule Matterlix.ClusterTest do
       {:ok, pid} =
         Descriptor.start_link(
           name: name,
-          device_type_list: [%{device_type: 0x0100, revision: 1}],
+          device_type_list: [%{0 => {:uint, 0x0100}, 1 => {:uint, 1}}],  # DeviceTypeStruct: 0=type, 1=revision
           server_list: [0x0006, 0x001D],
           parts_list: [1, 2]
         )
@@ -430,7 +430,7 @@ defmodule Matterlix.ClusterTest do
     end
 
     test "init populates from opts", %{name: name} do
-      assert {:ok, [%{device_type: 0x0100, revision: 1}]} =
+      assert {:ok, [%{0 => {:uint, 0x0100}, 1 => {:uint, 1}}]} =  # DeviceTypeStruct
                GenServer.call(name, {:read_attribute, :device_type_list})
 
       assert {:ok, [0x0006, 0x001D]} =
