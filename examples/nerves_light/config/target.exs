@@ -1,5 +1,8 @@
 import Config
 
+# Use RingLogger on target (no console available)
+config :logger, backends: [RingLogger]
+
 # Shoehorn configuration
 config :shoehorn, init: [:nerves_runtime, :nerves_pack]
 
