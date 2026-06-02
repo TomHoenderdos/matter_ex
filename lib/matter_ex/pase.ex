@@ -21,7 +21,7 @@ defmodule MatterEx.PASE do
       {:established, session, comm} = PASE.handle(comm, :status_report, sr_payload)
   """
 
-  alias MatterEx.Crypto.{SPAKE2Plus, KDF}
+  alias MatterEx.Crypto.{KDF, SPAKE2Plus}
   alias MatterEx.PASE.Messages
   alias MatterEx.Protocol.StatusReport
   alias MatterEx.Session
@@ -97,8 +97,7 @@ defmodule MatterEx.PASE do
 
     payload = Messages.encode_pbkdf_param_request(random, pase.local_session_id)
 
-    {:send, :pbkdf_param_request, payload,
-     %{pase | state: :pbkdf_sent, context_hash: payload}}
+    {:send, :pbkdf_param_request, payload, %{pase | state: :pbkdf_sent, context_hash: payload}}
   end
 
   # ── Handle incoming messages ──────────────────────────────────────
@@ -107,11 +106,11 @@ defmodule MatterEx.PASE do
   Process an incoming PASE message. Dispatches based on role and state.
   """
   @spec handle(t(), atom(), binary()) ::
-    {:reply, atom(), binary(), t()} |
-    {:send, atom(), binary(), t()} |
-    {:established, atom(), binary(), Session.t(), t()} |
-    {:established, Session.t(), t()} |
-    {:error, atom()}
+          {:reply, atom(), binary(), t()}
+          | {:send, atom(), binary(), t()}
+          | {:established, atom(), binary(), Session.t(), t()}
+          | {:established, Session.t(), t()}
+          | {:error, atom()}
 
   # Device: receive PBKDFParamRequest → reply PBKDFParamResponse
   def handle(%__MODULE__{role: :device, state: :idle} = pase, :pbkdf_param_request, payload) do
@@ -119,21 +118,23 @@ defmodule MatterEx.PASE do
       {:ok, msg} ->
         responder_random = :crypto.strong_rand_bytes(32)
 
-        response = Messages.encode_pbkdf_param_response(
-          msg.initiator_random,
-          responder_random,
-          pase.local_session_id,
-          pase.iterations,
-          pase.salt
-        )
+        response =
+          Messages.encode_pbkdf_param_response(
+            msg.initiator_random,
+            responder_random,
+            pase.local_session_id,
+            pase.iterations,
+            pase.salt
+          )
 
         context = hash_context(payload, response)
 
         {:reply, :pbkdf_param_response, response,
-         %{pase |
-           state: :pbkdf_sent,
-           peer_session_id: msg.initiator_session_id,
-           context_hash: context
+         %{
+           pase
+           | state: :pbkdf_sent,
+             peer_session_id: msg.initiator_session_id,
+             context_hash: context
          }}
 
       {:error, reason} ->
@@ -145,16 +146,16 @@ defmodule MatterEx.PASE do
   def handle(%__MODULE__{role: :device, state: :pbkdf_sent} = pase, :pase_pake1, payload) do
     case Messages.decode_pake1(payload) do
       {:ok, %{pa: pa}} ->
-        {pb, keys} = SPAKE2Plus.verifier_respond(
-          pa,
-          %{w0: pase.verifier.w0, l: pase.verifier.l},
-          context: pase.context_hash
-        )
+        {pb, keys} =
+          SPAKE2Plus.verifier_respond(
+            pa,
+            %{w0: pase.verifier.w0, l: pase.verifier.l},
+            context: pase.context_hash
+          )
 
         response = Messages.encode_pake2(pb, keys.cb)
 
-        {:reply, :pase_pake2, response,
-         %{pase | state: :pake2_sent, keys: keys}}
+        {:reply, :pase_pake2, response, %{pase | state: :pake2_sent, keys: keys}}
 
       {:error, reason} ->
         {:error, reason}
@@ -175,16 +176,16 @@ defmodule MatterEx.PASE do
 
             sr_payload = StatusReport.encode(sr)
 
-            session = Session.new(
-              local_session_id: pase.local_session_id,
-              peer_session_id: pase.peer_session_id,
-              encryption_key: pase.keys.ke,
-              role: :responder,
-              auth_mode: :pase
-            )
+            session =
+              Session.new(
+                local_session_id: pase.local_session_id,
+                peer_session_id: pase.peer_session_id,
+                encryption_key: pase.keys.ke,
+                role: :responder,
+                auth_mode: :pase
+              )
 
-            {:established, :status_report, sr_payload, session,
-             %{pase | state: :established}}
+            {:established, :status_report, sr_payload, session, %{pase | state: :established}}
 
           {:error, :confirmation_failed} ->
             {:error, :confirmation_failed}
@@ -196,7 +197,11 @@ defmodule MatterEx.PASE do
   end
 
   # Commissioner: receive PBKDFParamResponse → derive keys, send Pake1
-  def handle(%__MODULE__{role: :commissioner, state: :pbkdf_sent} = pase, :pbkdf_param_response, payload) do
+  def handle(
+        %__MODULE__{role: :commissioner, state: :pbkdf_sent} = pase,
+        :pbkdf_param_response,
+        payload
+      ) do
     case Messages.decode_pbkdf_param_response(payload) do
       {:ok, msg} ->
         %{iterations: iterations, salt: salt} = msg.pbkdf_parameters
@@ -220,15 +225,16 @@ defmodule MatterEx.PASE do
         pake1_payload = Messages.encode_pake1(pa)
 
         {:send, :pase_pake1, pake1_payload,
-         %{pase |
-           state: :pake1_sent,
-           peer_session_id: msg.responder_session_id,
-           w0: w0_binary,
-           w1: w1_binary,
-           prover_context: prover_context,
-           salt: salt,
-           iterations: iterations,
-           context_hash: context
+         %{
+           pase
+           | state: :pake1_sent,
+             peer_session_id: msg.responder_session_id,
+             w0: w0_binary,
+             w1: w1_binary,
+             prover_context: prover_context,
+             salt: salt,
+             iterations: iterations,
+             context_hash: context
          }}
 
       {:error, reason} ->
@@ -240,19 +246,19 @@ defmodule MatterEx.PASE do
   def handle(%__MODULE__{role: :commissioner, state: :pake1_sent} = pase, :pase_pake2, payload) do
     case Messages.decode_pake2(payload) do
       {:ok, %{pb: pb, cb: cb}} ->
-        {:ok, keys} = SPAKE2Plus.prover_finish(
-          pase.prover_context,
-          pb,
-          pase.w1,
-          context: pase.context_hash
-        )
+        {:ok, keys} =
+          SPAKE2Plus.prover_finish(
+            pase.prover_context,
+            pb,
+            pase.w1,
+            context: pase.context_hash
+          )
 
         case SPAKE2Plus.verify_confirmation(keys.cb, cb) do
           :ok ->
             pake3_payload = Messages.encode_pake3(keys.ca)
 
-            {:send, :pase_pake3, pake3_payload,
-             %{pase | state: :pake3_sent, keys: keys}}
+            {:send, :pase_pake3, pake3_payload, %{pase | state: :pake3_sent, keys: keys}}
 
           {:error, :confirmation_failed} ->
             {:error, :confirmation_failed}
@@ -267,13 +273,14 @@ defmodule MatterEx.PASE do
   def handle(%__MODULE__{role: :commissioner, state: :pake3_sent} = pase, :status_report, payload) do
     case StatusReport.decode(payload) do
       {:ok, %StatusReport{general_code: 0, protocol_code: 0}} ->
-        session = Session.new(
-          local_session_id: pase.local_session_id,
-          peer_session_id: pase.peer_session_id,
-          encryption_key: pase.keys.ke,
-          role: :initiator,
-          auth_mode: :pase
-        )
+        session =
+          Session.new(
+            local_session_id: pase.local_session_id,
+            peer_session_id: pase.peer_session_id,
+            encryption_key: pase.keys.ke,
+            role: :initiator,
+            auth_mode: :pase
+          )
 
         {:established, session, %{pase | state: :established}}
 

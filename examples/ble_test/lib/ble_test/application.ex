@@ -8,6 +8,11 @@ defmodule BleTest.Application do
 
   @impl true
   def start(_type, _args) do
+    if @target != :host do
+      power_on_bluetooth()
+      Application.ensure_all_started(:blue_heron)
+    end
+
     children =
       [
         # Children for all targets
@@ -98,7 +103,9 @@ defmodule BleTest.Application do
 
         case BlueHeron.Broadcaster.start_advertising() do
           :ok ->
-            Logger.info("[BleTest] BLE advertising started! Device should be visible as 'BleTest'")
+            Logger.info(
+              "[BleTest] BLE advertising started! Device should be visible as 'BleTest'"
+            )
 
           {:error, reason} ->
             Logger.error("[BleTest] Failed to start advertising: #{inspect(reason)}")
@@ -106,6 +113,37 @@ defmodule BleTest.Application do
 
       {:error, reason} ->
         Logger.error("[BleTest] Failed to set advertising data: #{inspect(reason)}")
+    end
+  end
+
+  defp power_on_bluetooth do
+    if Code.ensure_loaded?(Circuits.GPIO) do
+      Logger.info("[BleTest] Stopping BlueHeron for BT chip power-on...")
+      Application.stop(:blue_heron)
+      Process.sleep(100)
+
+      result =
+        Enum.find_value(["gpiochip1", "gpiochip0"], fn chip ->
+          case Circuits.GPIO.open({chip, 0}, :output, initial_value: 0) do
+            {:ok, gpio} ->
+              Logger.info("[BleTest] BT_REG_ON: resetting on #{chip} line 0")
+              Process.sleep(50)
+              Circuits.GPIO.write(gpio, 1)
+              Logger.info("[BleTest] BT_REG_ON: asserted on #{chip} line 0")
+              Process.put(:bt_reg_on_gpio, gpio)
+              true
+
+            {:error, _reason} ->
+              nil
+          end
+        end)
+
+      unless result do
+        Logger.warning("[BleTest] BT_REG_ON: could not assert on any gpiochip")
+      end
+
+      Process.sleep(250)
+      Logger.info("[BleTest] Restarting BlueHeron...")
     end
   end
 

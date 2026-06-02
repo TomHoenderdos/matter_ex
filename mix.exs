@@ -4,7 +4,7 @@ defmodule MatterEx.MixProject do
   def project do
     [
       app: :matter_ex,
-      version: "0.1.0",
+      version: "0.2.0",
       elixir: "~> 1.17",
       description: "A Matter (smart home) protocol stack in pure Elixir",
       start_permanent: Mix.env() == :prod,
@@ -35,7 +35,8 @@ defmodule MatterEx.MixProject do
 
   defp deps do
     [
-      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
+      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end
 end

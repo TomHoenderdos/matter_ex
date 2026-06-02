@@ -11,11 +11,11 @@ defmodule MatterEx.Cluster.LaundryWasherControls do
   use MatterEx.Cluster, id: 0x0053, name: :laundry_washer_controls
 
   # SpinSpeeds: list of speed labels
-  attribute 0x0000, :spin_speeds, :list, default: ["Off", "Low", "Medium", "High"]
+  attribute(0x0000, :spin_speeds, :list, default: ["Off", "Low", "Medium", "High"])
   # SpinSpeedCurrent: index into SpinSpeeds (null = not set)
-  attribute 0x0001, :spin_speed_current, :uint8, default: 2, writable: true
+  attribute(0x0001, :spin_speed_current, :uint8, default: 2, writable: true)
   # NumberOfRinses: 0=None, 1=Normal, 2=Extra
-  attribute 0x0002, :number_of_rinses, :enum8, default: 1, writable: true, enum_values: [0, 1, 2]
-  attribute 0xFFFC, :feature_map, :uint32, default: 0x03
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 1
+  attribute(0x0002, :number_of_rinses, :enum8, default: 1, writable: true, enum_values: [0, 1, 2])
+  attribute(0xFFFC, :feature_map, :uint32, default: 0x03)
+  attribute(0xFFFD, :cluster_revision, :uint16, default: 1)
 end

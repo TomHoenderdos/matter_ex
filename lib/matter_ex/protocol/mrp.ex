@@ -23,14 +23,15 @@ defmodule MatterEx.Protocol.MRP do
   @ack_timeout_ms 200
 
   @type pending :: %{
-    message: binary(),
-    attempt: non_neg_integer()
-  }
+          message: binary(),
+          attempt: non_neg_integer(),
+          exchange_id: non_neg_integer()
+        }
 
   @type t :: %__MODULE__{
-    mode: :active | :idle,
-    pending: %{non_neg_integer() => pending()}
-  }
+          mode: :active | :idle,
+          pending: %{non_neg_integer() => pending()}
+        }
 
   defstruct mode: :active,
             pending: %{}
@@ -45,10 +46,21 @@ defmodule MatterEx.Protocol.MRP do
   Record an outgoing reliable message. The caller should schedule
   the first retransmission timer using `backoff_ms/3` with attempt 0.
   """
-  @spec record_send(t(), non_neg_integer(), binary()) :: t()
-  def record_send(%__MODULE__{} = state, exchange_id, message) do
-    entry = %{message: message, attempt: 0}
-    %{state | pending: Map.put(state.pending, exchange_id, entry)}
+  @spec record_send(t(), non_neg_integer(), binary(), non_neg_integer() | nil) :: t()
+  def record_send(%__MODULE__{} = state, message_counter, message, exchange_id \\ nil) do
+    entry = %{message: message, attempt: 0, exchange_id: exchange_id || message_counter}
+    %{state | pending: Map.put(state.pending, message_counter, entry)}
+  end
+
+  @doc """
+  Move a pending retransmission to a new message counter after retransmit.
+  """
+  @spec rekey(t(), non_neg_integer(), non_neg_integer()) :: t()
+  def rekey(%__MODULE__{} = state, old_message_counter, new_message_counter) do
+    case Map.pop(state.pending, old_message_counter) do
+      {nil, pending} -> %{state | pending: pending}
+      {entry, pending} -> %{state | pending: Map.put(pending, new_message_counter, entry)}
+    end
   end
 
   @doc """
@@ -63,8 +75,8 @@ defmodule MatterEx.Protocol.MRP do
           {:retransmit, binary(), t()}
           | {:give_up, t()}
           | {:already_acked, t()}
-  def on_timeout(%__MODULE__{} = state, exchange_id, attempt) do
-    case Map.get(state.pending, exchange_id) do
+  def on_timeout(%__MODULE__{} = state, message_counter, attempt) do
+    case Map.get(state.pending, message_counter) do
       nil ->
         {:already_acked, state}
 
@@ -72,10 +84,10 @@ defmodule MatterEx.Protocol.MRP do
         {:already_acked, state}
 
       %{message: _msg} when attempt + 1 >= @max_transmissions ->
-        {:give_up, %{state | pending: Map.delete(state.pending, exchange_id)}}
+        {:give_up, %{state | pending: Map.delete(state.pending, message_counter)}}
 
       %{message: msg} ->
-        updated = Map.update!(state.pending, exchange_id, &%{&1 | attempt: attempt + 1})
+        updated = Map.update!(state.pending, message_counter, &%{&1 | attempt: attempt + 1})
         {:retransmit, msg, %{state | pending: updated}}
     end
   end
@@ -84,9 +96,9 @@ defmodule MatterEx.Protocol.MRP do
   Record that an ACK was received for an exchange.
   """
   @spec on_ack(t(), non_neg_integer()) :: {:ok, t()} | {:error, :not_found}
-  def on_ack(%__MODULE__{} = state, exchange_id) do
-    if Map.has_key?(state.pending, exchange_id) do
-      {:ok, %{state | pending: Map.delete(state.pending, exchange_id)}}
+  def on_ack(%__MODULE__{} = state, message_counter) do
+    if Map.has_key?(state.pending, message_counter) do
+      {:ok, %{state | pending: Map.delete(state.pending, message_counter)}}
     else
       {:error, :not_found}
     end
@@ -94,8 +106,17 @@ defmodule MatterEx.Protocol.MRP do
 
   @doc "Check if there is a pending retransmission for an exchange."
   @spec pending?(t(), non_neg_integer()) :: boolean()
-  def pending?(%__MODULE__{} = state, exchange_id) do
-    Map.has_key?(state.pending, exchange_id)
+  def pending?(%__MODULE__{} = state, message_counter) do
+    Map.has_key?(state.pending, message_counter)
+  end
+
+  @doc "Return the exchange id associated with a pending message counter."
+  @spec exchange_id(t(), non_neg_integer()) :: non_neg_integer() | nil
+  def exchange_id(%__MODULE__{} = state, message_counter) do
+    case Map.get(state.pending, message_counter) do
+      %{exchange_id: exchange_id} -> exchange_id
+      _ -> nil
+    end
   end
 
   @doc """

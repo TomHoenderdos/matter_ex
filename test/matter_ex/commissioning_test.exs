@@ -73,6 +73,28 @@ defmodule MatterEx.CommissioningTest do
     test "get_credentials returns nil when not commissioned", %{name: name} do
       assert Commissioning.get_credentials(name) == nil
     end
+
+    test "complete disarms fail-safe and clears pending material", %{name: name} do
+      pub = :crypto.strong_rand_bytes(65)
+      priv = :crypto.strong_rand_bytes(32)
+
+      Commissioning.arm(name)
+      Commissioning.store_keypair({pub, priv}, name)
+      Commissioning.store_root_cert(:crypto.strong_rand_bytes(200), name)
+      Commissioning.store_noc(1, :crypto.strong_rand_bytes(100), nil, <<1::128>>, 42, 1, name)
+
+      assert Commissioning.armed?(name)
+      assert Commissioning.get_keypair(name) == {pub, priv}
+      assert Commissioning.get_root_cert(name) != nil
+
+      Commissioning.complete(name)
+
+      refute Commissioning.armed?(name)
+      assert Commissioning.get_keypair(name) == nil
+      assert Commissioning.get_root_cert(name) == nil
+      assert Commissioning.commissioned?(name)
+      assert Commissioning.get_credentials(name).private_key == priv
+    end
   end
 
   describe "multi-fabric" do

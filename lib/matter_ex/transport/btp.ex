@@ -28,11 +28,12 @@ defmodule MatterEx.Transport.BTP do
   import Bitwise
   alias MatterEx.Transport.BTP.Packet
 
-  @default_mtu 247
+  @default_mtu 244
   @default_window_size 6
 
-  @flag_e 0x08
-  @flag_b 0x10
+  @flag_s 0x01
+  @flag_c 0x02
+  @flag_e 0x04
 
   defstruct mtu: @default_mtu,
             window_size: @default_window_size,
@@ -71,8 +72,8 @@ defmodule MatterEx.Transport.BTP do
   Fragment a message into BTP packets.
 
   Returns `{packets, new_state}` where `packets` is a list of binaries.
-  The first packet has the B (beginning) flag and includes the total message
-  length. The last packet has the E (ending) flag. Each packet gets an
+  The first packet has the Start flag and includes the total message
+  length. Middle packets use Continue. The last packet has the End flag. Each packet gets an
   incrementing sequence number (wrapping at 255).
   """
   @spec fragment(t(), binary()) :: {[binary()], t()}
@@ -102,8 +103,8 @@ defmodule MatterEx.Transport.BTP do
         is_last = i == last_index
 
         flags =
-          (if is_first, do: @flag_b, else: 0) |||
-            (if is_last, do: @flag_e, else: 0)
+          if(is_first, do: @flag_s, else: @flag_c) |||
+            if is_last, do: @flag_e, else: 0
 
         packet =
           IO.iodata_to_binary(
@@ -156,16 +157,33 @@ defmodule MatterEx.Transport.BTP do
   end
 
   @doc """
+  Emit a standalone ACK packet if one is pending.
+
+  BTP ACK packets carry both the received sequence being acknowledged and their
+  own transmit sequence number, so this updates `tx_seq` when an ACK is sent.
+  """
+  @spec ack_if_pending(t()) :: {:ok, binary() | nil, t()}
+  def ack_if_pending(%__MODULE__{ack_pending: false} = state), do: {:ok, nil, state}
+
+  def ack_if_pending(%__MODULE__{rx_seq: nil} = state), do: {:ok, nil, state}
+
+  def ack_if_pending(%__MODULE__{rx_seq: rx_seq, tx_seq: tx_seq} = state) do
+    ack_num = rem(rx_seq + 255, 256)
+    packet = IO.iodata_to_binary(Packet.encode_ack(ack_num, tx_seq))
+    {:ok, packet, %{state | tx_seq: rem(tx_seq + 1, 256), ack_pending: false}}
+  end
+
+  @doc """
   Encode a BTP handshake request.
 
   Options:
-  - `:versions` — 4-byte supported versions binary (default `<<0, 0, 4, 0>>`, version 4)
-  - `:mtu` — proposed MTU (default 247)
+  - `:versions` — 4-byte supported versions binary (default `<<4, 0, 0, 0>>`, version 4)
+  - `:mtu` — proposed BTP fragment size (default 244)
   - `:window_size` — proposed window size (default 6)
   """
   @spec handshake_request(keyword()) :: binary()
   def handshake_request(opts \\ []) do
-    versions = Keyword.get(opts, :versions, <<0, 0, 4, 0>>)
+    versions = Keyword.get(opts, :versions, <<4, 0, 0, 0>>)
     mtu = Keyword.get(opts, :mtu, @default_mtu)
     window_size = Keyword.get(opts, :window_size, @default_window_size)
 
@@ -178,7 +196,7 @@ defmodule MatterEx.Transport.BTP do
   - `selected_version` — chosen BTP version (integer)
 
   Options:
-  - `:mtu` — selected MTU (default 247)
+  - `:mtu` — selected BTP fragment size (default 244)
   - `:window_size` — selected window size (default 6)
   """
   @spec handshake_response(non_neg_integer(), keyword()) :: binary()
@@ -186,9 +204,7 @@ defmodule MatterEx.Transport.BTP do
     mtu = Keyword.get(opts, :mtu, @default_mtu)
     window_size = Keyword.get(opts, :window_size, @default_window_size)
 
-    IO.iodata_to_binary(
-      Packet.encode_handshake_response(selected_version, mtu, window_size)
-    )
+    IO.iodata_to_binary(Packet.encode_handshake_response(selected_version, mtu, window_size))
   end
 
   @doc """
@@ -218,11 +234,12 @@ defmodule MatterEx.Transport.BTP do
 
   defp handle_beginning(state, %{seq: seq, msg_len: msg_len, payload: payload, ending: ending?}) do
     # Beginning segment: start fresh reassembly
-    new_state = %{state |
-      rx_buffer: [payload],
-      rx_message_length: msg_len,
-      rx_seq: rem(seq + 1, 256),
-      ack_pending: true
+    new_state = %{
+      state
+      | rx_buffer: [payload],
+        rx_message_length: msg_len,
+        rx_seq: rem(seq + 1, 256),
+        ack_pending: true
     }
 
     if ending? do
@@ -242,10 +259,11 @@ defmodule MatterEx.Transport.BTP do
   end
 
   defp handle_continuation(state, %{seq: seq, payload: payload, ending: ending?}) do
-    new_state = %{state |
-      rx_buffer: [payload | state.rx_buffer],
-      rx_seq: rem(seq + 1, 256),
-      ack_pending: true
+    new_state = %{
+      state
+      | rx_buffer: [payload | state.rx_buffer],
+        rx_seq: rem(seq + 1, 256),
+        ack_pending: true
     }
 
     if ending? do

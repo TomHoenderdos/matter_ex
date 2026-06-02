@@ -105,6 +105,7 @@ defmodule MatterEx.CASETest do
       # Device processes Sigma3 → established
       {:established, :status_report, sr_payload, device_session, device} =
         CASE.handle(device, :case_sigma3, sigma3)
+
       assert device.state == :established
 
       # Initiator processes StatusReport → established
@@ -129,8 +130,10 @@ defmodule MatterEx.CASETest do
       {:send, :case_sigma1, sigma1, init} = CASE.initiate(init)
       {:reply, :case_sigma2, sigma2, device} = CASE.handle(device, :case_sigma1, sigma1)
       {:send, :case_sigma3, sigma3, init} = CASE.handle(init, :case_sigma2, sigma2)
+
       {:established, :status_report, sr, device_session, _device} =
         CASE.handle(device, :case_sigma3, sigma3)
+
       {:established, init_session, _init} = CASE.handle(init, :status_report, sr)
 
       assert device_session.attestation_challenge == init_session.attestation_challenge
@@ -144,8 +147,10 @@ defmodule MatterEx.CASETest do
       {:send, :case_sigma1, sigma1, init} = CASE.initiate(init)
       {:reply, :case_sigma2, sigma2, device} = CASE.handle(device, :case_sigma1, sigma1)
       {:send, :case_sigma3, sigma3, init} = CASE.handle(init, :case_sigma2, sigma2)
+
       {:established, :status_report, sr, device_session, _device} =
         CASE.handle(device, :case_sigma3, sigma3)
+
       {:established, init_session, _init} = CASE.handle(init, :status_report, sr)
 
       assert device_session.local_node_id == 1
@@ -166,11 +171,17 @@ defmodule MatterEx.CASETest do
       {noc, priv, _pub} = generate_credentials(2)
       wrong_ipk = :crypto.strong_rand_bytes(16)
 
-      init = CASE.new_initiator(
-        noc: noc, private_key: priv, ipk: wrong_ipk,
-        node_id: 2, fabric_id: @fabric_id, local_session_id: 20,
-        peer_node_id: 1, peer_fabric_id: @fabric_id
-      )
+      init =
+        CASE.new_initiator(
+          noc: noc,
+          private_key: priv,
+          ipk: wrong_ipk,
+          node_id: 2,
+          fabric_id: @fabric_id,
+          local_session_id: 20,
+          peer_node_id: 1,
+          peer_fabric_id: @fabric_id
+        )
 
       {:send, :case_sigma1, sigma1, _init} = CASE.initiate(init)
       # Device rejects Sigma1 because destination_id doesn't match
@@ -186,11 +197,17 @@ defmodule MatterEx.CASETest do
       {real_pub, _real_priv} = Certificate.generate_keypair()
       noc = Messages.encode_noc(2, @fabric_id, real_pub)
 
-      init = CASE.new_initiator(
-        noc: noc, private_key: wrong_priv, ipk: @ipk,
-        node_id: 2, fabric_id: @fabric_id, local_session_id: 20,
-        peer_node_id: 1, peer_fabric_id: @fabric_id
-      )
+      init =
+        CASE.new_initiator(
+          noc: noc,
+          private_key: wrong_priv,
+          ipk: @ipk,
+          node_id: 2,
+          fabric_id: @fabric_id,
+          local_session_id: 20,
+          peer_node_id: 1,
+          peer_fabric_id: @fabric_id
+        )
 
       {:send, :case_sigma1, sigma1, init} = CASE.initiate(init)
 
@@ -239,7 +256,9 @@ defmodule MatterEx.CASETest do
       assert sigma1_resumed.resumption_id != nil
 
       # Device processes Sigma1 with resumption → falls back to full Sigma2
-      {:reply, :case_sigma2, sigma2, device} = CASE.handle(device, :case_sigma1, sigma1_with_resume)
+      {:reply, :case_sigma2, sigma2, device} =
+        CASE.handle(device, :case_sigma1, sigma1_with_resume)
+
       assert device.state == :sigma2_sent
 
       # Update initiator transcript to match what the device saw

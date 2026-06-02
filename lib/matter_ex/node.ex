@@ -35,16 +35,21 @@ defmodule MatterEx.Node do
   alias MatterEx.Transport.TCP, as: TCPFraming
 
   @sub_check_interval 1000
+  @sol_socket 1
+  @so_bindtodevice 25
 
   defmodule State do
     @moduledoc false
     defstruct [
       :handler,
       :socket,
+      :socket6,
       :port,
       :tcp_listener,
       :mdns,
+      :commissioning_service,
       :commissioning_instance,
+      :operational_instance,
       # Current transport for the frame being processed
       current_transport: nil,
       # Per-session transport: session_id => {:udp, {ip, port}} | {:tcp, tcp_socket}
@@ -98,36 +103,38 @@ defmodule MatterEx.Node do
       Commissioning.start_link()
     end
 
-    case :gen_udp.open(udp_port, [:binary, {:active, true}]) do
-      {:ok, socket} ->
-        {:ok, assigned_port} = :inet.port(socket)
-
+    case open_udp_sockets(udp_port) do
+      {:ok, socket, socket6, assigned_port} ->
         # Start TCP listener on the same port number
         tcp_listener = if tcp_enabled, do: start_tcp_listener(assigned_port)
 
         # Generate random session ID for PASE (1..65534)
         local_session_id = :rand.uniform(65534)
 
-        handler = MessageHandler.new(
-          device: Keyword.fetch!(opts, :device),
-          passcode: Keyword.fetch!(opts, :passcode),
-          salt: Keyword.fetch!(opts, :salt),
-          iterations: Keyword.fetch!(opts, :iterations),
-          local_session_id: local_session_id
-        )
+        handler =
+          MessageHandler.new(
+            device: Keyword.fetch!(opts, :device),
+            passcode: Keyword.fetch!(opts, :passcode),
+            salt: Keyword.fetch!(opts, :salt),
+            iterations: Keyword.fetch!(opts, :iterations),
+            local_session_id: local_session_id
+          )
 
         transport_msg = if tcp_listener, do: "UDP+TCP", else: "UDP"
         Logger.info("Matter node listening on #{transport_msg} port #{assigned_port}")
         Process.send_after(self(), :check_subscriptions, @sub_check_interval)
 
-        {:ok, %State{
-          handler: handler,
-          socket: socket,
-          port: assigned_port,
-          tcp_listener: tcp_listener,
-          mdns: Keyword.get(opts, :mdns),
-          commissioning_instance: Keyword.get(opts, :commissioning_instance)
-        }}
+        {:ok,
+         %State{
+           handler: handler,
+           socket: socket,
+           socket6: socket6,
+           port: assigned_port,
+           tcp_listener: tcp_listener,
+           mdns: Keyword.get(opts, :mdns),
+           commissioning_service: Keyword.get(opts, :commissioning_service),
+           commissioning_instance: Keyword.get(opts, :commissioning_instance)
+         }}
 
       {:error, reason} ->
         Logger.error("Failed to open UDP port #{udp_port}: #{inspect(reason)}")
@@ -151,6 +158,7 @@ defmodule MatterEx.Node do
     {actions, handler} = MessageHandler.handle_frame(state.handler, data)
     state = %{state | handler: handler}
     state = process_actions(actions, state)
+    state = refresh_runtime_state(state)
     {:noreply, state}
   end
 
@@ -180,7 +188,8 @@ defmodule MatterEx.Node do
         state = %{state | current_transport: transport}
         {actions, handler} = MessageHandler.handle_frame(state.handler, message)
         state = %{state | handler: handler}
-        process_actions(actions, state)
+        state = process_actions(actions, state)
+        refresh_runtime_state(state)
       end)
 
     {:noreply, state}
@@ -194,6 +203,7 @@ defmodule MatterEx.Node do
 
     # Close sessions associated with this TCP connection
     tcp_transport = {:tcp, tcp_socket}
+
     {session_ids, session_transports} =
       Enum.reduce(state.session_transports, {[], %{}}, fn {sid, t}, {ids, kept} ->
         if t == tcp_transport do
@@ -209,7 +219,8 @@ defmodule MatterEx.Node do
         handler
       end)
 
-    {:noreply, %{state | tcp_buffers: tcp_buffers, session_transports: session_transports, handler: handler}}
+    {:noreply,
+     %{state | tcp_buffers: tcp_buffers, session_transports: session_transports, handler: handler}}
   end
 
   def handle_info({:tcp_error, tcp_socket, reason}, state) do
@@ -232,6 +243,7 @@ defmodule MatterEx.Node do
     {actions, handler} = MessageHandler.handle_frame(state.handler, data)
     state = %{state | handler: handler}
     state = process_actions(actions, state)
+    state = refresh_runtime_state(state)
     {:noreply, state}
   end
 
@@ -260,18 +272,21 @@ defmodule MatterEx.Node do
   # ── MRP timeout ──────────────────────────────────────────────────
 
   def handle_info({:mrp_timeout, session_id, exchange_id, attempt}, state) do
-    {action, handler} = MessageHandler.handle_mrp_timeout(
-      state.handler, session_id, exchange_id, attempt
-    )
+    {actions, handler} =
+      MessageHandler.handle_mrp_timeout(
+        state.handler,
+        session_id,
+        exchange_id,
+        attempt
+      )
 
     state = %{state | handler: handler}
 
     state =
-      case action do
-        {:send, frame} ->
-          transport = Map.get(state.session_transports, session_id, state.current_transport)
-          send_frame(state, transport, frame)
-          state
+      case actions do
+        actions when is_list(actions) ->
+          state = process_actions(actions, state)
+          refresh_runtime_state(state)
 
         nil ->
           state
@@ -297,9 +312,16 @@ defmodule MatterEx.Node do
     {:noreply, state}
   end
 
+  defp refresh_runtime_state(state) do
+    {handler, state} = maybe_update_case(state.handler, state)
+    handler = maybe_update_group_keys(handler)
+    %{state | handler: handler}
+  end
+
   @impl true
   def terminate(_reason, state) do
     if state.socket, do: :gen_udp.close(state.socket)
+    if state.socket6, do: :gen_udp.close(state.socket6)
     if state.tcp_listener, do: :gen_tcp.close(state.tcp_listener)
 
     # Close all TCP connections
@@ -311,6 +333,41 @@ defmodule MatterEx.Node do
   end
 
   # ── Private: TCP listener ──────────────────────────────────────
+
+  defp open_udp_sockets(port) do
+    with {:ok, socket} <- :gen_udp.open(port, [:binary, {:active, true}, :inet]),
+         {:ok, assigned_port} <- :inet.port(socket) do
+      socket6_opts =
+        [
+          :binary,
+          {:active, true},
+          :inet6,
+          {:ipv6_v6only, true}
+        ] ++ bind_to_device_opts(preferred_ipv6_device())
+
+      case :gen_udp.open(assigned_port, socket6_opts) do
+        {:ok, socket6} ->
+          {:ok, socket, socket6, assigned_port}
+
+        {:error, reason} ->
+          Logger.warning("Failed to open IPv6 UDP port #{assigned_port}: #{inspect(reason)}")
+          {:ok, socket, nil, assigned_port}
+      end
+    end
+  end
+
+  defp preferred_ipv6_device do
+    cond do
+      File.exists?("/sys/class/net/wlan0/ifindex") -> "wlan0"
+      true -> nil
+    end
+  end
+
+  defp bind_to_device_opts(nil), do: []
+
+  defp bind_to_device_opts(device) do
+    [{:raw, @sol_socket, @so_bindtodevice, device <> <<0>>}]
+  end
 
   defp start_tcp_listener(port) do
     case :gen_tcp.listen(port, [:binary, {:active, false}, {:reuseaddr, true}, {:backlog, 8}]) do
@@ -354,6 +411,11 @@ defmodule MatterEx.Node do
           send_frame(state, state.current_transport, frame)
           state
 
+        {:send, session_id, frame} ->
+          transport = Map.get(state.session_transports, session_id, state.current_transport)
+          send_frame(state, transport, frame)
+          state
+
         {:schedule_mrp, session_id, exchange_id, attempt, timeout_ms} ->
           # Skip MRP for TCP sessions — TCP provides reliability
           case Map.get(state.session_transports, session_id) do
@@ -366,12 +428,18 @@ defmodule MatterEx.Node do
                 {:mrp_timeout, session_id, exchange_id, attempt},
                 timeout_ms
               )
+
               state
           end
 
         {:session_established, session_id} ->
-          Logger.info("Session #{session_id} established via #{transport_name(state.current_transport)}")
-          session_transports = Map.put(state.session_transports, session_id, state.current_transport)
+          Logger.info(
+            "Session #{session_id} established via #{transport_name(state.current_transport)}"
+          )
+
+          session_transports =
+            Map.put(state.session_transports, session_id, state.current_transport)
+
           %{state | session_transports: session_transports}
 
         {:session_closed, session_id} ->
@@ -387,12 +455,16 @@ defmodule MatterEx.Node do
   end
 
   # Subscription actions need transport lookup by session_id since there's
-  # no "current" incoming transport. The {:schedule_mrp, session_id, ...}
-  # actions tell us which session the preceding {:send, frame} belongs to.
+  # no "current" incoming transport.
   defp process_subscription_actions(actions, state) do
     {state, _last_sid} =
       Enum.reduce(actions, {state, nil}, fn action, {state, last_sid} ->
         case action do
+          {:send, session_id, frame} ->
+            transport = Map.get(state.session_transports, session_id)
+            send_frame(state, transport, frame)
+            {state, session_id}
+
           {:send, frame} ->
             transport = if last_sid, do: Map.get(state.session_transports, last_sid)
             transport = transport || state.current_transport
@@ -410,6 +482,7 @@ defmodule MatterEx.Node do
                   {:mrp_timeout, session_id, exchange_id, attempt},
                   timeout_ms
                 )
+
                 {state, session_id}
             end
 
@@ -425,7 +498,15 @@ defmodule MatterEx.Node do
 
   defp send_frame(state, {:udp, {ip, port}}, frame) do
     Logger.debug("UDP TX #{byte_size(frame)}B to #{:inet.ntoa(ip)}:#{port}")
-    :gen_udp.send(state.socket, ip, port, frame)
+
+    case udp_socket_for_ip(state, ip) do
+      nil ->
+        Logger.warning("Dropping UDP frame: no socket for #{inspect(ip)}")
+        :ok
+
+      socket ->
+        :gen_udp.send(socket, ip, port, frame)
+    end
   end
 
   defp send_frame(_state, {:tcp, tcp_socket}, frame) do
@@ -447,6 +528,9 @@ defmodule MatterEx.Node do
   defp transport_name({:tcp, _}), do: "TCP"
   defp transport_name({:ble, _}), do: "BLE"
   defp transport_name(nil), do: "unknown"
+
+  defp udp_socket_for_ip(state, ip) when tuple_size(ip) == 4, do: state.socket
+  defp udp_socket_for_ip(state, ip) when tuple_size(ip) == 8, do: state.socket6
 
   # ── Private: Per-peer transport update ──────────────────────
 
@@ -498,7 +582,7 @@ defmodule MatterEx.Node do
   defp maybe_update_case(handler, state) do
     case Commissioning.last_added_fabric() do
       nil ->
-        {handler, state}
+        {handler, maybe_transition_to_commissioning(state)}
 
       fabric_index ->
         creds = Commissioning.get_credentials(fabric_index)
@@ -515,8 +599,7 @@ defmodule MatterEx.Node do
             write_initial_acl(handler.device, creds.case_admin_subject, fabric_index)
           end
 
-          # Transition mDNS: withdraw commissioning, advertise operational
-          transition_mdns(state, creds)
+          state = transition_mdns(state, creds)
 
           {handler, state}
         else
@@ -525,10 +608,46 @@ defmodule MatterEx.Node do
     end
   end
 
+  defp maybe_transition_to_commissioning(
+         %State{
+           mdns: mdns,
+           commissioning_service: service,
+           operational_instance: operational_instance
+         } = state
+       )
+       when mdns != nil and service != nil and operational_instance != nil do
+    if Commissioning.commissioned?() do
+      state
+    else
+      MatterEx.DebugTrace.record(%{
+        type: :mdns_return_to_commissioning,
+        operational_instance: operational_instance,
+        commissioning_instance: service[:instance]
+      })
+
+      MatterEx.MDNS.withdraw(mdns, operational_instance)
+      MatterEx.MDNS.advertise(mdns, service)
+
+      %{
+        state
+        | commissioning_instance: service[:instance],
+          operational_instance: nil
+      }
+    end
+  end
+
+  defp maybe_transition_to_commissioning(state), do: state
+
   defp write_initial_acl(device, admin_subject, fabric_index) do
     acl_name = device.__process_name__(0, :access_control)
 
     if acl_name && Process.whereis(acl_name) do
+      existing_entries =
+        case GenServer.call(acl_name, {:read_attribute, :acl}) do
+          {:ok, entries} when is_list(entries) -> entries
+          _ -> []
+        end
+
       # ACL entry with Matter TLV context tags:
       # 1=Privilege, 2=AuthMode, 3=Subjects, 4=Targets, 254=FabricIndex
       admin_entry = %{
@@ -539,37 +658,81 @@ defmodule MatterEx.Node do
         254 => {:uint, fabric_index}
       }
 
-      GenServer.call(acl_name, {:write_attribute, :acl, [admin_entry]})
+      entries =
+        existing_entries
+        |> Enum.reject(&(acl_fabric_index(&1) == fabric_index))
+        |> Kernel.++([admin_entry])
+
+      GenServer.call(acl_name, {:write_attribute, :acl, entries})
     end
   end
 
-  defp transition_mdns(%State{mdns: nil}, _creds), do: :ok
+  defp acl_fabric_index(%{fabric_index: fabric_index}), do: fabric_index
+  defp acl_fabric_index(%{254 => {:uint, fabric_index}}), do: fabric_index
+  defp acl_fabric_index(%{254 => fabric_index}) when is_integer(fabric_index), do: fabric_index
+  defp acl_fabric_index(_), do: nil
 
-  defp transition_mdns(%State{mdns: mdns, commissioning_instance: inst, port: port}, creds) do
+  defp transition_mdns(%State{mdns: nil} = state, _creds), do: state
+
+  defp transition_mdns(
+         %State{mdns: mdns, commissioning_instance: inst, port: port} = state,
+         creds
+       ) do
     alias MatterEx.CASE.Messages, as: CASEMessages
     alias MatterEx.MDNS
 
     # Withdraw commissioning advertisement
-    if inst, do: MDNS.withdraw(mdns, inst)
+    if inst do
+      MatterEx.DebugTrace.record(%{type: :mdns_withdraw_commissioning, instance: inst})
+      MDNS.withdraw(mdns, inst)
+    end
 
     # Compute compressed fabric ID from root cert
     root_pub = if creds[:root_cert], do: CASEMessages.extract_public_key(creds.root_cert)
 
     if root_pub && creds[:fabric_id] && creds[:node_id] do
-      Logger.debug("mDNS transition: root_pub=#{byte_size(root_pub)}B #{Base.encode16(root_pub)} fabric_id=#{creds.fabric_id} node_id=#{creds.node_id}")
+      Logger.debug(
+        "mDNS transition: root_pub=#{byte_size(root_pub)}B #{Base.encode16(root_pub)} fabric_id=#{creds.fabric_id} node_id=#{creds.node_id}"
+      )
+
       cfid = MDNS.compressed_fabric_id(root_pub, creds.fabric_id)
       Logger.debug("mDNS transition: cfid=#{Base.encode16(cfid)}")
 
-      service = MDNS.operational_service(
+      service =
+        MDNS.operational_service(
+          port: port,
+          compressed_fabric_id: cfid,
+          node_id: creds.node_id
+        )
+
+      MatterEx.DebugTrace.record(%{
+        type: :mdns_advertise_operational,
+        instance: service[:instance],
+        service: service[:service],
+        subtypes: service[:subtypes],
+        txt: service[:txt],
         port: port,
-        compressed_fabric_id: cfid,
+        compressed_fabric_id: Base.encode16(cfid),
+        fabric_id: creds.fabric_id,
         node_id: creds.node_id
-      )
+      })
 
       MDNS.advertise(mdns, service)
       Logger.info("mDNS: transitioned to operational (_matter._tcp)")
+      %{state | commissioning_instance: nil, operational_instance: service[:instance]}
     else
-      Logger.warning("mDNS transition skipped: root_pub=#{inspect(root_pub && byte_size(root_pub))} fabric_id=#{inspect(creds[:fabric_id])} node_id=#{inspect(creds[:node_id])}")
+      MatterEx.DebugTrace.record(%{
+        type: :mdns_transition_skipped,
+        root_pub_size: root_pub && byte_size(root_pub),
+        fabric_id: creds[:fabric_id],
+        node_id: creds[:node_id]
+      })
+
+      Logger.warning(
+        "mDNS transition skipped: root_pub=#{inspect(root_pub && byte_size(root_pub))} fabric_id=#{inspect(creds[:fabric_id])} node_id=#{inspect(creds[:node_id])}"
+      )
+
+      state
     end
   end
 end

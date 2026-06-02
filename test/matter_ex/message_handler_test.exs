@@ -1,13 +1,13 @@
 defmodule MatterEx.MessageHandlerTest do
   use ExUnit.Case
 
+  alias MatterEx.IM
   alias MatterEx.MessageHandler
   alias MatterEx.{PASE, SecureChannel}
-  alias MatterEx.IM
   alias MatterEx.Protocol.{MessageCodec, ProtocolID}
   alias MatterEx.Protocol.MessageCodec.{Header, ProtoHeader}
 
-  @passcode 20202021
+  @passcode 20_202_021
   @salt :crypto.strong_rand_bytes(32)
   @iterations 1000
 
@@ -20,7 +20,7 @@ defmodule MatterEx.MessageHandlerTest do
       product_id: 0x8001
 
     endpoint 1, device_type: 0x0100 do
-      cluster MatterEx.Cluster.OnOff
+      cluster(MatterEx.Cluster.OnOff)
     end
   end
 
@@ -93,6 +93,7 @@ defmodule MatterEx.MessageHandlerTest do
 
     # Step 2: Commissioner processes PBKDFParamResponse
     {:ok, resp_msg} = MessageCodec.decode(resp_frame)
+
     {:send, :pase_pake1, pake1_payload, comm} =
       PASE.handle(comm, :pbkdf_param_response, resp_msg.proto.payload)
 
@@ -103,6 +104,7 @@ defmodule MatterEx.MessageHandlerTest do
 
     # Step 4: Commissioner processes Pake2
     {:ok, pake2_msg} = MessageCodec.decode(pake2_frame)
+
     {:send, :pase_pake3, pake3_payload, comm} =
       PASE.handle(comm, :pase_pake2, pake2_msg.proto.payload)
 
@@ -115,6 +117,7 @@ defmodule MatterEx.MessageHandlerTest do
 
     # Step 6: Commissioner processes StatusReport
     {:ok, sr_msg} = MessageCodec.decode(sr_frame)
+
     {:established, comm_session, _comm} =
       PASE.handle(comm, :status_report, sr_msg.proto.payload)
 
@@ -126,6 +129,7 @@ defmodule MatterEx.MessageHandlerTest do
   # ReportData message from the first phase.
   defp complete_subscribe(comm_session, handler, priming_msg, exchange_id) do
     status_resp = IM.encode(%IM.StatusResponse{status: 0})
+
     status_proto = %ProtoHeader{
       initiator: true,
       needs_ack: true,
@@ -141,6 +145,40 @@ defmodule MatterEx.MessageHandlerTest do
     [{:send, sub_resp_frame} | _] = actions
     {:ok, _sub_msg, comm_session} = SecureChannel.open(comm_session, sub_resp_frame)
     {comm_session, handler}
+  end
+
+  defp ack_until_subscribe_response(comm_session, handler, msg, exchange_id, limit \\ 100)
+
+  defp ack_until_subscribe_response(_comm_session, _handler, _msg, _exchange_id, 0) do
+    flunk("SubscribeResponse was not sent after ACKing chunked ReportData")
+  end
+
+  defp ack_until_subscribe_response(comm_session, handler, msg, exchange_id, limit) do
+    status_resp = IM.encode(%IM.StatusResponse{status: 0})
+
+    status_proto = %ProtoHeader{
+      initiator: true,
+      needs_ack: true,
+      ack_counter: msg.header.message_counter,
+      opcode: ProtocolID.opcode(:interaction_model, :status_response),
+      exchange_id: exchange_id,
+      protocol_id: ProtocolID.protocol_id(:interaction_model),
+      payload: status_resp
+    }
+
+    {status_frame, comm_session} = SecureChannel.seal(comm_session, status_proto)
+    {actions, handler} = MessageHandler.handle_frame(handler, status_frame)
+    [{:send, resp_frame} | _] = Enum.filter(actions, &match?({:send, _}, &1))
+    {:ok, next_msg, comm_session} = SecureChannel.open(comm_session, resp_frame)
+
+    case ProtocolID.opcode_name(next_msg.proto.protocol_id, next_msg.proto.opcode) do
+      :subscribe_response ->
+        {:ok, sub_resp} = IM.decode(:subscribe_response, next_msg.proto.payload)
+        {sub_resp, comm_session, handler}
+
+      :report_data ->
+        ack_until_subscribe_response(comm_session, handler, next_msg, exchange_id, limit - 1)
+    end
   end
 
   # ── PASE via MessageHandler ─────────────────────────────────────
@@ -183,13 +221,14 @@ defmodule MatterEx.MessageHandlerTest do
       handler = new_handler()
 
       # Commissioner with wrong passcode
-      comm = PASE.new_commissioner(passcode: 12345678, local_session_id: 2)
+      comm = PASE.new_commissioner(passcode: 12_345_678, local_session_id: 2)
 
       {:send, :pbkdf_param_request, req_payload, comm} = PASE.initiate(comm)
       frame = build_pase_frame(:pbkdf_param_request, req_payload, 1, counter: 0)
       {[{:send, resp_frame}], handler} = MessageHandler.handle_frame(handler, frame)
 
       {:ok, resp_msg} = MessageCodec.decode(resp_frame)
+
       {:send, :pase_pake1, pake1_payload, comm} =
         PASE.handle(comm, :pbkdf_param_response, resp_msg.proto.payload)
 
@@ -200,7 +239,7 @@ defmodule MatterEx.MessageHandlerTest do
 
       # Commissioner fails at Pake2 verification (wrong passcode)
       assert {:error, :confirmation_failed} =
-        PASE.handle(comm, :pase_pake2, pake2_msg.proto.payload)
+               PASE.handle(comm, :pase_pake2, pake2_msg.proto.payload)
 
       # No session established
       assert handler.sessions == %{}
@@ -220,10 +259,11 @@ defmodule MatterEx.MessageHandlerTest do
 
     test "ReadRequest → encrypted ReportData", %{handler: handler, comm_session: comm_session} do
       # Commissioner builds encrypted ReadRequest
-      read_req = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        fabric_filtered: true
-      })
+      read_req =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          fabric_filtered: true
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -255,11 +295,12 @@ defmodule MatterEx.MessageHandlerTest do
     end
 
     test "InvokeRequest → InvokeResponse", %{handler: handler, comm_session: comm_session} do
-      invoke_req = IM.encode(%IM.InvokeRequest{
-        invoke_requests: [
-          %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
-        ]
-      })
+      invoke_req =
+        IM.encode(%IM.InvokeRequest{
+          invoke_requests: [
+            %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
+          ]
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -278,7 +319,10 @@ defmodule MatterEx.MessageHandlerTest do
       assert msg.proto.opcode == ProtocolID.opcode(:interaction_model, :invoke_response)
     end
 
-    test "standalone ACK sent for message with no response", %{handler: handler, comm_session: comm_session} do
+    test "standalone ACK sent for message with no response", %{
+      handler: handler,
+      comm_session: comm_session
+    } do
       # Send a ReportData (opcode 0x05) — a response-type message with no reply expected
       # This triggers the :no_response path which produces a standalone ACK
       report = IM.encode(%IM.ReportData{attribute_reports: []})
@@ -315,9 +359,10 @@ defmodule MatterEx.MessageHandlerTest do
       # Send 3 sequential ReadRequests
       {comm_session, handler} =
         Enum.reduce(1..3, {comm_session, handler}, fn i, {cs, h} ->
-          read_req = IM.encode(%IM.ReadRequest{
-            attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
-          })
+          read_req =
+            IM.encode(%IM.ReadRequest{
+              attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
+            })
 
           proto = %ProtoHeader{
             initiator: true,
@@ -355,11 +400,12 @@ defmodule MatterEx.MessageHandlerTest do
 
     test "SubscribeRequest → priming ReportData → StatusResponse → SubscribeResponse",
          %{handler: handler, comm_session: comm_session} do
-      sub_req = IM.encode(%IM.SubscribeRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        min_interval: 0,
-        max_interval: 60
-      })
+      sub_req =
+        IM.encode(%IM.SubscribeRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          min_interval: 0,
+          max_interval: 60
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -386,6 +432,7 @@ defmodule MatterEx.MessageHandlerTest do
 
       # Phase 2: send StatusResponse to ACK the priming report
       status_resp = IM.encode(%IM.StatusResponse{status: 0})
+
       status_proto = %ProtoHeader{
         initiator: true,
         needs_ack: true,
@@ -419,16 +466,19 @@ defmodule MatterEx.MessageHandlerTest do
     test "multiple subscriptions get incrementing IDs",
          %{handler: handler, comm_session: comm_session} do
       # First subscription — phase 1: priming ReportData
-      sub_req1 = IM.encode(%IM.SubscribeRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        min_interval: 0,
-        max_interval: 30
-      })
+      sub_req1 =
+        IM.encode(%IM.SubscribeRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          min_interval: 0,
+          max_interval: 30
+        })
 
       proto1 = %ProtoHeader{
-        initiator: true, needs_ack: true,
+        initiator: true,
+        needs_ack: true,
         opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
-        exchange_id: 1, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
         payload: sub_req1
       }
 
@@ -443,16 +493,19 @@ defmodule MatterEx.MessageHandlerTest do
       {comm_session, handler} = complete_subscribe(comm_session, handler, msg1, 1)
 
       # Second subscription — phase 1: priming ReportData
-      sub_req2 = IM.encode(%IM.SubscribeRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        min_interval: 5,
-        max_interval: 120
-      })
+      sub_req2 =
+        IM.encode(%IM.SubscribeRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          min_interval: 5,
+          max_interval: 120
+        })
 
       proto2 = %ProtoHeader{
-        initiator: true, needs_ack: true,
+        initiator: true,
+        needs_ack: true,
         opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
-        exchange_id: 2, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        exchange_id: 2,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
         payload: sub_req2
       }
 
@@ -475,41 +528,141 @@ defmodule MatterEx.MessageHandlerTest do
     test "check_subscriptions sends report when values change",
          %{handler: handler, comm_session: comm_session} do
       # Subscribe
-      sub_req = IM.encode(%IM.SubscribeRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        min_interval: 0,
-        max_interval: 0  # immediately due
-      })
+      sub_req =
+        IM.encode(%IM.SubscribeRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          min_interval: 0,
+          # immediately due
+          max_interval: 0
+        })
 
       proto = %ProtoHeader{
-        initiator: true, needs_ack: true,
+        initiator: true,
+        needs_ack: true,
         opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
-        exchange_id: 1, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
         payload: sub_req
       }
 
       {frame, comm_session} = SecureChannel.seal(comm_session, proto)
       {_actions, handler} = MessageHandler.handle_frame(handler, frame)
 
-      # First check — initial values (false) differ from empty last_values
+      # First check after priming — no duplicate report for already-sent values.
       {actions, handler} = MessageHandler.check_subscriptions(handler)
-      send_actions = Enum.filter(actions, &match?({:send, _}, &1))
-      assert length(send_actions) == 1
+      send_actions = Enum.filter(actions, &match?({:send, _, _}, &1))
+      assert send_actions == []
 
-      [{:send, report_frame}] = send_actions
+      on_off_name = TestLight.__process_name__(1, :on_off)
+      :ok = GenServer.call(on_off_name, {:write_attribute, :on_off, true})
+
+      {actions, _handler} = MessageHandler.check_subscriptions(handler)
+      [{:send, _session_id, report_frame}] = Enum.filter(actions, &match?({:send, _, _}, &1))
       {:ok, msg, _comm_session} = SecureChannel.open(comm_session, report_frame)
       assert msg.proto.opcode == ProtocolID.opcode(:interaction_model, :report_data)
 
       {:ok, report} = IM.decode(:report_data, msg.proto.payload)
       assert report.subscription_id == 1
-      assert length(report.attribute_reports) == 1
 
-      # Second check — no change, so no report
-      # Wait briefly so max_interval (0) is satisfied
+      assert [
+               {:data,
+                %{
+                  path: %{endpoint: 1, cluster: 6, attribute: 0},
+                  value: true
+                }}
+             ] = report.attribute_reports
+    end
+
+    test "wildcard subscription reports include only changed attributes",
+         %{handler: handler, comm_session: comm_session} do
+      sub_req =
+        IM.encode(%IM.SubscribeRequest{
+          attribute_paths: [%{}],
+          min_interval: 0,
+          max_interval: 0
+        })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: sub_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
+
+      [{:send, priming_frame}] = Enum.filter(actions, &match?({:send, _}, &1))
+      {:ok, priming_msg, comm_session} = SecureChannel.open(comm_session, priming_frame)
+      {:ok, priming_report} = IM.decode(:report_data, priming_msg.proto.payload)
+
+      assert priming_report.subscription_id == 1
+      assert length(priming_report.attribute_reports) > 0
+
+      entry = handler.sessions[1]
+      [subscription] = MatterEx.IM.SubscriptionManager.subscriptions(entry.subscription_mgr)
+      assert subscription.paths == [%{}]
+
+      {actions, handler} = MessageHandler.check_subscriptions(handler)
+      assert Enum.filter(actions, &match?({:send, _, _}, &1)) == []
+
+      on_off_name = TestLight.__process_name__(1, :on_off)
+      :ok = GenServer.call(on_off_name, {:write_attribute, :on_off, true})
+
       Process.sleep(1)
-      {actions2, _handler} = MessageHandler.check_subscriptions(handler)
-      send_actions2 = Enum.filter(actions2, &match?({:send, _}, &1))
-      assert send_actions2 == []
+      {actions, _handler} = MessageHandler.check_subscriptions(handler)
+      [{:send, _session_id, report_frame}] = Enum.filter(actions, &match?({:send, _, _}, &1))
+
+      {:ok, msg, _comm_session} = SecureChannel.open(comm_session, report_frame)
+      {:ok, report} = IM.decode(:report_data, msg.proto.payload)
+
+      assert [
+               {:data,
+                %{
+                  path: %{endpoint: 1, cluster: 6, attribute: 0},
+                  value: true
+                }}
+             ] = report.attribute_reports
+    end
+
+    test "chunked wildcard subscription completes with SubscribeResponse",
+         %{handler: handler, comm_session: comm_session} do
+      sub_req =
+        IM.encode(%IM.SubscribeRequest{
+          attribute_paths: [%{}],
+          min_interval: 0,
+          max_interval: 60
+        })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: sub_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
+
+      [{:send, priming_frame}] = Enum.filter(actions, &match?({:send, _}, &1))
+      {:ok, priming_msg, comm_session} = SecureChannel.open(comm_session, priming_frame)
+
+      assert ProtocolID.opcode_name(priming_msg.proto.protocol_id, priming_msg.proto.opcode) ==
+               :report_data
+
+      {sub_resp, _comm_session, handler} =
+        ack_until_subscribe_response(comm_session, handler, priming_msg, 1)
+
+      assert sub_resp.subscription_id == 1
+      assert sub_resp.max_interval == 60
+
+      entry = handler.sessions[1]
+      refute Map.has_key?(entry.exchange_mgr.pending_subscribe_responses, 1)
+      refute Map.has_key?(entry.exchange_mgr.pending_chunks, 1)
     end
   end
 
@@ -526,12 +679,13 @@ defmodule MatterEx.MessageHandlerTest do
 
     test "WriteRequest with suppress_response skips WriteResponse, sends ACK",
          %{handler: handler, comm_session: comm_session} do
-      write_req = IM.encode(%IM.WriteRequest{
-        suppress_response: true,
-        write_requests: [
-          %{path: %{endpoint: 1, cluster: 6, attribute: 0}, value: {:bool, true}, version: 0}
-        ]
-      })
+      write_req =
+        IM.encode(%IM.WriteRequest{
+          suppress_response: true,
+          write_requests: [
+            %{path: %{endpoint: 1, cluster: 6, attribute: 0}, value: {:bool, true}, version: 0}
+          ]
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -559,12 +713,13 @@ defmodule MatterEx.MessageHandlerTest do
 
     test "InvokeRequest with suppress_response skips InvokeResponse, sends ACK",
          %{handler: handler, comm_session: comm_session} do
-      invoke_req = IM.encode(%IM.InvokeRequest{
-        suppress_response: true,
-        invoke_requests: [
-          %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
-        ]
-      })
+      invoke_req =
+        IM.encode(%IM.InvokeRequest{
+          suppress_response: true,
+          invoke_requests: [
+            %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
+          ]
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -590,12 +745,13 @@ defmodule MatterEx.MessageHandlerTest do
     test "InvokeRequest with suppress_response still executes the command",
          %{handler: handler, comm_session: comm_session} do
       # Invoke "on" command with suppress_response
-      invoke_req = IM.encode(%IM.InvokeRequest{
-        suppress_response: true,
-        invoke_requests: [
-          %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
-        ]
-      })
+      invoke_req =
+        IM.encode(%IM.InvokeRequest{
+          suppress_response: true,
+          invoke_requests: [
+            %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
+          ]
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -610,9 +766,10 @@ defmodule MatterEx.MessageHandlerTest do
       {_actions, handler} = MessageHandler.handle_frame(handler, frame)
 
       # Read the attribute to verify the command was executed
-      read_req = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
-      })
+      read_req =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
+        })
 
       proto2 = %ProtoHeader{
         initiator: true,
@@ -636,12 +793,13 @@ defmodule MatterEx.MessageHandlerTest do
 
     test "WriteRequest without suppress_response still sends WriteResponse",
          %{handler: handler, comm_session: comm_session} do
-      write_req = IM.encode(%IM.WriteRequest{
-        suppress_response: false,
-        write_requests: [
-          %{path: %{endpoint: 1, cluster: 6, attribute: 0}, value: {:bool, true}, version: 0}
-        ]
-      })
+      write_req =
+        IM.encode(%IM.WriteRequest{
+          suppress_response: false,
+          write_requests: [
+            %{path: %{endpoint: 1, cluster: 6, attribute: 0}, value: {:bool, true}, version: 0}
+          ]
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -680,26 +838,29 @@ defmodule MatterEx.MessageHandlerTest do
     test "min_interval throttle suppresses early reports",
          %{handler: handler, comm_session: comm_session} do
       # Subscribe with min_interval=60 seconds, max_interval=0 (immediately due)
-      sub_req = IM.encode(%IM.SubscribeRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        min_interval: 60,
-        max_interval: 0
-      })
+      sub_req =
+        IM.encode(%IM.SubscribeRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          min_interval: 60,
+          max_interval: 0
+        })
 
       proto = %ProtoHeader{
-        initiator: true, needs_ack: true,
+        initiator: true,
+        needs_ack: true,
         opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
-        exchange_id: 1, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
         payload: sub_req
       }
 
       {frame, _comm_session} = SecureChannel.seal(comm_session, proto)
       {_actions, handler} = MessageHandler.handle_frame(handler, frame)
 
-      # First check — initial values differ from empty last_values, sends report
+      # First check after priming — no duplicate report for already-sent values.
       {actions1, handler} = MessageHandler.check_subscriptions(handler)
-      send_actions1 = Enum.filter(actions1, &match?({:send, _}, &1))
-      assert length(send_actions1) == 1
+      send_actions1 = Enum.filter(actions1, &match?({:send, _, _}, &1))
+      assert send_actions1 == []
 
       # Toggle the light so values change
       on_off_name = TestLight.__process_name__(1, :on_off)
@@ -707,31 +868,34 @@ defmodule MatterEx.MessageHandlerTest do
 
       # Second check — values changed BUT min_interval (60s) not elapsed
       {actions2, _handler} = MessageHandler.check_subscriptions(handler)
-      send_actions2 = Enum.filter(actions2, &match?({:send, _}, &1))
+      send_actions2 = Enum.filter(actions2, &match?({:send, _, _}, &1))
       assert send_actions2 == []
     end
 
     test "min_interval=0 allows immediate reports",
          %{handler: handler, comm_session: comm_session} do
-      sub_req = IM.encode(%IM.SubscribeRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        min_interval: 0,
-        max_interval: 0
-      })
+      sub_req =
+        IM.encode(%IM.SubscribeRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          min_interval: 0,
+          max_interval: 0
+        })
 
       proto = %ProtoHeader{
-        initiator: true, needs_ack: true,
+        initiator: true,
+        needs_ack: true,
         opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
-        exchange_id: 1, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
         payload: sub_req
       }
 
       {frame, _comm_session} = SecureChannel.seal(comm_session, proto)
       {_actions, handler} = MessageHandler.handle_frame(handler, frame)
 
-      # First report
+      # First check after priming — no duplicate report for already-sent values.
       {actions1, handler} = MessageHandler.check_subscriptions(handler)
-      assert length(Enum.filter(actions1, &match?({:send, _}, &1))) == 1
+      assert Enum.filter(actions1, &match?({:send, _, _}, &1)) == []
 
       # Toggle value
       on_off_name = TestLight.__process_name__(1, :on_off)
@@ -740,22 +904,25 @@ defmodule MatterEx.MessageHandlerTest do
       # Second report — min_interval=0 means no throttle
       Process.sleep(1)
       {actions2, _handler} = MessageHandler.check_subscriptions(handler)
-      assert length(Enum.filter(actions2, &match?({:send, _}, &1))) == 1
+      assert length(Enum.filter(actions2, &match?({:send, _, _}, &1))) == 1
     end
 
     test "close_session removes session and subscriptions",
          %{handler: handler, comm_session: comm_session} do
       # Subscribe
-      sub_req = IM.encode(%IM.SubscribeRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        min_interval: 0,
-        max_interval: 60
-      })
+      sub_req =
+        IM.encode(%IM.SubscribeRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          min_interval: 0,
+          max_interval: 60
+        })
 
       proto = %ProtoHeader{
-        initiator: true, needs_ack: true,
+        initiator: true,
+        needs_ack: true,
         opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
-        exchange_id: 1, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
         payload: sub_req
       }
 
@@ -824,10 +991,14 @@ defmodule MatterEx.MessageHandlerTest do
       %{handler: handler, comm_session: comm_session}
     end
 
-    test "schedule_mrp action returned for IM response", %{handler: handler, comm_session: comm_session} do
-      read_req = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
-      })
+    test "schedule_mrp action returned for IM response", %{
+      handler: handler,
+      comm_session: comm_session
+    } do
+      read_req =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -839,11 +1010,13 @@ defmodule MatterEx.MessageHandlerTest do
       }
 
       {frame, _comm_session} = SecureChannel.seal(comm_session, proto)
-      {actions, _handler} = MessageHandler.handle_frame(handler, frame)
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
 
       mrp_actions = Enum.filter(actions, &match?({:schedule_mrp, _, _, _, _}, &1))
-      assert [{:schedule_mrp, 1, 1, 0, timeout}] = mrp_actions
+      assert [{:schedule_mrp, 1, pending_id, 0, timeout}] = mrp_actions
       assert timeout > 0
+      assert Map.has_key?(handler.sessions[1].exchange_mgr.mrp.pending, pending_id)
+      assert handler.sessions[1].exchange_mgr.mrp.pending[pending_id].exchange_id == 1
     end
 
     test "handle_mrp_timeout for unknown session returns nil", %{handler: handler} do
@@ -867,18 +1040,19 @@ defmodule MatterEx.MessageHandlerTest do
       noc = MatterEx.CASE.Messages.encode_noc(1, 1, pub)
       ipk = Keyword.get(opts, :ipk, :crypto.strong_rand_bytes(16))
 
-      handler = MessageHandler.new(
-        device: device,
-        passcode: @passcode,
-        salt: @salt,
-        iterations: @iterations,
-        local_session_id: 1,
-        noc: noc,
-        private_key: priv,
-        ipk: ipk,
-        node_id: 1,
-        fabric_id: 1
-      )
+      handler =
+        MessageHandler.new(
+          device: device,
+          passcode: @passcode,
+          salt: @salt,
+          iterations: @iterations,
+          local_session_id: 1,
+          noc: noc,
+          private_key: priv,
+          ipk: ipk,
+          node_id: 1,
+          fabric_id: 1
+        )
 
       {handler, ipk}
     end
@@ -932,6 +1106,7 @@ defmodule MatterEx.MessageHandlerTest do
 
       # Step 2: Initiator processes Sigma2
       {:ok, sigma2_msg} = MessageCodec.decode(sigma2_frame)
+
       {:send, :case_sigma3, sigma3_payload, init} =
         MatterEx.CASE.handle(init, :case_sigma2, sigma2_msg.proto.payload)
 
@@ -939,11 +1114,13 @@ defmodule MatterEx.MessageHandlerTest do
       frame = build_case_frame(:case_sigma3, sigma3_payload, exchange_id, 1)
       {actions, handler} = MessageHandler.handle_frame(handler, frame)
 
-      [{:send, sr_frame}, {:session_established, session_id}] = actions
+      [{:send, sr_frame} | lifecycle_actions] = actions
+      {:session_established, session_id} = List.last(lifecycle_actions)
       assert session_id > 0
 
       # Step 4: Initiator processes StatusReport
       {:ok, sr_msg} = MessageCodec.decode(sr_frame)
+
       {:established, init_session, _init} =
         MatterEx.CASE.handle(init, :status_report, sr_msg.proto.payload)
 
@@ -977,6 +1154,26 @@ defmodule MatterEx.MessageHandlerTest do
       assert entry.session.local_session_id == session_id
     end
 
+    test "new CASE session replaces old session from same fabric peer" do
+      {handler, ipk} = new_handler_with_case(device: TestLight)
+
+      {_init_session1, handler, session_id1} = run_case_handshake(handler, ipk)
+      assert Map.has_key?(handler.sessions, session_id1)
+
+      {_init_session2, handler, session_id2} = run_case_handshake(handler, ipk)
+
+      refute Map.has_key?(handler.sessions, session_id1)
+      assert Map.has_key?(handler.sessions, session_id2)
+
+      case_sessions =
+        Enum.filter(handler.sessions, fn {_sid, entry} ->
+          entry.session.auth_mode == :case and entry.session.fabric_index == 1 and
+            entry.session.peer_node_id == 2
+        end)
+
+      assert length(case_sessions) == 1
+    end
+
     test "encrypted IM after CASE session with ACL" do
       {handler, ipk} = new_handler_with_case(device: TestLight)
       {init_session, handler, _session_id} = run_case_handshake(handler, ipk)
@@ -985,9 +1182,10 @@ defmodule MatterEx.MessageHandlerTest do
       seed_acl(TestLight, 2)
 
       # Read on_off via CASE-established session
-      read_req = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
-      })
+      read_req =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -1044,29 +1242,35 @@ defmodule MatterEx.MessageHandlerTest do
       noc1 = MatterEx.CASE.Messages.encode_noc(1, 1, pub1)
       ipk1 = :crypto.strong_rand_bytes(16)
 
-      handler = MessageHandler.new(
-        device: TestLight,
-        passcode: @passcode,
-        salt: @salt,
-        iterations: @iterations,
-        local_session_id: 1,
-        noc: noc1,
-        private_key: priv1,
-        ipk: ipk1,
-        node_id: 1,
-        fabric_id: 1,
-        fabric_index: 1
-      )
+      handler =
+        MessageHandler.new(
+          device: TestLight,
+          passcode: @passcode,
+          salt: @salt,
+          iterations: @iterations,
+          local_session_id: 1,
+          noc: noc1,
+          private_key: priv1,
+          ipk: ipk1,
+          node_id: 1,
+          fabric_id: 1,
+          fabric_index: 1
+        )
 
       # Add fabric 2
       {pub2, priv2} = MatterEx.Crypto.Certificate.generate_keypair()
       noc2 = MatterEx.CASE.Messages.encode_noc(10, 2, pub2)
       ipk2 = :crypto.strong_rand_bytes(16)
 
-      handler = MessageHandler.update_case(handler, [
-        noc: noc2, private_key: priv2, ipk: ipk2,
-        node_id: 10, fabric_id: 2, fabric_index: 2
-      ])
+      handler =
+        MessageHandler.update_case(handler,
+          noc: noc2,
+          private_key: priv2,
+          ipk: ipk2,
+          node_id: 10,
+          fabric_id: 2,
+          fabric_index: 2
+        )
 
       assert map_size(handler.case_states) == 2
 
@@ -1074,11 +1278,17 @@ defmodule MatterEx.MessageHandlerTest do
       {init_pub1, init_priv1} = MatterEx.Crypto.Certificate.generate_keypair()
       init_noc1 = MatterEx.CASE.Messages.encode_noc(2, 1, init_pub1)
 
-      init1 = MatterEx.CASE.new_initiator(
-        noc: init_noc1, private_key: init_priv1, ipk: ipk1,
-        node_id: 2, fabric_id: 1, local_session_id: 100,
-        peer_node_id: 1, peer_fabric_id: 1
-      )
+      init1 =
+        MatterEx.CASE.new_initiator(
+          noc: init_noc1,
+          private_key: init_priv1,
+          ipk: ipk1,
+          node_id: 2,
+          fabric_id: 1,
+          local_session_id: 100,
+          peer_node_id: 1,
+          peer_fabric_id: 1
+        )
 
       # Run CASE handshake for fabric 1
       {:send, :case_sigma1, sigma1, init1} = MatterEx.CASE.initiate(init1)
@@ -1086,6 +1296,7 @@ defmodule MatterEx.MessageHandlerTest do
       {[{:send, sigma2_frame}], handler} = MessageHandler.handle_frame(handler, frame)
 
       {:ok, sigma2_msg} = MessageCodec.decode(sigma2_frame)
+
       {:send, :case_sigma3, sigma3, _init1} =
         MatterEx.CASE.handle(init1, :case_sigma2, sigma2_msg.proto.payload)
 
@@ -1098,11 +1309,17 @@ defmodule MatterEx.MessageHandlerTest do
       {init_pub2, init_priv2} = MatterEx.Crypto.Certificate.generate_keypair()
       init_noc2 = MatterEx.CASE.Messages.encode_noc(20, 2, init_pub2)
 
-      init2 = MatterEx.CASE.new_initiator(
-        noc: init_noc2, private_key: init_priv2, ipk: ipk2,
-        node_id: 20, fabric_id: 2, local_session_id: 200,
-        peer_node_id: 10, peer_fabric_id: 2
-      )
+      init2 =
+        MatterEx.CASE.new_initiator(
+          noc: init_noc2,
+          private_key: init_priv2,
+          ipk: ipk2,
+          node_id: 20,
+          fabric_id: 2,
+          local_session_id: 200,
+          peer_node_id: 10,
+          peer_fabric_id: 2
+        )
 
       # Run CASE handshake for fabric 2
       {:send, :case_sigma1, sigma1_2, init2} = MatterEx.CASE.initiate(init2)
@@ -1110,6 +1327,7 @@ defmodule MatterEx.MessageHandlerTest do
       {[{:send, sigma2_frame2}], handler} = MessageHandler.handle_frame(handler, frame)
 
       {:ok, sigma2_msg2} = MessageCodec.decode(sigma2_frame2)
+
       {:send, :case_sigma3, sigma3_2, _init2} =
         MatterEx.CASE.handle(init2, :case_sigma2, sigma2_msg2.proto.payload)
 
@@ -1134,11 +1352,15 @@ defmodule MatterEx.MessageHandlerTest do
     end
 
     defp send_invoke(handler, session, endpoint, cluster_id, command_id, fields) do
-      invoke_req = IM.encode(%IM.InvokeRequest{
-        invoke_requests: [
-          %{path: %{endpoint: endpoint, cluster: cluster_id, command: command_id}, fields: fields}
-        ]
-      })
+      invoke_req =
+        IM.encode(%IM.InvokeRequest{
+          invoke_requests: [
+            %{
+              path: %{endpoint: endpoint, cluster: cluster_id, command: command_id},
+              fields: fields
+            }
+          ]
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -1167,17 +1389,17 @@ defmodule MatterEx.MessageHandlerTest do
 
       # 1. ArmFailSafe (endpoint 0, cluster 0x0030, command 0x00)
       {response, comm_session, handler} =
-        send_invoke(handler, comm_session, 0, 0x0030, 0x00,
-          %{0 => {:uint, 900}, 1 => {:uint, 1}})
+        send_invoke(handler, comm_session, 0, 0x0030, 0x00, %{0 => {:uint, 900}, 1 => {:uint, 1}})
 
       [{:command, arm_resp}] = response.invoke_responses
-      assert arm_resp.fields[0] == 0  # ErrorCode=OK
+      # ErrorCode=OK
+      assert arm_resp.fields[0] == 0
 
       # 2. CSRRequest (endpoint 0, cluster 0x003E, command 0x04)
       csr_nonce = :crypto.strong_rand_bytes(32)
+
       {response, comm_session, handler} =
-        send_invoke(handler, comm_session, 0, 0x003E, 0x04,
-          %{0 => {:bytes, csr_nonce}})
+        send_invoke(handler, comm_session, 0, 0x003E, 0x04, %{0 => {:bytes, csr_nonce}})
 
       [{:command, cmd_data}] = response.invoke_responses
       nocsr_elements = cmd_data.fields[0]
@@ -1188,26 +1410,33 @@ defmodule MatterEx.MessageHandlerTest do
 
       # 3. AddTrustedRootCert (endpoint 0, cluster 0x003E, command 0x0B)
       root_cert = :crypto.strong_rand_bytes(200)
+
       {_response, comm_session, handler} =
-        send_invoke(handler, comm_session, 0, 0x003E, 0x0B,
-          %{0 => {:bytes, root_cert}})
+        send_invoke(handler, comm_session, 0, 0x003E, 0x0B, %{0 => {:bytes, root_cert}})
 
       # 4. AddNOC (endpoint 0, cluster 0x003E, command 0x06)
       noc = MatterEx.CASE.Messages.encode_noc(42, 1, pub_key)
       ipk = :crypto.strong_rand_bytes(16)
+
       {response, comm_session, handler} =
-        send_invoke(handler, comm_session, 0, 0x003E, 0x06,
-          %{0 => {:bytes, noc}, 2 => {:bytes, ipk}, 3 => {:uint, 112233}, 4 => {:uint, 0xFFF1}})
+        send_invoke(handler, comm_session, 0, 0x003E, 0x06, %{
+          0 => {:bytes, noc},
+          2 => {:bytes, ipk},
+          3 => {:uint, 112_233},
+          4 => {:uint, 0xFFF1}
+        })
 
       [{:command, noc_resp}] = response.invoke_responses
-      assert noc_resp.fields[0] == 0  # StatusCode=Success
+      # StatusCode=Success
+      assert noc_resp.fields[0] == 0
 
       # 5. CommissioningComplete (endpoint 0, cluster 0x0030, command 0x04)
       {response, _comm_session, handler} =
         send_invoke(handler, comm_session, 0, 0x0030, 0x04, nil)
 
       [{:command, cc_resp}] = response.invoke_responses
-      assert cc_resp.fields[0] == 0  # Success
+      # Success
+      assert cc_resp.fields[0] == 0
 
       # Commissioning Agent should now have credentials
       assert MatterEx.Commissioning.commissioned?()
@@ -1230,6 +1459,7 @@ defmodule MatterEx.MessageHandlerTest do
         send_invoke(handler, comm_session, 0, 0x0030, 0x00, %{0 => {:uint, 900}, 1 => {:uint, 0}})
 
       csr_nonce = :crypto.strong_rand_bytes(32)
+
       {response, comm_session, handler} =
         send_invoke(handler, comm_session, 0, 0x003E, 0x04, %{0 => {:bytes, csr_nonce}})
 
@@ -1238,14 +1468,20 @@ defmodule MatterEx.MessageHandlerTest do
       pub_key = MatterEx.Crypto.Certificate.pubkey_from_csr(nocsr_decoded[1])
 
       root_cert = :crypto.strong_rand_bytes(200)
+
       {_response, comm_session, handler} =
         send_invoke(handler, comm_session, 0, 0x003E, 0x0B, %{0 => {:bytes, root_cert}})
 
       ipk = :crypto.strong_rand_bytes(16)
       noc = MatterEx.CASE.Messages.encode_noc(42, 1, pub_key)
+
       {_response, comm_session, handler} =
-        send_invoke(handler, comm_session, 0, 0x003E, 0x06,
-          %{0 => {:bytes, noc}, 2 => {:bytes, ipk}, 3 => {:uint, 112233}, 4 => {:uint, 0xFFF1}})
+        send_invoke(handler, comm_session, 0, 0x003E, 0x06, %{
+          0 => {:bytes, noc},
+          2 => {:bytes, ipk},
+          3 => {:uint, 112_233},
+          4 => {:uint, 0xFFF1}
+        })
 
       {_response, _comm_session, handler} =
         send_invoke(handler, comm_session, 0, 0x0030, 0x04, nil)
@@ -1258,16 +1494,17 @@ defmodule MatterEx.MessageHandlerTest do
       {init_pub, init_priv} = MatterEx.Crypto.Certificate.generate_keypair()
       init_noc = MatterEx.CASE.Messages.encode_noc(2, 1, init_pub)
 
-      init = MatterEx.CASE.new_initiator(
-        noc: init_noc,
-        private_key: init_priv,
-        ipk: ipk,
-        node_id: 2,
-        fabric_id: 1,
-        local_session_id: 200,
-        peer_node_id: 42,
-        peer_fabric_id: 1
-      )
+      init =
+        MatterEx.CASE.new_initiator(
+          noc: init_noc,
+          private_key: init_priv,
+          ipk: ipk,
+          node_id: 2,
+          fabric_id: 1,
+          local_session_id: 200,
+          peer_node_id: 42,
+          peer_fabric_id: 1
+        )
 
       # Sigma1
       {:send, :case_sigma1, sigma1_payload, init} = MatterEx.CASE.initiate(init)
@@ -1277,6 +1514,7 @@ defmodule MatterEx.MessageHandlerTest do
 
       # Sigma2 → Sigma3
       {:ok, sigma2_msg} = MessageCodec.decode(sigma2_frame)
+
       {:send, :case_sigma3, sigma3_payload, _init} =
         MatterEx.CASE.handle(init, :case_sigma2, sigma2_msg.proto.payload)
 
@@ -1289,6 +1527,114 @@ defmodule MatterEx.MessageHandlerTest do
       # Verify the session node_id matches commissioned id
       session = handler.sessions[case_session_id].session
       assert session.local_node_id == 42
+    end
+
+    test "successful remove_fabric clears CASE subscriptions for that fabric" do
+      handler = new_handler(device: TestLight)
+      {comm_session, handler} = run_pase_handshake(handler)
+
+      {_response, comm_session, handler} =
+        send_invoke(handler, comm_session, 0, 0x0030, 0x00, %{0 => {:uint, 900}, 1 => {:uint, 0}})
+
+      {response, comm_session, handler} =
+        send_invoke(handler, comm_session, 0, 0x003E, 0x04, %{
+          0 => {:bytes, :crypto.strong_rand_bytes(32)}
+        })
+
+      [{:command, cmd_data}] = response.invoke_responses
+      nocsr_decoded = MatterEx.TLV.decode(cmd_data.fields[0])
+      pub_key = MatterEx.Crypto.Certificate.pubkey_from_csr(nocsr_decoded[1])
+
+      {_response, comm_session, handler} =
+        send_invoke(handler, comm_session, 0, 0x003E, 0x0B, %{
+          0 => {:bytes, :crypto.strong_rand_bytes(200)}
+        })
+
+      ipk = :crypto.strong_rand_bytes(16)
+      noc = MatterEx.CASE.Messages.encode_noc(42, 1, pub_key)
+
+      {_response, comm_session, handler} =
+        send_invoke(handler, comm_session, 0, 0x003E, 0x06, %{
+          0 => {:bytes, noc},
+          2 => {:bytes, ipk},
+          3 => {:uint, 112_233},
+          4 => {:uint, 0xFFF1}
+        })
+
+      {_response, _comm_session, handler} =
+        send_invoke(handler, comm_session, 0, 0x0030, 0x04, nil)
+
+      creds = MatterEx.Commissioning.get_credentials()
+      handler = MessageHandler.update_case(handler, Keyword.new(creds))
+
+      {init_pub, init_priv} = MatterEx.Crypto.Certificate.generate_keypair()
+      init_noc = MatterEx.CASE.Messages.encode_noc(2, 1, init_pub)
+
+      init =
+        MatterEx.CASE.new_initiator(
+          noc: init_noc,
+          private_key: init_priv,
+          ipk: ipk,
+          node_id: 2,
+          fabric_id: 1,
+          local_session_id: 200,
+          peer_node_id: 42,
+          peer_fabric_id: 1
+        )
+
+      {:send, :case_sigma1, sigma1_payload, init} = MatterEx.CASE.initiate(init)
+      frame = build_pase_frame(:case_sigma1, sigma1_payload, 50, counter: 100)
+      {[{:send, sigma2_frame}], handler} = MessageHandler.handle_frame(handler, frame)
+      {:ok, sigma2_msg} = MessageCodec.decode(sigma2_frame)
+
+      {:send, :case_sigma3, sigma3_payload, init} =
+        MatterEx.CASE.handle(init, :case_sigma2, sigma2_msg.proto.payload)
+
+      frame = build_pase_frame(:case_sigma3, sigma3_payload, 50, counter: 101)
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
+      [{:send, sr_frame}, {:session_established, case_session_id}] = actions
+      {:ok, sr_msg} = MessageCodec.decode(sr_frame)
+
+      {:established, case_session, _init} =
+        MatterEx.CASE.handle(init, :status_report, sr_msg.proto.payload)
+
+      seed_acl(TestLight, 2)
+
+      subscribe_req =
+        IM.encode(%IM.SubscribeRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          min_interval: 0,
+          max_interval: 60
+        })
+
+      subscribe_proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: subscribe_req
+      }
+
+      {frame, case_session} = SecureChannel.seal(case_session, subscribe_proto)
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
+      [{:send, priming_frame} | _] = actions
+      {:ok, priming_msg, case_session} = SecureChannel.open(case_session, priming_frame)
+      {case_session, handler} = complete_subscribe(case_session, handler, priming_msg, 1)
+
+      assert MatterEx.IM.SubscriptionManager.active?(
+               handler.sessions[case_session_id].subscription_mgr
+             )
+
+      {_response, _case_session, handler} =
+        send_invoke(handler, case_session, 0, 0x003E, 0x0A, %{0 => {:uint, 1}})
+
+      refute MatterEx.IM.SubscriptionManager.active?(
+               handler.sessions[case_session_id].subscription_mgr
+             )
+
+      {actions, _handler} = MessageHandler.check_subscriptions(handler)
+      assert Enum.filter(actions, &match?({:send, _, _}, &1)) == []
     end
   end
 
@@ -1304,9 +1650,10 @@ defmodule MatterEx.MessageHandlerTest do
       handler = new_handler(device: TestLight)
       {comm_session, handler} = run_pase_handshake(handler)
 
-      read_req = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
-      })
+      read_req =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -1334,9 +1681,10 @@ defmodule MatterEx.MessageHandlerTest do
       {init_session, handler, _session_id} = run_case_handshake(handler, ipk)
 
       # No ACL entries seeded — CASE read should be denied
-      read_req = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
-      })
+      read_req =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -1366,9 +1714,10 @@ defmodule MatterEx.MessageHandlerTest do
       # Seed admin ACL for the CASE initiator (node_id=2)
       seed_acl(TestLight, 2)
 
-      read_req = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
-      })
+      read_req =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -1399,9 +1748,10 @@ defmodule MatterEx.MessageHandlerTest do
       seed_acl(TestLight, 2, 1)
 
       # Read should succeed (requires View)
-      read_req = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
-      })
+      read_req =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -1421,11 +1771,12 @@ defmodule MatterEx.MessageHandlerTest do
       assert [{:data, _}] = report.attribute_reports
 
       # Invoke should be denied (requires Operate, we only have View)
-      invoke_req = IM.encode(%IM.InvokeRequest{
-        invoke_requests: [
-          %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
-        ]
-      })
+      invoke_req =
+        IM.encode(%IM.InvokeRequest{
+          invoke_requests: [
+            %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
+          ]
+        })
 
       proto2 = %ProtoHeader{
         initiator: true,
@@ -1461,10 +1812,11 @@ defmodule MatterEx.MessageHandlerTest do
       {comm_session, handler} = run_pase_handshake(handler)
 
       # Read on_off attribute (should be false by default)
-      read_req = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        fabric_filtered: true
-      })
+      read_req =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          fabric_filtered: true
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -1483,14 +1835,16 @@ defmodule MatterEx.MessageHandlerTest do
       {:ok, report} = IM.decode(:report_data, msg.proto.payload)
 
       [{:data, data}] = report.attribute_reports
-      assert data.value == false  # default on_off value
+      # default on_off value
+      assert data.value == false
 
       # Invoke "on" command
-      invoke_req = IM.encode(%IM.InvokeRequest{
-        invoke_requests: [
-          %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
-        ]
-      })
+      invoke_req =
+        IM.encode(%IM.InvokeRequest{
+          invoke_requests: [
+            %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
+          ]
+        })
 
       proto2 = %ProtoHeader{
         initiator: true,
@@ -1506,10 +1860,11 @@ defmodule MatterEx.MessageHandlerTest do
       [{:send, _invoke_resp} | _] = actions2
 
       # Read again — should now be true
-      read_req2 = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        fabric_filtered: true
-      })
+      read_req2 =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          fabric_filtered: true
+        })
 
       proto3 = %ProtoHeader{
         initiator: true,
@@ -1528,7 +1883,8 @@ defmodule MatterEx.MessageHandlerTest do
       {:ok, report3} = IM.decode(:report_data, msg3.proto.payload)
 
       [{:data, data3}] = report3.attribute_reports
-      assert data3.value == true  # on_off is now true!
+      # on_off is now true!
+      assert data3.value == true
     end
   end
 
@@ -1564,6 +1920,7 @@ defmodule MatterEx.MessageHandlerTest do
       invoke_req = %IM.InvokeRequest{
         invoke_requests: [%{path: %{endpoint: 1, cluster: 0x0006, command: 2}, fields: nil}]
       }
+
       payload = IM.encode(invoke_req)
 
       frame = build_group_frame(session_id, enc_key, :invoke_request, payload, 42)
@@ -1579,6 +1936,7 @@ defmodule MatterEx.MessageHandlerTest do
       invoke_req = %IM.InvokeRequest{
         invoke_requests: [%{path: %{endpoint: 1, cluster: 0x0006, command: 2}, fields: nil}]
       }
+
       payload = IM.encode(invoke_req)
 
       # Use a session_id that doesn't match any group key
@@ -1593,6 +1951,7 @@ defmodule MatterEx.MessageHandlerTest do
       invoke_req = %IM.InvokeRequest{
         invoke_requests: [%{path: %{endpoint: 1, cluster: 0x0006, command: 2}, fields: nil}]
       }
+
       payload = IM.encode(invoke_req)
 
       # Use a different encryption key
@@ -1607,6 +1966,7 @@ defmodule MatterEx.MessageHandlerTest do
          %{handler: handler, enc_key: enc_key, session_id: session_id} do
       # Seed ACL for group auth_mode (auth_mode: 3)
       acl_name = TestLight.__process_name__(0, :access_control)
+
       group_acl = %{
         privilege: 3,
         auth_mode: 3,
@@ -1614,11 +1974,15 @@ defmodule MatterEx.MessageHandlerTest do
         targets: nil,
         fabric_index: 0
       }
+
       GenServer.call(acl_name, {:write_attribute, :acl, [group_acl]})
 
       write_req = %IM.WriteRequest{
-        write_requests: [%{path: %{endpoint: 1, cluster: 0x0006, attribute: 0}, value: {:bool, true}, version: 0}]
+        write_requests: [
+          %{path: %{endpoint: 1, cluster: 0x0006, attribute: 0}, value: {:bool, true}, version: 0}
+        ]
       }
+
       payload = IM.encode(write_req)
 
       frame = build_group_frame(session_id, enc_key, :write_request, payload, 43)
@@ -1650,11 +2014,12 @@ defmodule MatterEx.MessageHandlerTest do
       payload: payload
     }
 
-    nonce = MessageCodec.build_nonce(
-      encode_group_security_flags(header),
-      counter,
-      42
-    )
+    nonce =
+      MessageCodec.build_nonce(
+        encode_group_security_flags(header),
+        counter,
+        42
+      )
 
     IO.iodata_to_binary(MessageCodec.encode_encrypted(header, proto, encrypt_key, nonce))
   end

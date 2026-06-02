@@ -235,8 +235,14 @@ defmodule MatterEx.MDNS.DNS do
 
     <<
       Map.get(msg, :id, 0)::16,
-      qr::1, 0::4, aa::1, 0::1, 0::1,
-      0::1, 0::3, 0::4,
+      qr::1,
+      0::4,
+      aa::1,
+      0::1,
+      0::1,
+      0::1,
+      0::3,
+      0::4,
       qdcount::16,
       ancount::16,
       nscount::16,
@@ -255,11 +261,12 @@ defmodule MatterEx.MDNS.DNS do
     type_code = type_to_code(r.type)
     rdata = encode_rdata(r.type, r.data)
 
-    class = if Map.get(r, :cache_flush, false) do
-      @class_in ||| @cache_flush
-    else
-      @class_in
-    end
+    class =
+      if Map.get(r, :cache_flush, false) do
+        @class_in ||| @cache_flush
+      else
+        @class_in
+      end
 
     name <> <<type_code::16, class::16, r.ttl::32, byte_size(rdata)::16>> <> rdata
   end
@@ -272,32 +279,42 @@ defmodule MatterEx.MDNS.DNS do
   Returns `{:ok, message_map}` or `{:error, reason}`.
   """
   @spec decode_message(binary()) :: {:ok, map()} | {:error, term()}
-  def decode_message(<<
-    id::16,
-    qr::1, _opcode::4, aa::1, _tc::1, _rd::1,
-    _ra::1, _z::3, _rcode::4,
-    qdcount::16,
-    ancount::16,
-    nscount::16,
-    arcount::16,
-    _body::binary
-  >> = message) do
-    offset = 12  # header size
+  def decode_message(
+        <<
+          id::16,
+          qr::1,
+          _opcode::4,
+          aa::1,
+          _tc::1,
+          _rd::1,
+          _ra::1,
+          _z::3,
+          _rcode::4,
+          qdcount::16,
+          ancount::16,
+          nscount::16,
+          arcount::16,
+          _body::binary
+        >> = message
+      ) do
+    # header size
+    offset = 12
 
     {questions, offset} = decode_questions(message, offset, qdcount)
     {answers, offset} = decode_records(message, offset, ancount)
     {authority, offset} = decode_records(message, offset, nscount)
     {additional, _offset} = decode_records(message, offset, arcount)
 
-    {:ok, %{
-      id: id,
-      qr: if(qr == 1, do: :response, else: :query),
-      aa: aa == 1,
-      questions: questions,
-      answers: answers,
-      authority: authority,
-      additional: additional
-    }}
+    {:ok,
+     %{
+       id: id,
+       qr: if(qr == 1, do: :response, else: :query),
+       aa: aa == 1,
+       questions: questions,
+       answers: answers,
+       authority: authority,
+       additional: additional
+     }}
   rescue
     _ -> {:error, :invalid_message}
   end
@@ -326,8 +343,7 @@ defmodule MatterEx.MDNS.DNS do
         {name, consumed} = decode_name(message, off)
         data_start = off + consumed
 
-        <<_::binary-size(data_start),
-          type_code::16, class_raw::16, ttl::32, rdlength::16,
+        <<_::binary-size(data_start), type_code::16, class_raw::16, ttl::32, rdlength::16,
           _::binary>> = message
 
         rdata_offset = data_start + 10

@@ -13,7 +13,7 @@ defmodule MatterEx.TLV.Decoder do
   """
   @spec decode_element(binary()) :: {term(), term(), binary()}
   def decode_element(<<control, rest::binary>>) do
-    tag_control = (control >>> 5) &&& 0x07
+    tag_control = control >>> 5 &&& 0x07
     elem_type = control &&& 0x1F
 
     {tag, rest} = decode_tag(tag_control, rest)
@@ -40,13 +40,19 @@ defmodule MatterEx.TLV.Decoder do
   defp decode_tag(5, <<tag::little-unsigned-32, rest::binary>>),
     do: {{:implicit, tag}, rest}
 
-  defp decode_tag(6, <<vendor::little-unsigned-16, profile::little-unsigned-16,
-                       tag::little-unsigned-16, rest::binary>>),
-    do: {{:fq, vendor, profile, tag}, rest}
+  defp decode_tag(
+         6,
+         <<vendor::little-unsigned-16, profile::little-unsigned-16, tag::little-unsigned-16,
+           rest::binary>>
+       ),
+       do: {{:fq, vendor, profile, tag}, rest}
 
-  defp decode_tag(7, <<vendor::little-unsigned-16, profile::little-unsigned-16,
-                       tag::little-unsigned-32, rest::binary>>),
-    do: {{:fq, vendor, profile, tag}, rest}
+  defp decode_tag(
+         7,
+         <<vendor::little-unsigned-16, profile::little-unsigned-16, tag::little-unsigned-32,
+           rest::binary>>
+       ),
+       do: {{:fq, vendor, profile, tag}, rest}
 
   ## Value decoding — signed integers
 

@@ -8,12 +8,13 @@ defmodule MatterEx.CASE.Messages do
 
   require Logger
 
-  alias MatterEx.TLV
   alias MatterEx.Crypto.{KDF, Session}
+  alias MatterEx.TLV
 
   # Matter certificate DN OIDs
   @matter_node_id_oid {1, 3, 6, 1, 4, 1, 37244, 1, 1}
   @matter_fabric_id_oid {1, 3, 6, 1, 4, 1, 37244, 1, 5}
+  @matter_case_authenticated_tag_oid {1, 3, 6, 1, 4, 1, 37244, 1, 22}
 
   # ── Sigma1 (opcode 0x30) ───────────────────────────────────────
 
@@ -31,14 +32,15 @@ defmodule MatterEx.CASE.Messages do
   def decode_sigma1(data) do
     with {:ok, decoded} <- safe_decode(data),
          %{1 => random, 2 => session_id, 3 => dest_id, 4 => eph_pub} <- decoded do
-      {:ok, %{
-        initiator_random: random,
-        initiator_session_id: session_id,
-        destination_id: dest_id,
-        initiator_eph_pub: eph_pub,
-        resumption_id: Map.get(decoded, 6),
-        initiator_resume_mic: Map.get(decoded, 7)
-      }}
+      {:ok,
+       %{
+         initiator_random: random,
+         initiator_session_id: session_id,
+         destination_id: dest_id,
+         initiator_eph_pub: eph_pub,
+         resumption_id: Map.get(decoded, 6),
+         initiator_resume_mic: Map.get(decoded, 7)
+       }}
     else
       _ -> {:error, :invalid_message}
     end
@@ -48,27 +50,66 @@ defmodule MatterEx.CASE.Messages do
 
   @spec encode_sigma2(binary(), non_neg_integer(), binary(), binary()) :: binary()
   def encode_sigma2(responder_random, session_id, eph_pub, encrypted2) do
-    TLV.encode(%{
+    encode_sigma2(responder_random, session_id, eph_pub, encrypted2, nil)
+  end
+
+  @spec encode_sigma2(binary(), non_neg_integer(), binary(), binary(), map() | nil) :: binary()
+  def encode_sigma2(responder_random, session_id, eph_pub, encrypted2, session_params) do
+    fields = %{
       1 => {:bytes, responder_random},
       2 => {:uint, session_id},
       3 => {:bytes, eph_pub},
       4 => {:bytes, encrypted2}
-    })
+    }
+
+    fields =
+      if session_params do
+        Map.put(fields, 5, {:struct, session_params})
+      else
+        fields
+      end
+
+    TLV.encode(fields)
   end
 
   @spec decode_sigma2(binary()) :: {:ok, map()} | {:error, :invalid_message}
   def decode_sigma2(data) do
     with {:ok, decoded} <- safe_decode(data),
          %{1 => random, 2 => session_id, 3 => eph_pub, 4 => encrypted2} <- decoded do
-      {:ok, %{
-        responder_random: random,
-        responder_session_id: session_id,
-        responder_eph_pub: eph_pub,
-        encrypted2: encrypted2
-      }}
+      {:ok,
+       %{
+         responder_random: random,
+         responder_session_id: session_id,
+         responder_eph_pub: eph_pub,
+         encrypted2: encrypted2,
+         responder_session_params: Map.get(decoded, 5)
+       }}
     else
       _ -> {:error, :invalid_message}
     end
+  end
+
+  @doc """
+  Default secure-channel session parameters.
+
+  These mirror the fields emitted by connectedhomeip's PairingSession
+  `EncodeSessionParameters`: MRP timings plus protocol revision hints.
+  """
+  @spec default_session_parameters() :: map()
+  def default_session_parameters do
+    %{
+      # MRP idle retransmission interval, ms
+      1 => {:uint32, 500},
+      # MRP active retransmission interval, ms
+      2 => {:uint32, 300},
+      # MRP active threshold, ms
+      3 => {:uint32, 4000},
+      # Matter 1.3 / Apple Home current revisions
+      4 => {:uint16, 19},
+      5 => {:uint16, 12},
+      6 => {:uint32, 0x01050000},
+      7 => {:uint16, 1}
+    }
   end
 
   # ── Sigma3 (opcode 0x32) ───────────────────────────────────────
@@ -97,7 +138,7 @@ defmodule MatterEx.CASE.Messages do
       4 => {:bytes, resumption_id}
     }
 
-    fields = if icac, do: Map.put(fields, 2, {:bytes, icac}), else: fields
+    fields = put_optional_icac(fields, icac)
     TLV.encode(fields)
   end
 
@@ -105,12 +146,13 @@ defmodule MatterEx.CASE.Messages do
   def decode_tbe_data2(data) do
     with {:ok, decoded} <- safe_decode(data),
          %{1 => noc, 3 => signature, 4 => resumption_id} <- decoded do
-      {:ok, %{
-        noc: noc,
-        icac: Map.get(decoded, 2),
-        signature: signature,
-        resumption_id: resumption_id
-      }}
+      {:ok,
+       %{
+         noc: noc,
+         icac: Map.get(decoded, 2),
+         signature: signature,
+         resumption_id: resumption_id
+       }}
     else
       _ -> {:error, :invalid_message}
     end
@@ -125,7 +167,7 @@ defmodule MatterEx.CASE.Messages do
       3 => {:bytes, signature}
     }
 
-    fields = if icac, do: Map.put(fields, 2, {:bytes, icac}), else: fields
+    fields = put_optional_icac(fields, icac)
     TLV.encode(fields)
   end
 
@@ -133,11 +175,12 @@ defmodule MatterEx.CASE.Messages do
   def decode_tbe_data3(data) do
     with {:ok, decoded} <- safe_decode(data),
          %{1 => noc, 3 => signature} <- decoded do
-      {:ok, %{
-        noc: noc,
-        icac: Map.get(decoded, 2),
-        signature: signature
-      }}
+      {:ok,
+       %{
+         noc: noc,
+         icac: Map.get(decoded, 2),
+         signature: signature
+       }}
     else
       _ -> {:error, :invalid_message}
     end
@@ -199,17 +242,31 @@ defmodule MatterEx.CASE.Messages do
     with {:ok, decoded} when is_map(decoded) <- safe_decode(data) do
       cond do
         # Matter TLV cert format: tag 9 = public key, tag 6 = subject (nested map)
-        # Subject DN: tag 17 = node_id, tag 21 = fabric_id
+        # Subject DN: tag 17 = node_id, tag 21 = fabric_id, tag 22 = CASE Authenticated Tag
         Map.has_key?(decoded, 9) ->
           public_key = Map.get(decoded, 9)
           subject = Map.get(decoded, 6, %{})
           node_id = if is_map(subject), do: Map.get(subject, 17), else: 0
           fabric_id = if is_map(subject), do: Map.get(subject, 21), else: 0
-          {:ok, %{node_id: node_id || 0, fabric_id: fabric_id || 0, public_key: public_key}}
+          cats = if is_map(subject), do: normalize_cats(Map.get(subject, 22)), else: []
+
+          {:ok,
+           %{
+             node_id: node_id || 0,
+             fabric_id: fabric_id || 0,
+             public_key: public_key,
+             case_authenticated_tags: cats
+           }}
 
         # Simple TLV format: tag 1 = node_id, tag 2 = fabric_id, tag 3 = public_key
         Map.has_key?(decoded, 3) ->
-          {:ok, %{node_id: decoded[1], fabric_id: decoded[2], public_key: decoded[3]}}
+          {:ok,
+           %{
+             node_id: decoded[1],
+             fabric_id: decoded[2],
+             public_key: decoded[3],
+             case_authenticated_tags: []
+           }}
 
         true ->
           {:error, :invalid_message}
@@ -233,11 +290,20 @@ defmodule MatterEx.CASE.Messages do
 
     node_id = find_matter_dn_attr(rdns, @matter_node_id_oid)
     fabric_id = find_matter_dn_attr(rdns, @matter_fabric_id_oid)
+    cats = find_matter_dn_attrs(rdns, @matter_case_authenticated_tag_oid)
 
-    Logger.debug("decode_x509_noc: node_id=#{inspect(node_id)} fabric_id=#{inspect(fabric_id)} pub_key=#{if public_key, do: byte_size(public_key), else: "nil"}B")
+    Logger.debug(
+      "decode_x509_noc: node_id=#{inspect(node_id)} fabric_id=#{inspect(fabric_id)} cats=#{inspect(cats)} pub_key=#{if public_key, do: byte_size(public_key), else: "nil"}B"
+    )
 
     if node_id && fabric_id && public_key do
-      {:ok, %{node_id: node_id, fabric_id: fabric_id, public_key: public_key}}
+      {:ok,
+       %{
+         node_id: node_id,
+         fabric_id: fabric_id,
+         public_key: public_key,
+         case_authenticated_tags: cats
+       }}
     else
       {:error, :invalid_message}
     end
@@ -246,6 +312,19 @@ defmodule MatterEx.CASE.Messages do
       Logger.warning("decode_x509_noc rescue: #{inspect(e)}")
       {:error, :invalid_message}
   end
+
+  defp normalize_cats(nil), do: []
+  defp normalize_cats({:array, items}), do: normalize_cats(items)
+
+  defp normalize_cats(items) when is_list(items) do
+    items
+    |> Enum.flat_map(&normalize_cats/1)
+    |> Enum.uniq()
+  end
+
+  defp normalize_cats({:uint, value}) when is_integer(value), do: [value]
+  defp normalize_cats(value) when is_integer(value), do: [value]
+  defp normalize_cats(_), do: []
 
   defp normalize_bitstring(bin) when is_binary(bin), do: bin
 
@@ -271,6 +350,23 @@ defmodule MatterEx.CASE.Messages do
           nil
       end)
     end)
+  end
+
+  defp find_matter_dn_attrs(rdns, target_oid) do
+    rdns
+    |> Enum.flat_map(fn rdn_set ->
+      Enum.flat_map(rdn_set, fn
+        {:AttributeTypeAndValue, ^target_oid, value} ->
+          case parse_matter_dn_value(value) do
+            nil -> []
+            parsed -> [parsed]
+          end
+
+        _ ->
+          []
+      end)
+    end)
+    |> Enum.uniq()
   end
 
   # Erlang wraps unknown OID values in {:asn1_OPENTYPE, raw_der}
@@ -307,9 +403,12 @@ defmodule MatterEx.CASE.Messages do
 
   The root_public_key is the full 65-byte uncompressed EC point (including 0x04 prefix).
   """
-  @spec compute_destination_id(binary(), binary(), binary(), non_neg_integer(), non_neg_integer()) :: binary()
+  @spec compute_destination_id(binary(), binary(), binary(), non_neg_integer(), non_neg_integer()) ::
+          binary()
   def compute_destination_id(ipk, initiator_random, root_public_key, fabric_id, node_id) do
-    data = initiator_random <> root_public_key <> <<fabric_id::little-64>> <> <<node_id::little-64>>
+    data =
+      initiator_random <> root_public_key <> <<fabric_id::little-64>> <> <<node_id::little-64>>
+
     :crypto.mac(:hmac, :sha256, ipk, data)
   end
 
@@ -359,9 +458,14 @@ defmodule MatterEx.CASE.Messages do
       4 => {:bytes, receiver_eph_pub}
     }
 
-    fields = if icac, do: Map.put(fields, 2, {:bytes, icac}), else: fields
+    fields = put_optional_icac(fields, icac)
     TLV.encode(fields)
   end
+
+  defp put_optional_icac(fields, icac) when is_binary(icac) and byte_size(icac) > 0,
+    do: Map.put(fields, 2, {:bytes, icac})
+
+  defp put_optional_icac(fields, _icac), do: fields
 
   @doc """
   Encrypt TBE data with AES-128-CCM. Returns `ciphertext <> tag`.

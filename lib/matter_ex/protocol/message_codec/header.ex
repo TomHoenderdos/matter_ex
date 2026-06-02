@@ -23,17 +23,17 @@ defmodule MatterEx.Protocol.MessageCodec.Header do
   @session_type_mask 0x03
 
   @type t :: %__MODULE__{
-    version: 0..15,
-    session_id: non_neg_integer(),
-    security_flags: byte(),
-    message_counter: non_neg_integer(),
-    source_node_id: non_neg_integer() | nil,
-    dest_node_id: non_neg_integer() | nil,
-    dest_group_id: non_neg_integer() | nil,
-    session_type: :unicast | :group,
-    privacy: boolean(),
-    control_message: boolean()
-  }
+          version: 0..15,
+          session_id: non_neg_integer(),
+          security_flags: byte(),
+          message_counter: non_neg_integer(),
+          source_node_id: non_neg_integer() | nil,
+          dest_node_id: non_neg_integer() | nil,
+          dest_group_id: non_neg_integer() | nil,
+          session_type: :unicast | :group,
+          privacy: boolean(),
+          control_message: boolean()
+        }
 
   defstruct version: 0,
             session_id: 0,
@@ -50,7 +50,7 @@ defmodule MatterEx.Protocol.MessageCodec.Header do
   def encode(%__MODULE__{} = h) do
     dsiz = dsiz_bits(h.dest_node_id, h.dest_group_id)
     s_bit = if h.source_node_id != nil, do: @flag_s, else: 0
-    msg_flags = (h.version <<< 4) ||| s_bit ||| dsiz
+    msg_flags = h.version <<< 4 ||| s_bit ||| dsiz
 
     sec_flags = build_security_flags(h)
 
@@ -65,8 +65,9 @@ defmodule MatterEx.Protocol.MessageCodec.Header do
   end
 
   @spec decode(binary()) :: {:ok, t(), binary()} | {:error, atom()}
-  def decode(<<msg_flags::8, session_id::little-16, sec_flags::8,
-               counter::little-32, rest::binary>>) do
+  def decode(
+        <<msg_flags::8, session_id::little-16, sec_flags::8, counter::little-32, rest::binary>>
+      ) do
     version = (msg_flags &&& 0xF0) >>> 4
     has_source = (msg_flags &&& @flag_s) != 0
     dsiz = msg_flags &&& @dsiz_mask

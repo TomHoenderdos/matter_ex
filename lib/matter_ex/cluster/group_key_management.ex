@@ -13,17 +13,17 @@ defmodule MatterEx.Cluster.GroupKeyManagement do
 
   alias MatterEx.Crypto.GroupKey
 
-  attribute 0x0000, :group_key_map, :list, default: [], writable: true
-  attribute 0x0001, :group_table, :list, default: []
-  attribute 0x0002, :max_groups_per_fabric, :uint16, default: 4
-  attribute 0x0003, :max_group_keys_per_fabric, :uint16, default: 3
-  attribute 0xFFFC, :feature_map, :uint32, default: 0
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 1
+  attribute(0x0000, :group_key_map, :list, default: [], writable: true)
+  attribute(0x0001, :group_table, :list, default: [])
+  attribute(0x0002, :max_groups_per_fabric, :uint16, default: 4)
+  attribute(0x0003, :max_group_keys_per_fabric, :uint16, default: 3)
+  attribute(0xFFFC, :feature_map, :uint32, default: 0)
+  attribute(0xFFFD, :cluster_revision, :uint16, default: 1)
 
-  command 0x00, :key_set_write, [group_key_set: :struct]
-  command 0x01, :key_set_read, [group_key_set_id: :uint16]
-  command 0x03, :key_set_remove, [group_key_set_id: :uint16]
-  command 0x04, :key_set_read_all_indices, []
+  command(0x00, :key_set_write, group_key_set: :struct)
+  command(0x01, :key_set_read, group_key_set_id: :uint16)
+  command(0x03, :key_set_remove, group_key_set_id: :uint16)
+  command(0x04, :key_set_read_all_indices, [])
 
   @impl true
   def init(opts) do
@@ -41,11 +41,13 @@ defmodule MatterEx.Cluster.GroupKeyManagement do
 
     if key_set_id && epoch_key0 do
       key_sets = Map.get(state, :_key_sets, %{})
+
       entry = %{
         group_key_set_id: key_set_id,
         epoch_key0: epoch_key0,
         epoch_start_time0: key_set[:epoch_start_time0] || key_set[2] || 0
       }
+
       key_sets = Map.put(key_sets, key_set_id, entry)
       state = Map.put(state, :_key_sets, key_sets)
 
@@ -68,10 +70,15 @@ defmodule MatterEx.Cluster.GroupKeyManagement do
         {:ok, %{0 => {:struct, %{0 => {:uint, key_set_id}}}}, state}
 
       entry ->
-        {:ok, %{0 => {:struct, %{
-          0 => {:uint, entry.group_key_set_id},
-          2 => {:uint, entry.epoch_start_time0}
-        }}}, state}
+        {:ok,
+         %{
+           0 =>
+             {:struct,
+              %{
+                0 => {:uint, entry.group_key_set_id},
+                2 => {:uint, entry.epoch_start_time0}
+              }}
+         }, state}
     end
   end
 
@@ -123,7 +130,9 @@ defmodule MatterEx.Cluster.GroupKeyManagement do
       key_set_id = entry[:group_key_set_id] || entry[2]
 
       case Map.get(key_sets, key_set_id) do
-        nil -> []
+        nil ->
+          []
+
         key_set ->
           op_key = GroupKey.operational_key(key_set.epoch_key0)
           enc_key = GroupKey.encryption_key(op_key, group_id)

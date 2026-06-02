@@ -6,6 +6,8 @@ defmodule MatterEx.Crypto.Certificate do
   """
 
   @curve :secp256r1
+  @p256_order 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+  @p256_half_order div(@p256_order, 2)
 
   @doc """
   Generate a new P-256 keypair.
@@ -51,7 +53,7 @@ defmodule MatterEx.Crypto.Certificate do
   def der_signature_to_raw(<<0x30, _len, 0x02, r_len, rest::binary>>) do
     <<r_bytes::binary-size(r_len), 0x02, s_len, s_rest::binary>> = rest
     <<s_bytes::binary-size(s_len), _::binary>> = s_rest
-    pad_to_32(r_bytes) <> pad_to_32(s_bytes)
+    normalize_low_s(pad_to_32(r_bytes) <> pad_to_32(s_bytes))
   end
 
   defp pad_to_32(bytes) when byte_size(bytes) > 32 do
@@ -64,6 +66,21 @@ defmodule MatterEx.Crypto.Certificate do
   end
 
   defp pad_to_32(bytes), do: bytes
+
+  defp normalize_low_s(<<r::binary-32, s::binary-32>>) do
+    s_int = :binary.decode_unsigned(s)
+
+    s =
+      if s_int > @p256_half_order do
+        (@p256_order - s_int)
+        |> :binary.encode_unsigned()
+        |> pad_to_32()
+      else
+        s
+      end
+
+    r <> s
+  end
 
   @doc """
   Verify an ECDSA-SHA256 signature over P-256 (DER-encoded signature).
@@ -106,7 +123,9 @@ defmodule MatterEx.Crypto.Certificate do
     <<0x02, byte_size(padded), padded::binary>>
   end
 
-  defp trim_leading_zeros(<<0, rest::binary>>) when byte_size(rest) > 0, do: trim_leading_zeros(rest)
+  defp trim_leading_zeros(<<0, rest::binary>>) when byte_size(rest) > 0,
+    do: trim_leading_zeros(rest)
+
   defp trim_leading_zeros(bytes), do: bytes
 
   @doc """
@@ -186,10 +205,13 @@ defmodule MatterEx.Crypto.Certificate do
     pub_key_algorithm = der_seq(ec_pubkey <> prime256v1)
 
     # CertificationRequestInfo
-    version = <<0x02, 0x01, 0x00>>  # INTEGER 0
-    subject = der_seq(<<>>)  # empty subject (Matter spec)
+    # INTEGER 0
+    version = <<0x02, 0x01, 0x00>>
+    # empty subject (Matter spec)
+    subject = der_seq(<<>>)
     spki = der_seq(pub_key_algorithm <> der_bit_string(pub))
-    attributes = <<0xA0, 0x00>>  # [0] IMPLICIT SET OF Attribute, empty
+    # [0] IMPLICIT SET OF Attribute, empty
+    attributes = <<0xA0, 0x00>>
 
     cert_req_info = der_seq(version <> subject <> spki <> attributes)
 

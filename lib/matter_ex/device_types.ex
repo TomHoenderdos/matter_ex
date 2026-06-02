@@ -38,7 +38,15 @@ defmodule MatterEx.DeviceTypes do
   @occupancy_sensing 0x0406
   @boolean_state 0x0045
   @power_source 0x002F
+  @general_commissioning 0x0030
+  @network_commissioning 0x0031
+  @general_diagnostics 0x0033
   @switch 0x003B
+  @admin_commissioning 0x003C
+  @operational_credentials 0x003E
+  @group_key_management 0x003F
+  @icd_management 0x0046
+  @access_control 0x001F
   @mode_select 0x0050
   @media_playback 0x0506
   @content_launcher 0x050A
@@ -50,8 +58,18 @@ defmodule MatterEx.DeviceTypes do
     0x0016 => %{
       name: :root_node,
       revision: 2,
-      required_clusters: [@descriptor, 0x0028, 0x003E, 0x0031, 0x0033, 0x003C, 0x003F],
-      optional_clusters: [0x002B, 0x002C, 0x002D, 0x0034, 0x0036, 0x0037, 0x0038]
+      required_clusters: [
+        @descriptor,
+        0x0028,
+        @access_control,
+        @general_commissioning,
+        @network_commissioning,
+        @general_diagnostics,
+        @admin_commissioning,
+        @operational_credentials,
+        @group_key_management
+      ],
+      optional_clusters: [0x002B, 0x002C, 0x002D, 0x0034, 0x0036, 0x0037, 0x0038, @icd_management]
     },
     # On/Off Light
     0x0100 => %{
@@ -71,14 +89,30 @@ defmodule MatterEx.DeviceTypes do
     0x010C => %{
       name: :color_temperature_light,
       revision: 3,
-      required_clusters: [@descriptor, @identify, @groups, @scenes, @on_off, @level_control, @color_control],
+      required_clusters: [
+        @descriptor,
+        @identify,
+        @groups,
+        @scenes,
+        @on_off,
+        @level_control,
+        @color_control
+      ],
       optional_clusters: []
     },
     # Extended Color Light
     0x010D => %{
       name: :extended_color_light,
       revision: 3,
-      required_clusters: [@descriptor, @identify, @groups, @scenes, @on_off, @level_control, @color_control],
+      required_clusters: [
+        @descriptor,
+        @identify,
+        @groups,
+        @scenes,
+        @on_off,
+        @level_control,
+        @color_control
+      ],
       optional_clusters: []
     },
     # On/Off Plug-in Unit
@@ -191,7 +225,14 @@ defmodule MatterEx.DeviceTypes do
       name: :pump,
       revision: 3,
       required_clusters: [@descriptor, @identify, @on_off, @pump_config],
-      optional_clusters: [@level_control, @groups, @scenes, @temp_measurement, @pressure_measurement, @flow_measurement]
+      optional_clusters: [
+        @level_control,
+        @groups,
+        @scenes,
+        @temp_measurement,
+        @pressure_measurement,
+        @flow_measurement
+      ]
     },
     # Mode Select
     0x0027 => %{

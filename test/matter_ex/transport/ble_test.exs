@@ -32,11 +32,11 @@ defmodule MatterEx.Transport.BLETest do
     end
 
     test "TX characteristic UUID" do
-      assert BLE.tx_characteristic_uuid() == "18EE2EF5-263D-4559-959F-4F9C429F9D11"
+      assert BLE.tx_characteristic_uuid() == "18EE2EF5-263D-4559-959F-4F9C429F9D12"
     end
 
     test "RX characteristic UUID" do
-      assert BLE.rx_characteristic_uuid() == "18EE2EF5-263D-4559-959F-4F9C429F9D12"
+      assert BLE.rx_characteristic_uuid() == "18EE2EF5-263D-4559-959F-4F9C429F9D11"
     end
 
     test "additional data UUID" do
@@ -150,6 +150,32 @@ defmodule MatterEx.Transport.BLETest do
       assert state.btp.mtu == 128
       GenServer.stop(pid)
     end
+
+    test "queues handshake request that arrives before subscription connect event" do
+      {pid, handle} = start_ble()
+
+      MockAdapter.simulate_data(handle, handshake_request())
+      Process.sleep(20)
+
+      assert MockAdapter.sent_packets(handle) == []
+      refute_received {:ble_connected, _}
+
+      MockAdapter.simulate_connect(handle)
+      assert_receive {:ble_connected, ^pid}, 100
+      Process.sleep(20)
+
+      packets = MockAdapter.sent_packets(handle)
+      assert length(packets) == 1
+
+      {:response, params} = BTP.decode_handshake(hd(packets))
+      assert params.selected_version == 4
+
+      state = :sys.get_state(pid)
+      assert state.phase == :connected
+      assert state.pending_handshake_data == nil
+
+      GenServer.stop(pid)
+    end
   end
 
   # ── Data Flow ──────────────────────────────────────────────────────
@@ -205,7 +231,7 @@ defmodule MatterEx.Transport.BLETest do
       packets = MockAdapter.sent_packets(handle)
       # First packet is handshake response, rest are data
       data_packets = tl(packets)
-      assert length(data_packets) >= 1
+      assert data_packets != []
 
       # Reassemble to verify
       rx = BTP.new()

@@ -10,62 +10,62 @@ defmodule MatterEx.Transport.BTPTest do
     test "single-fragment data packet (B|E)" do
       packet =
         IO.iodata_to_binary(
-          Packet.encode_data(%{flags: 0x18, ack: nil, seq: 0, msg_len: 5, payload: "hello"})
+          Packet.encode_data(%{flags: 0x05, ack: nil, seq: 0, msg_len: 5, payload: "hello"})
         )
 
-      # flags=0x18 (B|E), seq=0, msg_len=5 LE, "hello"
-      assert <<0x18, 0x00, 0x05, 0x00, "hello">> == packet
+      # flags=0x05 (Start|End), seq=0, msg_len=5 LE, "hello"
+      assert <<0x05, 0x00, 0x05, 0x00, "hello">> == packet
     end
 
     test "beginning-only fragment (B flag)" do
       packet =
         IO.iodata_to_binary(
-          Packet.encode_data(%{flags: 0x10, ack: nil, seq: 0, msg_len: 100, payload: "abc"})
+          Packet.encode_data(%{flags: 0x01, ack: nil, seq: 0, msg_len: 100, payload: "abc"})
         )
 
-      assert <<0x10, 0x00, 100, 0x00, "abc">> == packet
+      assert <<0x01, 0x00, 100, 0x00, "abc">> == packet
     end
 
     test "middle fragment (no B, no E)" do
       packet =
         IO.iodata_to_binary(
-          Packet.encode_data(%{flags: 0x00, ack: nil, seq: 1, msg_len: nil, payload: "xyz"})
+          Packet.encode_data(%{flags: 0x02, ack: nil, seq: 1, msg_len: nil, payload: "xyz"})
         )
 
-      assert <<0x00, 0x01, "xyz">> == packet
+      assert <<0x02, 0x01, "xyz">> == packet
     end
 
     test "ending fragment (E flag)" do
       packet =
         IO.iodata_to_binary(
-          Packet.encode_data(%{flags: 0x08, ack: nil, seq: 2, msg_len: nil, payload: "end"})
+          Packet.encode_data(%{flags: 0x06, ack: nil, seq: 2, msg_len: nil, payload: "end"})
         )
 
-      assert <<0x08, 0x02, "end">> == packet
+      assert <<0x06, 0x02, "end">> == packet
     end
 
     test "data packet with ack" do
       packet =
         IO.iodata_to_binary(
-          Packet.encode_data(%{flags: 0x1C, ack: 5, seq: 3, msg_len: 10, payload: "hi"})
+          Packet.encode_data(%{flags: 0x0D, ack: 5, seq: 3, msg_len: 10, payload: "hi"})
         )
 
-      # flags=0x1C (B|E|A), ack=5, seq=3, msg_len=10 LE, "hi"
-      assert <<0x1C, 0x05, 0x03, 0x0A, 0x00, "hi">> == packet
+      # flags=0x0D (Start|End|Ack), ack=5, seq=3, msg_len=10 LE, "hi"
+      assert <<0x0D, 0x05, 0x03, 0x0A, 0x00, "hi">> == packet
     end
 
     test "ack-only packet" do
       packet = IO.iodata_to_binary(Packet.encode_ack(42))
-      assert <<0x04, 42>> == packet
+      assert <<0x08, 42, 0>> == packet
     end
 
     test "empty payload" do
       packet =
         IO.iodata_to_binary(
-          Packet.encode_data(%{flags: 0x18, ack: nil, seq: 0, msg_len: 0, payload: <<>>})
+          Packet.encode_data(%{flags: 0x05, ack: nil, seq: 0, msg_len: 0, payload: <<>>})
         )
 
-      assert <<0x18, 0x00, 0x00, 0x00>> == packet
+      assert <<0x05, 0x00, 0x00, 0x00>> == packet
     end
   end
 
@@ -74,31 +74,31 @@ defmodule MatterEx.Transport.BTPTest do
   describe "packet decoding" do
     test "decode single-fragment (B|E)" do
       assert {:data, %{beginning: true, ending: true, seq: 0, msg_len: 5, payload: "hello"}} =
-               Packet.decode(<<0x18, 0x00, 0x05, 0x00, "hello">>)
+               Packet.decode(<<0x05, 0x00, 0x05, 0x00, "hello">>)
     end
 
     test "decode beginning-only" do
       assert {:data, %{beginning: true, ending: false, seq: 0, msg_len: 100, payload: "abc"}} =
-               Packet.decode(<<0x10, 0x00, 100, 0x00, "abc">>)
+               Packet.decode(<<0x01, 0x00, 100, 0x00, "abc">>)
     end
 
     test "decode middle fragment" do
       assert {:data, %{beginning: false, ending: false, seq: 1, msg_len: nil, payload: "xyz"}} =
-               Packet.decode(<<0x00, 0x01, "xyz">>)
+               Packet.decode(<<0x02, 0x01, "xyz">>)
     end
 
     test "decode ending fragment" do
       assert {:data, %{beginning: false, ending: true, seq: 2, msg_len: nil, payload: "end"}} =
-               Packet.decode(<<0x08, 0x02, "end">>)
+               Packet.decode(<<0x06, 0x02, "end">>)
     end
 
     test "decode data with ack" do
       assert {:data, %{ack: 5, seq: 3, beginning: true, ending: true}} =
-               Packet.decode(<<0x1C, 0x05, 0x03, 0x0A, 0x00, "hi">>)
+               Packet.decode(<<0x0D, 0x05, 0x03, 0x0A, 0x00, "hi">>)
     end
 
     test "decode ack-only" do
-      assert {:ack_only, 42} = Packet.decode(<<0x04, 42>>)
+      assert {:ack_only, 42} = Packet.decode(<<0x08, 42, 0>>)
     end
 
     test "invalid packet" do
@@ -110,8 +110,10 @@ defmodule MatterEx.Transport.BTPTest do
 
   describe "packet encode/decode roundtrip" do
     test "single-fragment roundtrip" do
-      fields = %{flags: 0x18, ack: nil, seq: 7, msg_len: 3, payload: "abc"}
-      {:data, decoded} = fields |> Packet.encode_data() |> IO.iodata_to_binary() |> Packet.decode()
+      fields = %{flags: 0x05, ack: nil, seq: 7, msg_len: 3, payload: "abc"}
+
+      {:data, decoded} =
+        fields |> Packet.encode_data() |> IO.iodata_to_binary() |> Packet.decode()
 
       assert decoded.seq == 7
       assert decoded.msg_len == 3
@@ -352,7 +354,7 @@ defmodule MatterEx.Transport.BTPTest do
       # Fabricate a packet with wrong sequence number
       bad_packet =
         IO.iodata_to_binary(
-          Packet.encode_data(%{flags: 0x08, ack: nil, seq: 99, msg_len: nil, payload: "x"})
+          Packet.encode_data(%{flags: 0x06, ack: nil, seq: 99, msg_len: nil, payload: "x"})
         )
 
       assert {:error, :sequence_gap} = BTP.receive_segment(rx, bad_packet)
@@ -363,7 +365,7 @@ defmodule MatterEx.Transport.BTPTest do
 
       mid_packet =
         IO.iodata_to_binary(
-          Packet.encode_data(%{flags: 0x00, ack: nil, seq: 0, msg_len: nil, payload: "x"})
+          Packet.encode_data(%{flags: 0x02, ack: nil, seq: 0, msg_len: nil, payload: "x"})
         )
 
       assert {:error, :unexpected_continuation} = BTP.receive_segment(rx, mid_packet)
@@ -419,7 +421,7 @@ defmodule MatterEx.Transport.BTPTest do
     test "handshake request encoding" do
       binary = BTP.handshake_request()
       assert {:request, params} = BTP.decode_handshake(binary)
-      assert params.mtu == 247
+      assert params.mtu == 244
       assert params.window_size == 6
     end
 
@@ -441,7 +443,7 @@ defmodule MatterEx.Transport.BTPTest do
     test "handshake response with defaults" do
       binary = BTP.handshake_response(4)
       assert {:response, params} = BTP.decode_handshake(binary)
-      assert params.mtu == 247
+      assert params.mtu == 244
       assert params.window_size == 6
     end
 
@@ -449,16 +451,23 @@ defmodule MatterEx.Transport.BTPTest do
       assert {:error, :not_a_handshake} = BTP.decode_handshake(<<0x18, 0x00, 0x05, 0x00, "x">>)
     end
 
+    test "decodes chip-tool capabilities request observed on Linux" do
+      assert {:request, params} = BTP.decode_handshake(<<0x65, 0x6C, 0x04, 0, 0, 0, 0, 6>>)
+      assert params.versions == <<4, 0, 0, 0>>
+      assert params.mtu == 0
+      assert params.window_size == 6
+    end
+
     test "handshake request binary format" do
       binary = BTP.handshake_request(versions: <<1, 2, 3, 4>>, mtu: 247, window_size: 6)
-      # flags=0x03 (H|M), opcode=0x6C, versions, mtu=247 LE (0xF7, 0x00), ws=6
-      assert <<0x03, 0x6C, 1, 2, 3, 4, 0xF7, 0x00, 6>> == binary
+      # magic=0x65,0x6C, versions, mtu=247 LE (0xF7, 0x00), ws=6
+      assert <<0x65, 0x6C, 1, 2, 3, 4, 0xF7, 0x00, 6>> == binary
     end
 
     test "handshake response binary format" do
       binary = BTP.handshake_response(4, mtu: 247, window_size: 6)
-      # flags=0x03, opcode=0x6C, version=4 LE (0x04, 0x00), mtu=247 LE, ws=6
-      assert <<0x03, 0x6C, 0x04, 0x00, 0xF7, 0x00, 6>> == binary
+      # magic=0x65,0x6C, version=4, mtu=247 LE, ws=6
+      assert <<0x65, 0x6C, 0x04, 0xF7, 0x00, 6>> == binary
     end
   end
 
@@ -466,11 +475,11 @@ defmodule MatterEx.Transport.BTPTest do
 
   describe "encode_ack" do
     test "encodes ack packet" do
-      assert <<0x04, 0>> == BTP.encode_ack(0)
+      assert <<0x08, 0, 0>> == BTP.encode_ack(0)
     end
 
     test "ack at boundary" do
-      assert <<0x04, 255>> == BTP.encode_ack(255)
+      assert <<0x08, 255, 0>> == BTP.encode_ack(255)
     end
 
     test "ack roundtrip through receive_segment" do
@@ -485,7 +494,7 @@ defmodule MatterEx.Transport.BTPTest do
   describe "state" do
     test "new/0 defaults" do
       state = BTP.new()
-      assert state.mtu == 247
+      assert state.mtu == 244
       assert state.window_size == 6
       assert state.tx_seq == 0
       assert state.rx_seq == nil

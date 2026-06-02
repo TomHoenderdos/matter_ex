@@ -99,7 +99,8 @@ defmodule MatterEx.Cluster do
       @behaviour MatterEx.Cluster
       use GenServer
 
-      import MatterEx.Cluster, only: [attribute: 4, attribute: 5, command: 3, command: 4, event: 3]
+      import MatterEx.Cluster,
+        only: [attribute: 4, attribute: 5, command: 3, command: 4, event: 3]
 
       Module.register_attribute(__MODULE__, :matter_attributes, accumulate: true)
       Module.register_attribute(__MODULE__, :matter_commands, accumulate: true)
@@ -144,8 +145,12 @@ defmodule MatterEx.Cluster do
         attr = Enum.find(attribute_defs(), &(&1.name == name))
 
         cond do
-          attr == nil -> {:reply, {:error, :unsupported_attribute}, state}
-          !attr.writable -> {:reply, {:error, :unsupported_write}, state}
+          attr == nil ->
+            {:reply, {:error, :unsupported_attribute}, state}
+
+          !attr.writable ->
+            {:reply, {:error, :unsupported_write}, state}
+
           true ->
             case MatterEx.Cluster.validate_constraint(attr, value) do
               :ok ->
@@ -169,7 +174,10 @@ defmodule MatterEx.Cluster do
 
         if cmd do
           MatterEx.Cluster.dispatch_command_reply(
-            __MODULE__, name, params, state
+            __MODULE__,
+            name,
+            params,
+            state
           )
         else
           {:reply, {:error, :unsupported_command}, state}
@@ -235,8 +243,21 @@ defmodule MatterEx.Cluster do
         global_attrs
       else
         attr_list_value = Enum.sort([0xFFFB | all_attr_ids_so_far])
-        global_attrs ++ [%{id: 0xFFFB, name: :attribute_list, type: :list, default: attr_list_value,
-                          writable: false, fabric_scoped: false, min: nil, max: nil, enum_values: nil}]
+
+        global_attrs ++
+          [
+            %{
+              id: 0xFFFB,
+              name: :attribute_list,
+              type: :list,
+              default: attr_list_value,
+              writable: false,
+              fabric_scoped: false,
+              min: nil,
+              max: nil,
+              enum_values: nil
+            }
+          ]
       end
 
     attributes = user_attributes ++ global_attrs
@@ -263,8 +284,20 @@ defmodule MatterEx.Cluster do
     if MapSet.member?(declared_ids, id) do
       acc
     else
-      acc ++ [%{id: id, name: name, type: type, default: default, writable: false,
-                fabric_scoped: false, min: nil, max: nil, enum_values: nil}]
+      acc ++
+        [
+          %{
+            id: id,
+            name: name,
+            type: type,
+            default: default,
+            writable: false,
+            fabric_scoped: false,
+            min: nil,
+            max: nil,
+            enum_values: nil
+          }
+        ]
     end
   end
 
@@ -286,6 +319,7 @@ defmodule MatterEx.Cluster do
 
   defmacro attribute(id, name, type, default_opts, write_opts) do
     all_opts = default_opts ++ write_opts
+
     quote do
       @matter_attributes %{
         id: unquote(id),

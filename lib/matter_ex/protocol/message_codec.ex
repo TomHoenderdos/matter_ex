@@ -7,8 +7,8 @@ defmodule MatterEx.Protocol.MessageCodec do
   and a 16-byte MIC tag.
   """
 
-  alias MatterEx.Protocol.MessageCodec.{Header, ProtoHeader}
   alias MatterEx.Crypto.Session
+  alias MatterEx.Protocol.MessageCodec.{Header, ProtoHeader}
 
   @mic_size 16
 

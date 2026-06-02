@@ -28,7 +28,14 @@ defmodule MatterEx.IM.EventStore do
     GenServer.start_link(__MODULE__, opts, name: opts[:name])
   end
 
-  @spec emit(GenServer.name(), non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer(), map()) :: :ok
+  @spec emit(
+          GenServer.name(),
+          non_neg_integer(),
+          non_neg_integer(),
+          non_neg_integer(),
+          non_neg_integer(),
+          map()
+        ) :: :ok
   def emit(name, endpoint, cluster_id, event_id, priority, data) do
     GenServer.call(name, {:emit, endpoint, cluster_id, event_id, priority, data})
   end
@@ -66,8 +73,7 @@ defmodule MatterEx.IM.EventStore do
   def handle_call({:read, event_paths, event_min}, _from, state) do
     results =
       state.events
-      |> Enum.filter(fn e -> e.number >= event_min end)
-      |> Enum.filter(fn e -> matches_any_path?(e, event_paths) end)
+      |> Enum.filter(fn e -> e.number >= event_min and matches_any_path?(e, event_paths) end)
 
     {:reply, results, state}
   end

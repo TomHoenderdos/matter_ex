@@ -11,9 +11,9 @@ defmodule MatterEx.Cluster.PowerTopology do
   use MatterEx.Cluster, id: 0x009C, name: :power_topology
 
   # AvailableEndpoints: list of endpoint IDs that can deliver power
-  attribute 0x0000, :available_endpoints, :list, default: []
+  attribute(0x0000, :available_endpoints, :list, default: [])
   # ActiveEndpoints: list of currently active power-delivering endpoints
-  attribute 0x0001, :active_endpoints, :list, default: []
-  attribute 0xFFFC, :feature_map, :uint32, default: 0
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 1
+  attribute(0x0001, :active_endpoints, :list, default: [])
+  attribute(0xFFFC, :feature_map, :uint32, default: 0)
+  attribute(0xFFFD, :cluster_revision, :uint16, default: 1)
 end

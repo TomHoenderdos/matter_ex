@@ -12,7 +12,7 @@ defmodule MatterEx.SetupPayloadTest do
           vendor_id: 0xFFF1,
           product_id: 0x8000,
           discriminator: 3840,
-          passcode: 20202021,
+          passcode: 20_202_021,
           flow: 0,
           discovery: 2
         )
@@ -26,7 +26,7 @@ defmodule MatterEx.SetupPayloadTest do
           vendor_id: 0xFFF1,
           product_id: 0x8001,
           discriminator: 3840,
-          passcode: 20202021,
+          passcode: 20_202_021,
           flow: 0,
           discovery: 2
         )
@@ -40,7 +40,7 @@ defmodule MatterEx.SetupPayloadTest do
           vendor_id: 0xFFF1,
           product_id: 0x8001,
           discriminator: 3840,
-          passcode: 20202021
+          passcode: 20_202_021
         )
 
       assert String.length(payload) == 22
@@ -52,7 +52,7 @@ defmodule MatterEx.SetupPayloadTest do
           vendor_id: 0xFFF1,
           product_id: 0x8001,
           discriminator: 3840,
-          passcode: 20202021
+          passcode: 20_202_021
         )
 
       "MT:" <> encoded = payload
@@ -70,7 +70,7 @@ defmodule MatterEx.SetupPayloadTest do
           vendor_id: 0xFFF1,
           product_id: 0x8001,
           discriminator: 3840,
-          passcode: 20202021
+          passcode: 20_202_021
         )
 
       payload2 =
@@ -78,7 +78,7 @@ defmodule MatterEx.SetupPayloadTest do
           vendor_id: 0xFFF1,
           product_id: 0x8001,
           discriminator: 3840,
-          passcode: 12345679
+          passcode: 12_345_679
         )
 
       refute payload1 == payload2
@@ -90,7 +90,7 @@ defmodule MatterEx.SetupPayloadTest do
           vendor_id: 0xFFF1,
           product_id: 0x8001,
           discriminator: 3840,
-          passcode: 20202021
+          passcode: 20_202_021
         )
 
       payload2 =
@@ -98,7 +98,7 @@ defmodule MatterEx.SetupPayloadTest do
           vendor_id: 0xFFF1,
           product_id: 0x8001,
           discriminator: 100,
-          passcode: 20202021
+          passcode: 20_202_021
         )
 
       refute payload1 == payload2
@@ -124,7 +124,7 @@ defmodule MatterEx.SetupPayloadTest do
           vendor_id: 0xFFFF,
           product_id: 0xFFFF,
           discriminator: 0xFFF,
-          passcode: 99999998,
+          passcode: 99_999_998,
           flow: 3,
           discovery: 0xFF
         )
@@ -133,11 +133,26 @@ defmodule MatterEx.SetupPayloadTest do
     end
 
     test "rejects invalid passcode" do
-      for invalid <- [0, 11111111, 22222222, 33333333, 44444444, 55555555,
-                      66666666, 77777777, 88888888, 99999999, 12345678, 87654321] do
+      for invalid <- [
+            0,
+            11_111_111,
+            22_222_222,
+            33_333_333,
+            44_444_444,
+            55_555_555,
+            66_666_666,
+            77_777_777,
+            88_888_888,
+            99_999_999,
+            12_345_678,
+            87_654_321
+          ] do
         assert_raise ArgumentError, fn ->
           SetupPayload.qr_code_payload(
-            vendor_id: 0, product_id: 0, discriminator: 0, passcode: invalid
+            vendor_id: 0,
+            product_id: 0,
+            discriminator: 0,
+            passcode: invalid
           )
         end
       end
@@ -146,19 +161,28 @@ defmodule MatterEx.SetupPayloadTest do
     test "rejects out-of-range values" do
       assert_raise ArgumentError, ~r/discriminator/, fn ->
         SetupPayload.qr_code_payload(
-          vendor_id: 0, product_id: 0, discriminator: 5000, passcode: 20202021
+          vendor_id: 0,
+          product_id: 0,
+          discriminator: 5000,
+          passcode: 20_202_021
         )
       end
 
       assert_raise ArgumentError, ~r/vendor_id/, fn ->
         SetupPayload.qr_code_payload(
-          vendor_id: 0x1FFFF, product_id: 0, discriminator: 0, passcode: 20202021
+          vendor_id: 0x1FFFF,
+          product_id: 0,
+          discriminator: 0,
+          passcode: 20_202_021
         )
       end
 
       assert_raise ArgumentError, ~r/passcode/, fn ->
         SetupPayload.qr_code_payload(
-          vendor_id: 0, product_id: 0, discriminator: 0, passcode: -1
+          vendor_id: 0,
+          product_id: 0,
+          discriminator: 0,
+          passcode: -1
         )
       end
     end
@@ -169,7 +193,7 @@ defmodule MatterEx.SetupPayloadTest do
           vendor_id: 0xFFF1,
           product_id: 0x8001,
           discriminator: 3840,
-          passcode: 20202021,
+          passcode: 20_202_021,
           flow: 0,
           discovery: 2
         )
@@ -179,7 +203,7 @@ defmodule MatterEx.SetupPayloadTest do
           vendor_id: 0xFFF1,
           product_id: 0x8001,
           discriminator: 3840,
-          passcode: 20202021
+          passcode: 20_202_021
         )
 
       assert payload_explicit == payload_default
@@ -188,43 +212,43 @@ defmodule MatterEx.SetupPayloadTest do
 
   describe "manual_pairing_code/1" do
     test "standard test vector (disc=3840, passcode=20202021)" do
-      assert SetupPayload.manual_pairing_code(discriminator: 3840, passcode: 20202021) ==
+      assert SetupPayload.manual_pairing_code(discriminator: 3840, passcode: 20_202_021) ==
                "34970112332"
     end
 
     test "second test vector (disc=0, passcode=20202021)" do
       # discriminator 0 → short_disc=0 → digit1=0, chunk2=passcode_low, chunk3=passcode_high
-      code = SetupPayload.manual_pairing_code(discriminator: 0, passcode: 20202021)
+      code = SetupPayload.manual_pairing_code(discriminator: 0, passcode: 20_202_021)
       assert String.length(code) == 11
       assert String.at(code, 0) == "0"
       # Verify round-trip: extract chunks and reconstruct passcode
       <<d1::binary-1, c2::binary-5, c3::binary-4, _check::binary-1>> = code
       {chunk2, ""} = Integer.parse(c2)
       {chunk3, ""} = Integer.parse(c3)
-      short_disc = (chunk2 >>> 14) &&& 0xF
+      short_disc = chunk2 >>> 14 &&& 0xF
       passcode_low = chunk2 &&& 0x3FFF
       passcode_high = chunk3 &&& 0x1FFF
       assert short_disc == 0
-      assert Bitwise.bor(Bitwise.bsl(passcode_high, 14), passcode_low) == 20202021
+      assert Bitwise.bor(Bitwise.bsl(passcode_high, 14), passcode_low) == 20_202_021
       {digit1, ""} = Integer.parse(d1)
       assert digit1 == 0
     end
 
     test "produces 11-digit string" do
-      code = SetupPayload.manual_pairing_code(discriminator: 3840, passcode: 20202021)
+      code = SetupPayload.manual_pairing_code(discriminator: 3840, passcode: 20_202_021)
       assert String.length(code) == 11
       assert String.match?(code, ~r/^\d{11}$/)
     end
 
     test "different passcodes produce different codes" do
-      code1 = SetupPayload.manual_pairing_code(discriminator: 3840, passcode: 20202021)
-      code2 = SetupPayload.manual_pairing_code(discriminator: 3840, passcode: 12345679)
+      code1 = SetupPayload.manual_pairing_code(discriminator: 3840, passcode: 20_202_021)
+      code2 = SetupPayload.manual_pairing_code(discriminator: 3840, passcode: 12_345_679)
       refute code1 == code2
     end
 
     test "different discriminators produce different codes" do
-      code1 = SetupPayload.manual_pairing_code(discriminator: 3840, passcode: 20202021)
-      code2 = SetupPayload.manual_pairing_code(discriminator: 0, passcode: 20202021)
+      code1 = SetupPayload.manual_pairing_code(discriminator: 3840, passcode: 20_202_021)
+      code2 = SetupPayload.manual_pairing_code(discriminator: 0, passcode: 20_202_021)
       refute code1 == code2
     end
 
@@ -233,20 +257,20 @@ defmodule MatterEx.SetupPayloadTest do
       # disc 3840 → short_disc = 15 → top 2 bits = 3
 
       # Standard flow: 0 << 2 | 3 = 3
-      code = SetupPayload.manual_pairing_code(discriminator: 3840, passcode: 20202021, flow: 0)
+      code = SetupPayload.manual_pairing_code(discriminator: 3840, passcode: 20_202_021, flow: 0)
       assert String.at(code, 0) == "3"
 
       # Custom flow: 1 << 2 | 3 = 7
-      code = SetupPayload.manual_pairing_code(discriminator: 3840, passcode: 20202021, flow: 2)
+      code = SetupPayload.manual_pairing_code(discriminator: 3840, passcode: 20_202_021, flow: 2)
       assert String.at(code, 0) == "7"
 
       # disc 0 → short_disc = 0 → standard flow digit = 0
-      code = SetupPayload.manual_pairing_code(discriminator: 0, passcode: 20202021, flow: 0)
+      code = SetupPayload.manual_pairing_code(discriminator: 0, passcode: 20_202_021, flow: 0)
       assert String.at(code, 0) == "0"
     end
 
     test "boundary: max discriminator" do
-      code = SetupPayload.manual_pairing_code(discriminator: 4095, passcode: 20202021)
+      code = SetupPayload.manual_pairing_code(discriminator: 4095, passcode: 20_202_021)
       assert String.length(code) == 11
       assert String.match?(code, ~r/^\d{11}$/)
     end
@@ -257,13 +281,13 @@ defmodule MatterEx.SetupPayloadTest do
       end
 
       assert_raise ArgumentError, fn ->
-        SetupPayload.manual_pairing_code(discriminator: 0, passcode: 11111111)
+        SetupPayload.manual_pairing_code(discriminator: 0, passcode: 11_111_111)
       end
     end
 
     test "rejects out-of-range discriminator" do
       assert_raise ArgumentError, fn ->
-        SetupPayload.manual_pairing_code(discriminator: 4096, passcode: 20202021)
+        SetupPayload.manual_pairing_code(discriminator: 4096, passcode: 20_202_021)
       end
     end
   end

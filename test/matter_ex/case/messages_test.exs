@@ -42,6 +42,38 @@ defmodule MatterEx.CASE.MessagesTest do
       assert decoded.responder_eph_pub == eph_pub
       assert decoded.encrypted2 == encrypted2
     end
+
+    test "session parameters use connectedhomeip integer widths" do
+      random = :binary.copy(<<1>>, 32)
+      eph_pub = :binary.copy(<<2>>, 65)
+      encrypted2 = :binary.copy(<<3>>, 32)
+
+      encoded =
+        Messages.encode_sigma2(
+          random,
+          99,
+          eph_pub,
+          encrypted2,
+          Messages.default_session_parameters()
+        )
+
+      assert {:ok, decoded} = Messages.decode_sigma2(encoded)
+      assert decoded.responder_session_params[7] == 1
+
+      session_params =
+        encoded
+        |> :binary.split(<<0x35, 0x05>>)
+        |> List.last()
+
+      assert session_params =~ <<0x26, 0x01, 500::little-32>>
+      assert session_params =~ <<0x26, 0x02, 300::little-32>>
+      assert session_params =~ <<0x26, 0x03, 4000::little-32>>
+      assert session_params =~ <<0x25, 0x04, 19::little-16>>
+      assert session_params =~ <<0x25, 0x05, 12::little-16>>
+      assert session_params =~ <<0x26, 0x06, 0x01050000::little-32>>
+      assert session_params =~ <<0x25, 0x07, 1::little-16>>
+      assert session_params =~ <<0x25, 0x07, 1::little-16>>
+    end
   end
 
   describe "Sigma3 encode/decode" do
@@ -88,6 +120,13 @@ defmodule MatterEx.CASE.MessagesTest do
       assert decoded.signature == signature
       assert decoded.resumption_id == resumption_id
     end
+
+    test "omits empty ICAC" do
+      encoded = Messages.encode_tbe_data2("test_noc", "", <<1::512>>, <<2::128>>)
+
+      decoded = MatterEx.TLV.decode(encoded)
+      refute Map.has_key?(decoded, 2)
+    end
   end
 
   describe "TBEData3 encode/decode" do
@@ -115,6 +154,13 @@ defmodule MatterEx.CASE.MessagesTest do
       assert decoded.icac == nil
       assert decoded.signature == signature
     end
+
+    test "omits empty ICAC" do
+      encoded = Messages.encode_tbe_data3("test_noc", "", <<1::512>>)
+
+      decoded = MatterEx.TLV.decode(encoded)
+      refute Map.has_key?(decoded, 2)
+    end
   end
 
   describe "NOC encode/decode" do
@@ -129,6 +175,33 @@ defmodule MatterEx.CASE.MessagesTest do
       assert decoded.node_id == node_id
       assert decoded.fabric_id == fabric_id
       assert decoded.public_key == pub
+      assert decoded.case_authenticated_tags == []
+    end
+
+    test "Matter TLV NOC extracts CASE Authenticated Tags from subject" do
+      {pub, _priv} = Certificate.generate_keypair()
+      node_id = 12345
+      fabric_id = 1
+      cat = 0x5C240001
+
+      encoded =
+        MatterEx.TLV.encode(%{
+          6 =>
+            {:struct,
+             %{
+               17 => {:uint, node_id},
+               21 => {:uint, fabric_id},
+               22 => {:uint, cat}
+             }},
+          9 => {:bytes, pub}
+        })
+
+      assert {:ok, decoded} = Messages.decode_noc(encoded)
+
+      assert decoded.node_id == node_id
+      assert decoded.fabric_id == fabric_id
+      assert decoded.public_key == pub
+      assert decoded.case_authenticated_tags == [cat]
     end
 
     test "X.509 DER NOC extracts node_id, fabric_id, and public_key" do
@@ -142,6 +215,7 @@ defmodule MatterEx.CASE.MessagesTest do
       assert decoded.node_id == node_id
       assert decoded.fabric_id == fabric_id
       assert decoded.public_key == pub
+      assert decoded.case_authenticated_tags == []
     end
 
     test "X.509 DER NOC with large IDs" do
@@ -269,6 +343,17 @@ defmodule MatterEx.CASE.MessagesTest do
       assert is_binary(tbs)
       assert byte_size(tbs) > 0
     end
+
+    test "build_tbs omits empty ICAC" do
+      noc = "test_noc"
+      eph_pub = :crypto.strong_rand_bytes(65)
+      peer_pub = :crypto.strong_rand_bytes(65)
+
+      tbs = Messages.build_tbs(noc, "", eph_pub, peer_pub)
+
+      decoded = MatterEx.TLV.decode(tbs)
+      refute Map.has_key?(decoded, 2)
+    end
   end
 
   # ── X.509 DER test cert builder ──────────────────────────────────
@@ -286,33 +371,32 @@ defmodule MatterEx.CASE.MessagesTest do
 
     sig_algo = der_seq(der_oid(@oid_ecdsa_sha256))
 
-    issuer = der_seq(
-      der_set(der_seq(der_oid(<<0x55, 0x04, 0x03>>) <> der_utf8("Test CA")))
-    )
+    issuer = der_seq(der_set(der_seq(der_oid(<<0x55, 0x04, 0x03>>) <> der_utf8("Test CA"))))
 
-    validity = der_seq(
-      der_utctime("250101000000Z") <> der_utctime("350101000000Z")
-    )
+    validity = der_seq(der_utctime("250101000000Z") <> der_utctime("350101000000Z"))
 
-    subject = der_seq(
-      der_set(der_seq(der_oid(@oid_matter_node_id) <> der_utf8(node_hex))) <>
-      der_set(der_seq(der_oid(@oid_matter_fabric_id) <> der_utf8(fabric_hex)))
-    )
+    subject =
+      der_seq(
+        der_set(der_seq(der_oid(@oid_matter_node_id) <> der_utf8(node_hex))) <>
+          der_set(der_seq(der_oid(@oid_matter_fabric_id) <> der_utf8(fabric_hex)))
+      )
 
-    spki = der_seq(
-      der_seq(der_oid(@oid_ec_pubkey) <> der_oid(@oid_prime256v1)) <>
-      der_bitstring(public_key)
-    )
+    spki =
+      der_seq(
+        der_seq(der_oid(@oid_ec_pubkey) <> der_oid(@oid_prime256v1)) <>
+          der_bitstring(public_key)
+      )
 
-    tbs = der_seq(
-      der_explicit(0, der_int(2)) <>
-      der_int(1) <>
-      sig_algo <>
-      issuer <>
-      validity <>
-      subject <>
-      spki
-    )
+    tbs =
+      der_seq(
+        der_explicit(0, der_int(2)) <>
+          der_int(1) <>
+          sig_algo <>
+          issuer <>
+          validity <>
+          subject <>
+          spki
+      )
 
     # Fake signature (not validated during NOC parsing)
     fake_sig = :crypto.strong_rand_bytes(64)

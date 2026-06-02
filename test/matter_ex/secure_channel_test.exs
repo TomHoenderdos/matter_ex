@@ -1,12 +1,12 @@
 defmodule MatterEx.SecureChannelTest do
   use ExUnit.Case, async: true
 
-  alias MatterEx.SecureChannel
-  alias MatterEx.Session
   alias MatterEx.PASE
   alias MatterEx.Protocol.MessageCodec.ProtoHeader
+  alias MatterEx.SecureChannel
+  alias MatterEx.Session
 
-  @passcode 20202021
+  @passcode 20_202_021
   @salt :crypto.strong_rand_bytes(32)
   @iterations 1000
 
@@ -38,15 +38,21 @@ defmodule MatterEx.SecureChannelTest do
     test "initiator and responder get opposite encrypt/decrypt keys" do
       ke = :crypto.strong_rand_bytes(16)
 
-      initiator = Session.new(
-        local_session_id: 1, peer_session_id: 2,
-        encryption_key: ke, role: :initiator
-      )
+      initiator =
+        Session.new(
+          local_session_id: 1,
+          peer_session_id: 2,
+          encryption_key: ke,
+          role: :initiator
+        )
 
-      responder = Session.new(
-        local_session_id: 2, peer_session_id: 1,
-        encryption_key: ke, role: :responder
-      )
+      responder =
+        Session.new(
+          local_session_id: 2,
+          peer_session_id: 1,
+          encryption_key: ke,
+          role: :responder
+        )
 
       # Initiator encrypts with I2R, responder decrypts with I2R
       assert initiator.encrypt_key == responder.decrypt_key
@@ -56,10 +62,15 @@ defmodule MatterEx.SecureChannelTest do
 
     test "session stores node IDs" do
       ke = :crypto.strong_rand_bytes(16)
-      session = Session.new(
-        local_session_id: 1, peer_session_id: 2,
-        encryption_key: ke, local_node_id: 0x1234, peer_node_id: 0x5678
-      )
+
+      session =
+        Session.new(
+          local_session_id: 1,
+          peer_session_id: 2,
+          encryption_key: ke,
+          local_node_id: 0x1234,
+          peer_node_id: 0x5678
+        )
 
       assert session.local_node_id == 0x1234
       assert session.peer_node_id == 0x5678
@@ -67,9 +78,13 @@ defmodule MatterEx.SecureChannelTest do
 
     test "node IDs default to 0" do
       ke = :crypto.strong_rand_bytes(16)
-      session = Session.new(
-        local_session_id: 1, peer_session_id: 2, encryption_key: ke
-      )
+
+      session =
+        Session.new(
+          local_session_id: 1,
+          peer_session_id: 2,
+          encryption_key: ke
+        )
 
       assert session.local_node_id == 0
       assert session.peer_node_id == 0
@@ -81,16 +96,23 @@ defmodule MatterEx.SecureChannelTest do
   describe "SecureChannel.seal" do
     setup do
       ke = :crypto.strong_rand_bytes(16)
-      session = Session.new(
-        local_session_id: 1, peer_session_id: 2,
-        encryption_key: ke, role: :initiator
-      )
+
+      session =
+        Session.new(
+          local_session_id: 1,
+          peer_session_id: 2,
+          encryption_key: ke,
+          role: :initiator
+        )
+
       %{session: session}
     end
 
     test "produces binary frame", %{session: session} do
       proto = %ProtoHeader{
-        opcode: 0x05, exchange_id: 1, protocol_id: 0x0001,
+        opcode: 0x05,
+        exchange_id: 1,
+        protocol_id: 0x0001,
         payload: <<"hello">>
       }
 
@@ -101,7 +123,9 @@ defmodule MatterEx.SecureChannelTest do
 
     test "counter increments after each seal", %{session: session} do
       proto = %ProtoHeader{
-        opcode: 0x05, exchange_id: 1, protocol_id: 0x0001,
+        opcode: 0x05,
+        exchange_id: 1,
+        protocol_id: 0x0001,
         payload: <<"hello">>
       }
 
@@ -115,7 +139,9 @@ defmodule MatterEx.SecureChannelTest do
 
     test "frame starts with valid header", %{session: session} do
       proto = %ProtoHeader{
-        opcode: 0x05, exchange_id: 1, protocol_id: 0x0001,
+        opcode: 0x05,
+        exchange_id: 1,
+        protocol_id: 0x0001,
         payload: <<"test">>
       }
 
@@ -123,7 +149,8 @@ defmodule MatterEx.SecureChannelTest do
 
       # Parse header to verify structure
       {:ok, header, _rest} = MatterEx.Protocol.MessageCodec.Header.decode(frame)
-      assert header.session_id == 2  # peer_session_id
+      # peer_session_id
+      assert header.session_id == 2
       assert header.privacy == false
     end
   end
@@ -134,22 +161,30 @@ defmodule MatterEx.SecureChannelTest do
     setup do
       ke = :crypto.strong_rand_bytes(16)
 
-      sender = Session.new(
-        local_session_id: 1, peer_session_id: 2,
-        encryption_key: ke, role: :initiator
-      )
+      sender =
+        Session.new(
+          local_session_id: 1,
+          peer_session_id: 2,
+          encryption_key: ke,
+          role: :initiator
+        )
 
-      receiver = Session.new(
-        local_session_id: 2, peer_session_id: 1,
-        encryption_key: ke, role: :responder
-      )
+      receiver =
+        Session.new(
+          local_session_id: 2,
+          peer_session_id: 1,
+          encryption_key: ke,
+          role: :responder
+        )
 
       %{sender: sender, receiver: receiver}
     end
 
     test "decrypts frame from seal", %{sender: sender, receiver: receiver} do
       proto = %ProtoHeader{
-        opcode: 0x05, exchange_id: 7, protocol_id: 0x0001,
+        opcode: 0x05,
+        exchange_id: 7,
+        protocol_id: 0x0001,
         payload: <<"test payload">>
       }
 
@@ -162,7 +197,9 @@ defmodule MatterEx.SecureChannelTest do
 
     test "rejects tampered frame", %{sender: sender, receiver: receiver} do
       proto = %ProtoHeader{
-        opcode: 0x05, exchange_id: 1, protocol_id: 0x0001,
+        opcode: 0x05,
+        exchange_id: 1,
+        protocol_id: 0x0001,
         payload: <<"hello">>
       }
 
@@ -175,7 +212,9 @@ defmodule MatterEx.SecureChannelTest do
 
     test "rejects duplicate counter (replay)", %{sender: sender, receiver: receiver} do
       proto = %ProtoHeader{
-        opcode: 0x05, exchange_id: 1, protocol_id: 0x0001,
+        opcode: 0x05,
+        exchange_id: 1,
+        protocol_id: 0x0001,
         payload: <<"hello">>
       }
 
@@ -190,7 +229,9 @@ defmodule MatterEx.SecureChannelTest do
 
     test "rejects wrong session ID", %{sender: sender} do
       proto = %ProtoHeader{
-        opcode: 0x05, exchange_id: 1, protocol_id: 0x0001,
+        opcode: 0x05,
+        exchange_id: 1,
+        protocol_id: 0x0001,
         payload: <<"hello">>
       }
 
@@ -198,21 +239,28 @@ defmodule MatterEx.SecureChannelTest do
 
       # Create receiver with different local_session_id
       ke = :crypto.strong_rand_bytes(16)
-      wrong_receiver = Session.new(
-        local_session_id: 99, peer_session_id: 1,
-        encryption_key: ke, role: :responder
-      )
+
+      wrong_receiver =
+        Session.new(
+          local_session_id: 99,
+          peer_session_id: 1,
+          encryption_key: ke,
+          role: :responder
+        )
 
       assert {:error, :session_mismatch} = SecureChannel.open(wrong_receiver, frame)
     end
 
     test "accepts multiple sequential messages", %{sender: sender, receiver: receiver} do
-      protos = for i <- 1..5 do
-        %ProtoHeader{
-          opcode: 0x05, exchange_id: i, protocol_id: 0x0001,
-          payload: "message #{i}"
-        }
-      end
+      protos =
+        for i <- 1..5 do
+          %ProtoHeader{
+            opcode: 0x05,
+            exchange_id: i,
+            protocol_id: 0x0001,
+            payload: "message #{i}"
+          }
+        end
 
       {sender, receiver} =
         Enum.reduce(protos, {sender, receiver}, fn proto, {s, r} ->
@@ -233,15 +281,21 @@ defmodule MatterEx.SecureChannelTest do
     setup do
       ke = :crypto.strong_rand_bytes(16)
 
-      alice = Session.new(
-        local_session_id: 1, peer_session_id: 2,
-        encryption_key: ke, role: :initiator
-      )
+      alice =
+        Session.new(
+          local_session_id: 1,
+          peer_session_id: 2,
+          encryption_key: ke,
+          role: :initiator
+        )
 
-      bob = Session.new(
-        local_session_id: 2, peer_session_id: 1,
-        encryption_key: ke, role: :responder
-      )
+      bob =
+        Session.new(
+          local_session_id: 2,
+          peer_session_id: 1,
+          encryption_key: ke,
+          role: :responder
+        )
 
       %{alice: alice, bob: bob}
     end
@@ -249,7 +303,9 @@ defmodule MatterEx.SecureChannelTest do
     test "alice sends to bob, bob sends to alice", %{alice: alice, bob: bob} do
       # Alice → Bob
       proto_a = %ProtoHeader{
-        opcode: 0x05, exchange_id: 1, protocol_id: 0x0001,
+        opcode: 0x05,
+        exchange_id: 1,
+        protocol_id: 0x0001,
         payload: <<"from alice">>
       }
 
@@ -259,7 +315,9 @@ defmodule MatterEx.SecureChannelTest do
 
       # Bob → Alice
       proto_b = %ProtoHeader{
-        opcode: 0x05, exchange_id: 1, protocol_id: 0x0001,
+        opcode: 0x05,
+        exchange_id: 1,
+        protocol_id: 0x0001,
         payload: <<"from bob">>
       }
 
@@ -274,32 +332,43 @@ defmodule MatterEx.SecureChannelTest do
   describe "PASE → SecureChannel integration" do
     test "full flow: PASE handshake then encrypted messaging" do
       # Setup PASE
-      device_pase = PASE.new_device(
-        passcode: @passcode, salt: @salt,
-        iterations: @iterations, local_session_id: 1
-      )
+      device_pase =
+        PASE.new_device(
+          passcode: @passcode,
+          salt: @salt,
+          iterations: @iterations,
+          local_session_id: 1
+        )
 
       comm_pase = PASE.new_commissioner(passcode: @passcode, local_session_id: 2)
 
       # Run PASE handshake
       {:send, :pbkdf_param_request, req, comm_pase} = PASE.initiate(comm_pase)
+
       {:reply, :pbkdf_param_response, resp, device_pase} =
         PASE.handle(device_pase, :pbkdf_param_request, req)
+
       {:send, :pase_pake1, pake1, comm_pase} =
         PASE.handle(comm_pase, :pbkdf_param_response, resp)
+
       {:reply, :pase_pake2, pake2, device_pase} =
         PASE.handle(device_pase, :pase_pake1, pake1)
+
       {:send, :pase_pake3, pake3, comm_pase} =
         PASE.handle(comm_pase, :pase_pake2, pake2)
+
       {:established, :status_report, sr, device_session, _device_pase} =
         PASE.handle(device_pase, :pase_pake3, pake3)
+
       {:established, comm_session, _comm_pase} =
         PASE.handle(comm_pase, :status_report, sr)
 
       # Now use the sessions for encrypted messaging
       # Commissioner → Device
       proto = %ProtoHeader{
-        opcode: 0x02, exchange_id: 1, protocol_id: 0x0001,
+        opcode: 0x02,
+        exchange_id: 1,
+        protocol_id: 0x0001,
         payload: <<"read request">>
       }
 
@@ -309,7 +378,9 @@ defmodule MatterEx.SecureChannelTest do
 
       # Device → Commissioner
       reply = %ProtoHeader{
-        opcode: 0x05, exchange_id: 1, protocol_id: 0x0001,
+        opcode: 0x05,
+        exchange_id: 1,
+        protocol_id: 0x0001,
         payload: <<"report data">>
       }
 

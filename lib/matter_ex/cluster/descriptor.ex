@@ -8,9 +8,9 @@ defmodule MatterEx.Cluster.Descriptor do
 
   use MatterEx.Cluster, id: 0x001D, name: :descriptor
 
-  attribute 0x0000, :device_type_list, :list, default: []
-  attribute 0x0001, :server_list, :list, default: []
-  attribute 0x0002, :client_list, :list, default: []
-  attribute 0x0003, :parts_list, :list, default: []
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 1
+  attribute(0x0000, :device_type_list, :list, default: [])
+  attribute(0x0001, :server_list, :list, default: [])
+  attribute(0x0002, :client_list, :list, default: [])
+  attribute(0x0003, :parts_list, :list, default: [])
+  attribute(0xFFFD, :cluster_revision, :uint16, default: 1)
 end

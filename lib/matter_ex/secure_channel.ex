@@ -10,9 +10,9 @@ defmodule MatterEx.SecureChannel do
   - `open/2` — decrypt and verify an incoming frame
   """
 
-  alias MatterEx.Session
   alias MatterEx.Protocol.{Counter, MessageCodec}
   alias MatterEx.Protocol.MessageCodec.{Header, ProtoHeader}
+  alias MatterEx.Session
 
   @doc """
   Encrypt and frame an outgoing message.
@@ -25,6 +25,16 @@ defmodule MatterEx.SecureChannel do
   """
   @spec seal(Session.t(), ProtoHeader.t()) :: {binary(), Session.t()}
   def seal(%Session{} = session, %ProtoHeader{} = proto) do
+    {frame, session, _message_counter} = seal_with_counter(session, proto)
+    {frame, session}
+  end
+
+  @doc """
+  Encrypt and frame an outgoing message, returning the assigned message counter.
+  """
+  @spec seal_with_counter(Session.t(), ProtoHeader.t()) ::
+          {binary(), Session.t(), non_neg_integer()}
+  def seal_with_counter(%Session{} = session, %ProtoHeader{} = proto) do
     {counter_val, new_counter} = Counter.next(session.counter)
 
     header = %Header{
@@ -35,17 +45,19 @@ defmodule MatterEx.SecureChannel do
       session_type: :unicast
     }
 
-    nonce = MessageCodec.build_nonce(
-      encode_security_flags(header),
-      counter_val,
-      session.local_node_id
-    )
+    nonce =
+      MessageCodec.build_nonce(
+        encode_security_flags(header),
+        counter_val,
+        session.local_node_id
+      )
 
-    frame = IO.iodata_to_binary(
-      MessageCodec.encode_encrypted(header, proto, session.encrypt_key, nonce)
-    )
+    frame =
+      IO.iodata_to_binary(
+        MessageCodec.encode_encrypted(header, proto, session.encrypt_key, nonce)
+      )
 
-    {frame, %{session | counter: new_counter}}
+    {frame, %{session | counter: new_counter}, counter_val}
   end
 
   @doc """
@@ -56,17 +68,20 @@ defmodule MatterEx.SecureChannel do
 
   Returns `{:ok, message, updated_session}` or `{:error, reason}`.
   """
-  @spec open(Session.t(), binary()) :: {:ok, MessageCodec.message(), Session.t()} | {:error, atom()}
+  @spec open(Session.t(), binary()) ::
+          {:ok, MessageCodec.message(), Session.t()} | {:error, atom()}
   def open(%Session{} = session, frame) when is_binary(frame) do
     with {:ok, header, _rest} <- Header.decode(frame),
          :ok <- verify_session_id(header, session),
-         nonce = MessageCodec.build_nonce(
-           header.security_flags,
-           header.message_counter,
-           session.peer_node_id
-         ),
+         nonce =
+           MessageCodec.build_nonce(
+             header.security_flags,
+             header.message_counter,
+             session.peer_node_id
+           ),
          {:ok, message} <- MessageCodec.decode_encrypted(frame, session.decrypt_key, nonce),
-         {:ok, new_counter} <- Counter.check_and_update(session.counter, :peer, header.message_counter) do
+         {:ok, new_counter} <-
+           Counter.check_and_update(session.counter, :peer, header.message_counter) do
       {:ok, message, %{session | counter: new_counter}}
     else
       {:error, reason} -> {:error, reason}
@@ -75,7 +90,9 @@ defmodule MatterEx.SecureChannel do
 
   # ── Private ───────────────────────────────────────────────────────
 
-  defp verify_session_id(%Header{session_id: frame_session_id}, %Session{local_session_id: local_id}) do
+  defp verify_session_id(%Header{session_id: frame_session_id}, %Session{
+         local_session_id: local_id
+       }) do
     if frame_session_id == local_id do
       :ok
     else

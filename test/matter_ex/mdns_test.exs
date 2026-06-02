@@ -8,11 +8,8 @@ defmodule MatterEx.MDNSTest do
   @test_hostname "test-device"
 
   setup do
-    mdns = start_supervised!({MDNS,
-      port: 0,
-      hostname: @test_hostname,
-      addresses: [@test_address]
-    })
+    mdns =
+      start_supervised!({MDNS, port: 0, hostname: @test_hostname, addresses: [@test_address]})
 
     port = MDNS.port(mdns)
     {:ok, client} = :gen_udp.open(0, [:binary, {:active, true}])
@@ -50,13 +47,13 @@ defmodule MatterEx.MDNSTest do
     txt = Keyword.get(opts, :txt, ["D=3840", "CM=1"])
     subtypes = Keyword.get(opts, :subtypes, [])
 
-    MDNS.advertise(mdns, [
+    MDNS.advertise(mdns,
       service: "_matterc._udp.local",
       instance: instance,
       port: service_port,
       txt: txt,
       subtypes: subtypes
-    ])
+    )
   end
 
   # ── Basic ───────────────────────────────────────────────────────
@@ -70,14 +67,15 @@ defmodule MatterEx.MDNSTest do
       advertise_test_service(mdns)
 
       # Query for the service type
-      result = send_query(client, port, [
-        %{name: "_matterc._udp.local", type: :ptr, class: :in}
-      ])
+      result =
+        send_query(client, port, [
+          %{name: "_matterc._udp.local", type: :ptr, class: :in}
+        ])
 
       assert {:ok, response} = result
       assert response.qr == :response
       assert response.aa == true
-      assert length(response.answers) > 0
+      assert response.answers != []
     end
   end
 
@@ -90,9 +88,10 @@ defmodule MatterEx.MDNSTest do
     end
 
     test "PTR query returns PTR + SRV + TXT + A records", %{client: client, port: port} do
-      {:ok, response} = send_query(client, port, [
-        %{name: "_matterc._udp.local", type: :ptr, class: :in}
-      ])
+      {:ok, response} =
+        send_query(client, port, [
+          %{name: "_matterc._udp.local", type: :ptr, class: :in}
+        ])
 
       types = Enum.map(response.answers, & &1.type)
       assert :ptr in types
@@ -123,9 +122,10 @@ defmodule MatterEx.MDNSTest do
     end
 
     test "SRV query for instance returns SRV + A records", %{client: client, port: port} do
-      {:ok, response} = send_query(client, port, [
-        %{name: "TEST-INST._matterc._udp.local", type: :srv, class: :in}
-      ])
+      {:ok, response} =
+        send_query(client, port, [
+          %{name: "TEST-INST._matterc._udp.local", type: :srv, class: :in}
+        ])
 
       types = Enum.map(response.answers, & &1.type)
       assert :srv in types
@@ -135,9 +135,10 @@ defmodule MatterEx.MDNSTest do
     end
 
     test "TXT query for instance returns TXT record", %{client: client, port: port} do
-      {:ok, response} = send_query(client, port, [
-        %{name: "TEST-INST._matterc._udp.local", type: :txt, class: :in}
-      ])
+      {:ok, response} =
+        send_query(client, port, [
+          %{name: "TEST-INST._matterc._udp.local", type: :txt, class: :in}
+        ])
 
       assert length(response.answers) == 1
       [txt] = response.answers
@@ -146,9 +147,10 @@ defmodule MatterEx.MDNSTest do
     end
 
     test "A query for hostname returns A record", %{client: client, port: port} do
-      {:ok, response} = send_query(client, port, [
-        %{name: "test-device.local", type: :a, class: :in}
-      ])
+      {:ok, response} =
+        send_query(client, port, [
+          %{name: "test-device.local", type: :a, class: :in}
+        ])
 
       assert length(response.answers) == 1
       [a] = response.answers
@@ -157,9 +159,10 @@ defmodule MatterEx.MDNSTest do
     end
 
     test "unrelated query gets no response", %{client: client, port: port} do
-      result = send_query(client, port, [
-        %{name: "_http._tcp.local", type: :ptr, class: :in}
-      ])
+      result =
+        send_query(client, port, [
+          %{name: "_http._tcp.local", type: :ptr, class: :in}
+        ])
 
       assert result == :no_response
     end
@@ -172,16 +175,18 @@ defmodule MatterEx.MDNSTest do
       advertise_test_service(mdns)
 
       # Should respond before withdraw
-      {:ok, _response} = send_query(client, port, [
-        %{name: "_matterc._udp.local", type: :ptr, class: :in}
-      ])
+      {:ok, _response} =
+        send_query(client, port, [
+          %{name: "_matterc._udp.local", type: :ptr, class: :in}
+        ])
 
       MDNS.withdraw(mdns, "TEST-INST")
 
       # Should not respond after withdraw
-      result = send_query(client, port, [
-        %{name: "_matterc._udp.local", type: :ptr, class: :in}
-      ])
+      result =
+        send_query(client, port, [
+          %{name: "_matterc._udp.local", type: :ptr, class: :in}
+        ])
 
       assert result == :no_response
     end
@@ -190,9 +195,10 @@ defmodule MatterEx.MDNSTest do
       advertise_test_service(mdns, txt: ["D=3840", "CM=1"])
 
       # Read original
-      {:ok, response1} = send_query(client, port, [
-        %{name: "TEST-INST._matterc._udp.local", type: :txt, class: :in}
-      ])
+      {:ok, response1} =
+        send_query(client, port, [
+          %{name: "TEST-INST._matterc._udp.local", type: :txt, class: :in}
+        ])
 
       [txt1] = response1.answers
       assert "CM=1" in txt1.data
@@ -200,9 +206,10 @@ defmodule MatterEx.MDNSTest do
       # Update TXT
       MDNS.update_txt(mdns, "TEST-INST", ["D=3840", "CM=2"])
 
-      {:ok, response2} = send_query(client, port, [
-        %{name: "TEST-INST._matterc._udp.local", type: :txt, class: :in}
-      ])
+      {:ok, response2} =
+        send_query(client, port, [
+          %{name: "TEST-INST._matterc._udp.local", type: :txt, class: :in}
+        ])
 
       [txt2] = response2.answers
       assert "CM=2" in txt2.data
@@ -214,14 +221,15 @@ defmodule MatterEx.MDNSTest do
 
   describe "Matter integration" do
     test "commissioning_service builds correct config" do
-      config = MDNS.commissioning_service(
-        port: 5540,
-        discriminator: 3840,
-        vendor_id: 0xFFF1,
-        product_id: 0x8001,
-        device_name: "Test Light",
-        device_type: 0x0100
-      )
+      config =
+        MDNS.commissioning_service(
+          port: 5540,
+          discriminator: 3840,
+          vendor_id: 0xFFF1,
+          product_id: 0x8001,
+          device_name: "Test Light",
+          device_type: 0x0100
+        )
 
       assert config[:service] == "_matterc._udp.local"
       assert is_binary(config[:instance])
@@ -247,9 +255,10 @@ defmodule MatterEx.MDNSTest do
       )
 
       # Query by short discriminator subtype
-      {:ok, response} = send_query(client, port, [
-        %{name: "_S15._sub._matterc._udp.local", type: :ptr, class: :in}
-      ])
+      {:ok, response} =
+        send_query(client, port, [
+          %{name: "_S15._sub._matterc._udp.local", type: :ptr, class: :in}
+        ])
 
       types = Enum.map(response.answers, & &1.type)
       assert :ptr in types
@@ -260,20 +269,22 @@ defmodule MatterEx.MDNSTest do
     end
 
     test "commissioning_service end-to-end", %{mdns: mdns, client: client, port: port} do
-      config = MDNS.commissioning_service(
-        port: 5540,
-        discriminator: 3840,
-        vendor_id: 0xFFF1,
-        product_id: 0x8001,
-        device_name: "Test Light"
-      )
+      config =
+        MDNS.commissioning_service(
+          port: 5540,
+          discriminator: 3840,
+          vendor_id: 0xFFF1,
+          product_id: 0x8001,
+          device_name: "Test Light"
+        )
 
       MDNS.advertise(mdns, config)
 
       # Query by service type
-      {:ok, response} = send_query(client, port, [
-        %{name: "_matterc._udp.local", type: :ptr, class: :in}
-      ])
+      {:ok, response} =
+        send_query(client, port, [
+          %{name: "_matterc._udp.local", type: :ptr, class: :in}
+        ])
 
       ptr = Enum.find(response.answers, &(&1.type == :ptr))
       assert ptr != nil
@@ -311,11 +322,12 @@ defmodule MatterEx.MDNSTest do
     test "operational_service builds correct config" do
       cfid = :crypto.strong_rand_bytes(8)
 
-      config = MDNS.operational_service(
-        port: 5540,
-        compressed_fabric_id: cfid,
-        node_id: 1
-      )
+      config =
+        MDNS.operational_service(
+          port: 5540,
+          compressed_fabric_id: cfid,
+          node_id: 1
+        )
 
       assert config[:service] == "_matter._tcp.local"
       assert config[:port] == 5540
@@ -323,6 +335,7 @@ defmodule MatterEx.MDNSTest do
       # Instance name: <CFID-hex>-<node-id-hex>
       expected_instance = Base.encode16(cfid) <> "-0000000000000001"
       assert config[:instance] == expected_instance
+      assert config[:subtypes] == ["_I#{Base.encode16(cfid)}._sub._matter._tcp.local"]
 
       txt = config[:txt]
       assert "T=1" in txt
@@ -332,17 +345,19 @@ defmodule MatterEx.MDNSTest do
          %{mdns: mdns, client: client, port: port} do
       cfid = <<0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08>>
 
-      config = MDNS.operational_service(
-        port: 5540,
-        compressed_fabric_id: cfid,
-        node_id: 42
-      )
+      config =
+        MDNS.operational_service(
+          port: 5540,
+          compressed_fabric_id: cfid,
+          node_id: 42
+        )
 
       MDNS.advertise(mdns, config)
 
-      {:ok, response} = send_query(client, port, [
-        %{name: "_matter._tcp.local", type: :ptr, class: :in}
-      ])
+      {:ok, response} =
+        send_query(client, port, [
+          %{name: "_matter._tcp.local", type: :ptr, class: :in}
+        ])
 
       types = Enum.map(response.answers, & &1.type)
       assert :ptr in types
@@ -357,15 +372,115 @@ defmodule MatterEx.MDNSTest do
       assert srv_port == 5540
     end
 
+    test "operational_service responds to compressed fabric subtype queries",
+         %{mdns: mdns, client: client, port: port} do
+      cfid = <<0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08>>
+
+      config =
+        MDNS.operational_service(
+          port: 5540,
+          compressed_fabric_id: cfid,
+          node_id: 42
+        )
+
+      MDNS.advertise(mdns, config)
+
+      {:ok, response} =
+        send_query(client, port, [
+          %{name: "_I0102030405060708._sub._matter._tcp.local", type: :ptr, class: :in}
+        ])
+
+      ptr = Enum.find(response.answers, &(&1.type == :ptr))
+      assert ptr.data == "0102030405060708-000000000000002A._matter._tcp.local"
+    end
+
+    test "operational_service responds to subtype suffix queries",
+         %{mdns: mdns, client: client, port: port} do
+      cfid = <<0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08>>
+
+      config =
+        MDNS.operational_service(
+          port: 5540,
+          compressed_fabric_id: cfid,
+          node_id: 42
+        )
+
+      MDNS.advertise(mdns, config)
+
+      {:ok, response} =
+        send_query(client, port, [
+          %{name: "_IX._sub._matter._tcp.local", type: :ptr, class: :in}
+        ])
+
+      ptr = Enum.find(response.answers, &(&1.type == :ptr))
+      assert ptr.data == "0102030405060708-000000000000002A._matter._tcp.local"
+    end
+
+    test "operational_service ANY query for instance includes SRV and TXT",
+         %{mdns: mdns, client: client, port: port} do
+      cfid = <<0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08>>
+
+      config =
+        MDNS.operational_service(
+          port: 5540,
+          compressed_fabric_id: cfid,
+          node_id: 42
+        )
+
+      MDNS.advertise(mdns, config)
+
+      {:ok, response} =
+        send_query(client, port, [
+          %{name: "0102030405060708-000000000000002A._matter._tcp.local", type: :any, class: :in}
+        ])
+
+      types = Enum.map(response.answers, & &1.type)
+      assert :srv in types
+      assert :txt in types
+    end
+
+    test "operational_service includes AAAA records for IPv6 addresses" do
+      ipv6 = {0xFE80, 0, 0, 0, 0x2CCF, 0x67FF, 0xFE50, 0x6577}
+
+      mdns =
+        start_supervised!(
+          {MDNS, port: 0, hostname: @test_hostname, addresses: [@test_address, ipv6]},
+          id: :mdns_ipv6_test
+        )
+
+      port = MDNS.port(mdns)
+      {:ok, client} = :gen_udp.open(0, [:binary, {:active, true}])
+
+      config =
+        MDNS.operational_service(
+          port: 5540,
+          compressed_fabric_id: <<0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08>>,
+          node_id: 42
+        )
+
+      MDNS.advertise(mdns, config)
+
+      {:ok, response} =
+        send_query(client, port, [
+          %{name: "_matter._tcp.local", type: :ptr, class: :in}
+        ])
+
+      assert Enum.any?(response.answers, &(&1.type == :a and &1.data == @test_address))
+      assert Enum.any?(response.answers, &(&1.type == :aaaa and &1.data == DNS.encode_rdata(:aaaa, ipv6)))
+
+      :gen_udp.close(client)
+    end
+
     test "mDNS transition: withdraw commissioning, advertise operational",
          %{mdns: mdns, client: client, port: port} do
       # Start with commissioning advertisement
       advertise_test_service(mdns)
 
       # Verify commissioning responds
-      {:ok, _response} = send_query(client, port, [
-        %{name: "_matterc._udp.local", type: :ptr, class: :in}
-      ])
+      {:ok, _response} =
+        send_query(client, port, [
+          %{name: "_matterc._udp.local", type: :ptr, class: :in}
+        ])
 
       # Withdraw commissioning
       MDNS.withdraw(mdns, "TEST-INST")
@@ -373,25 +488,28 @@ defmodule MatterEx.MDNSTest do
       # Advertise operational
       cfid = <<0xAB, 0xCD, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC>>
 
-      config = MDNS.operational_service(
-        port: 5540,
-        compressed_fabric_id: cfid,
-        node_id: 1
-      )
+      config =
+        MDNS.operational_service(
+          port: 5540,
+          compressed_fabric_id: cfid,
+          node_id: 1
+        )
 
       MDNS.advertise(mdns, config)
 
       # Commissioning should no longer respond
-      result = send_query(client, port, [
-        %{name: "_matterc._udp.local", type: :ptr, class: :in}
-      ])
+      result =
+        send_query(client, port, [
+          %{name: "_matterc._udp.local", type: :ptr, class: :in}
+        ])
 
       assert result == :no_response
 
       # Operational should respond
-      {:ok, response} = send_query(client, port, [
-        %{name: "_matter._tcp.local", type: :ptr, class: :in}
-      ])
+      {:ok, response} =
+        send_query(client, port, [
+          %{name: "_matter._tcp.local", type: :ptr, class: :in}
+        ])
 
       ptr = Enum.find(response.answers, &(&1.type == :ptr))
       assert String.ends_with?(ptr.data, "._matter._tcp.local")

@@ -11,15 +11,15 @@ defmodule MatterEx.Cluster.Groups do
 
   use MatterEx.Cluster, id: 0x0004, name: :groups
 
-  attribute 0x0000, :name_support, :uint8, default: 0x80
-  attribute 0xFFFC, :feature_map, :uint32, default: 0
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 4
+  attribute(0x0000, :name_support, :uint8, default: 0x80)
+  attribute(0xFFFC, :feature_map, :uint32, default: 0)
+  attribute(0xFFFD, :cluster_revision, :uint16, default: 4)
 
-  command 0x00, :add_group, [group_id: :uint16, group_name: :string], response_id: 0x00
-  command 0x01, :view_group, [group_id: :uint16], response_id: 0x01
-  command 0x02, :get_group_membership, [group_list: :list], response_id: 0x02
-  command 0x03, :remove_group, [group_id: :uint16], response_id: 0x03
-  command 0x04, :remove_all_groups, []
+  command(0x00, :add_group, [group_id: :uint16, group_name: :string], response_id: 0x00)
+  command(0x01, :view_group, [group_id: :uint16], response_id: 0x01)
+  command(0x02, :get_group_membership, [group_list: :list], response_id: 0x02)
+  command(0x03, :remove_group, [group_id: :uint16], response_id: 0x03)
+  command(0x04, :remove_all_groups, [])
 
   @impl true
   def init(opts) do

@@ -6,7 +6,7 @@ defmodule MatterEx.DeviceTest.TestLight do
     product_id: 0x8001
 
   endpoint 1, device_type: 0x0100 do
-    cluster MatterEx.Cluster.OnOff
+    cluster(MatterEx.Cluster.OnOff)
   end
 end
 
@@ -77,6 +77,16 @@ defmodule MatterEx.DeviceTest do
       {:ok, server_list} = TestLight.read_attribute(0, :descriptor, :server_list)
       assert 0x001D in server_list
       assert 0x0028 in server_list
+      assert 0x001F in server_list
+      assert 0x0030 in server_list
+      assert 0x0031 in server_list
+      assert 0x0033 in server_list
+      assert 0x0038 in server_list
+      assert 0x0046 in server_list
+      assert 0x1349FC00 in server_list
+      assert 0x003C in server_list
+      assert 0x003E in server_list
+      assert 0x003F in server_list
     end
 
     test "descriptor has parts_list" do
@@ -87,6 +97,11 @@ defmodule MatterEx.DeviceTest do
     test "basic_information has vendor_name" do
       assert {:ok, "TestCo"} =
                TestLight.read_attribute(0, :basic_information, :vendor_name)
+    end
+
+    test "apple private cluster has observed commissioning attribute" do
+      assert {:ok, true} =
+               TestLight.read_attribute(0, :apple_private, :unknown_attribute_1)
     end
 
     test "basic_information has product_name" do
@@ -111,7 +126,8 @@ defmodule MatterEx.DeviceTest do
 
     test "has device_type_list" do
       {:ok, device_types} = TestLight.read_attribute(1, :descriptor, :device_type_list)
-      assert [%{0 => {:uint, 0x0100}, 1 => {:uint, 1}}] = device_types  # DeviceTypeStruct: 0=type, 1=revision
+      # DeviceTypeStruct: 0=type, 1=revision
+      assert [%{0 => {:uint, 0x0100}, 1 => {:uint, 3}}] = device_types
     end
   end
 
@@ -142,7 +158,7 @@ defmodule MatterEx.DeviceTest do
 
       [{:data, on_off}, {:data, rev}] = reports
       assert on_off.value == {:bool, false}
-      assert rev.value == {:uint, 4}
+      assert rev.value == {:uint16, 4}
     end
 
     test "unsupported endpoint returns status" do
@@ -190,7 +206,9 @@ defmodule MatterEx.DeviceTest do
         ]
       }
 
-      %IM.WriteResponse{write_responses: responses} = Router.handle(TestLight, :write_request, req)
+      %IM.WriteResponse{write_responses: responses} =
+        Router.handle(TestLight, :write_request, req)
+
       assert [resp] = responses
       assert resp.status == Status.status_code(:success)
 
@@ -208,7 +226,9 @@ defmodule MatterEx.DeviceTest do
         ]
       }
 
-      %IM.WriteResponse{write_responses: responses} = Router.handle(TestLight, :write_request, req)
+      %IM.WriteResponse{write_responses: responses} =
+        Router.handle(TestLight, :write_request, req)
+
       assert [resp] = responses
       assert resp.status == Status.status_code(:unsupported_write)
     end
@@ -224,7 +244,9 @@ defmodule MatterEx.DeviceTest do
         ]
       }
 
-      %IM.WriteResponse{write_responses: responses} = Router.handle(TestLight, :write_request, req)
+      %IM.WriteResponse{write_responses: responses} =
+        Router.handle(TestLight, :write_request, req)
+
       assert [resp] = responses
       assert resp.status == Status.status_code(:unsupported_endpoint)
     end
@@ -240,7 +262,9 @@ defmodule MatterEx.DeviceTest do
         ]
       }
 
-      %IM.InvokeResponse{invoke_responses: responses} = Router.handle(TestLight, :invoke_request, req)
+      %IM.InvokeResponse{invoke_responses: responses} =
+        Router.handle(TestLight, :invoke_request, req)
+
       assert [{:status, resp}] = responses
       assert resp.status == Status.status_code(:success)
 
@@ -268,7 +292,9 @@ defmodule MatterEx.DeviceTest do
         ]
       }
 
-      %IM.InvokeResponse{invoke_responses: responses} = Router.handle(TestLight, :invoke_request, req)
+      %IM.InvokeResponse{invoke_responses: responses} =
+        Router.handle(TestLight, :invoke_request, req)
+
       assert [{:status, resp}] = responses
       assert resp.status == Status.status_code(:unsupported_command)
     end
@@ -280,7 +306,9 @@ defmodule MatterEx.DeviceTest do
         ]
       }
 
-      %IM.InvokeResponse{invoke_responses: responses} = Router.handle(TestLight, :invoke_request, req)
+      %IM.InvokeResponse{invoke_responses: responses} =
+        Router.handle(TestLight, :invoke_request, req)
+
       assert [{:status, resp}] = responses
       assert resp.status == Status.status_code(:unsupported_endpoint)
     end
@@ -300,8 +328,10 @@ defmodule MatterEx.DeviceTest do
   describe "cluster_ids" do
     test "__cluster_ids__ returns cluster IDs for endpoint" do
       ids = TestLight.__cluster_ids__(1)
-      assert 0x001D in ids  # Descriptor
-      assert 0x0006 in ids  # OnOff
+      # Descriptor
+      assert 0x001D in ids
+      # OnOff
+      assert 0x0006 in ids
     end
 
     test "__cluster_ids__ returns empty for unknown endpoint" do
@@ -336,8 +366,10 @@ defmodule MatterEx.DeviceTest do
       assert length(data_reports) == 2
 
       clusters = Enum.map(data_reports, & &1.path.cluster) |> Enum.sort()
-      assert 0x0006 in clusters  # OnOff
-      assert 0x001D in clusters  # Descriptor
+      # OnOff
+      assert 0x0006 in clusters
+      # Descriptor
+      assert 0x001D in clusters
     end
 
     test "wildcard attribute reads all attributes from a cluster" do
@@ -353,7 +385,8 @@ defmodule MatterEx.DeviceTest do
       attr_ids = Enum.map(data_reports, & &1.path.attribute) |> Enum.sort()
       assert 0x0000 in attr_ids
       assert 0xFFFD in attr_ids
-      assert 0xFFFB in attr_ids  # AttributeList
+      # AttributeList
+      assert 0xFFFB in attr_ids
     end
 
     test "fully wildcard reads all attributes across all endpoints" do
@@ -563,7 +596,7 @@ defmodule MatterEx.DeviceTest do
       }
 
       %IM.ReportData{event_reports: events} = Router.handle_read(TestLight, req)
-      assert length(events) >= 1
+      assert events != []
 
       {:data, event} = hd(events)
       assert event.path.endpoint == 0
@@ -580,7 +613,7 @@ defmodule MatterEx.DeviceTest do
       }
 
       %IM.ReportData{event_reports: events} = Router.handle_read(TestLight, req)
-      assert length(events) >= 1
+      assert events != []
 
       # Use event_min beyond all known events
       {:data, last} = List.last(events)
@@ -614,7 +647,7 @@ defmodule MatterEx.DeviceTest do
         Router.handle_read(TestLight, req)
 
       assert length(attrs) == 1
-      assert length(events) >= 1
+      assert events != []
     end
   end
 
@@ -643,7 +676,9 @@ defmodule MatterEx.DeviceTest do
         ]
       }
 
-      %IM.WriteResponse{write_responses: [resp]} = Router.handle(TestLight, :write_request, write_req)
+      %IM.WriteResponse{write_responses: [resp]} =
+        Router.handle(TestLight, :write_request, write_req)
+
       assert resp.status == Status.status_code(:success)
 
       # Read to confirm write

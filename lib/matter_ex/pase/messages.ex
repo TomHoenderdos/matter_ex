@@ -31,12 +31,13 @@ defmodule MatterEx.PASE.Messages do
   def decode_pbkdf_param_request(data) do
     with {:ok, decoded} <- safe_decode(data),
          %{1 => random, 2 => session_id} <- decoded do
-      {:ok, %{
-        initiator_random: random,
-        initiator_session_id: session_id,
-        passcode_id: Map.get(decoded, 3, 0),
-        has_pbkdf_params: Map.get(decoded, 4, false)
-      }}
+      {:ok,
+       %{
+         initiator_random: random,
+         initiator_session_id: session_id,
+         passcode_id: Map.get(decoded, 3, 0),
+         has_pbkdf_params: Map.get(decoded, 4, false)
+       }}
     else
       _ -> {:error, :invalid_message}
     end
@@ -44,29 +45,49 @@ defmodule MatterEx.PASE.Messages do
 
   # ── PBKDFParamResponse (opcode 0x21) ─────────────────────────────
 
-  @spec encode_pbkdf_param_response(binary(), binary(), non_neg_integer(), pos_integer(), binary()) :: binary()
-  def encode_pbkdf_param_response(initiator_random, responder_random, session_id, iterations, salt) do
+  @spec encode_pbkdf_param_response(
+          binary(),
+          binary(),
+          non_neg_integer(),
+          pos_integer(),
+          binary()
+        ) :: binary()
+  def encode_pbkdf_param_response(
+        initiator_random,
+        responder_random,
+        session_id,
+        iterations,
+        salt
+      ) do
     TLV.encode(%{
       1 => {:bytes, initiator_random},
       2 => {:bytes, responder_random},
       3 => {:uint, session_id},
-      4 => {:struct, %{
-        1 => {:uint, iterations},
-        2 => {:bytes, salt}
-      }}
+      4 =>
+        {:struct,
+         %{
+           1 => {:uint, iterations},
+           2 => {:bytes, salt}
+         }}
     })
   end
 
   @spec decode_pbkdf_param_response(binary()) :: {:ok, map()} | {:error, :invalid_message}
   def decode_pbkdf_param_response(data) do
     with {:ok, decoded} <- safe_decode(data),
-         %{1 => init_random, 2 => resp_random, 3 => session_id, 4 => %{1 => iterations, 2 => salt}} <- decoded do
-      {:ok, %{
-        initiator_random: init_random,
-        responder_random: resp_random,
-        responder_session_id: session_id,
-        pbkdf_parameters: %{iterations: iterations, salt: salt}
-      }}
+         %{
+           1 => init_random,
+           2 => resp_random,
+           3 => session_id,
+           4 => %{1 => iterations, 2 => salt}
+         } <- decoded do
+      {:ok,
+       %{
+         initiator_random: init_random,
+         responder_random: resp_random,
+         responder_session_id: session_id,
+         pbkdf_parameters: %{iterations: iterations, salt: salt}
+       }}
     else
       _ -> {:error, :invalid_message}
     end

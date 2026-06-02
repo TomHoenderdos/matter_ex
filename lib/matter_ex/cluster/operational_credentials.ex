@@ -10,33 +10,48 @@ defmodule MatterEx.Cluster.OperationalCredentials do
 
   alias MatterEx.CASE.Messages, as: CASEMessages
   alias MatterEx.Commissioning
+  alias MatterEx.Credentials.Development
   alias MatterEx.Crypto.Certificate
   alias MatterEx.TLV
 
-  attribute 0x0000, :nocs, :list, default: []
-  attribute 0x0001, :fabrics, :list, default: []
-  attribute 0x0002, :supported_fabrics, :uint8, default: 5
-  attribute 0x0003, :commissioned_fabrics, :uint8, default: 0
-  attribute 0x0004, :trusted_root_certificates, :list, default: []
-  attribute 0x0005, :current_fabric_index, :uint8, default: 0
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 1
+  attribute(0x0000, :nocs, :list, default: [], fabric_scoped: true)
+  attribute(0x0001, :fabrics, :list, default: [], fabric_scoped: true)
+  attribute(0x0002, :supported_fabrics, :uint8, default: 5)
+  attribute(0x0003, :commissioned_fabrics, :uint8, default: 0)
+  attribute(0x0004, :trusted_root_certificates, :list, default: [])
+  attribute(0x0005, :current_fabric_index, :uint8, default: 0)
+  attribute(0xFFFD, :cluster_revision, :uint16, default: 1)
 
-  command 0x00, :attestation_request, [attestation_nonce: :bytes], response_id: 0x01
-  command 0x02, :certificate_chain_request, [certificate_type: :uint8], response_id: 0x03
-  command 0x04, :csr_request, [csr_nonce: :bytes], response_id: 0x05
-  command 0x06, :add_noc, [noc_value: :bytes, icac_value: :bytes, ipk_value: :bytes, case_admin_subject: :uint64, admin_vendor_id: :uint16], response_id: 0x08
-  command 0x0A, :remove_fabric, [fabric_index: :uint8], response_id: 0x08
-  command 0x09, :update_fabric_label, [label: :string], response_id: 0x08
-  command 0x0B, :add_trusted_root_cert, [root_ca_cert: :bytes]
+  command(0x00, :attestation_request, [attestation_nonce: :bytes], response_id: 0x01)
+  command(0x02, :certificate_chain_request, [certificate_type: :uint8], response_id: 0x03)
+  command(0x04, :csr_request, [csr_nonce: :bytes], response_id: 0x05)
+
+  command(
+    0x06,
+    :add_noc,
+    [
+      noc_value: :bytes,
+      icac_value: :bytes,
+      ipk_value: :bytes,
+      case_admin_subject: :uint64,
+      admin_vendor_id: :uint16
+    ],
+    response_id: 0x08
+  )
+
+  command(0x0A, :remove_fabric, [fabric_index: :uint8], response_id: 0x08)
+  command(0x09, :update_fabric_label, [label: :string], response_id: 0x08)
+  command(0x0B, :add_trusted_root_cert, root_ca_cert: :bytes)
 
   @impl true
   def init(opts) do
     {:ok, state} = super(opts)
-    # Generate persistent DAC keypair for attestation signing
-    dac_keypair = Certificate.generate_keypair()
-    state = state
+
+    state =
+      state
       |> Map.put(:_next_fabric_index, 1)
-      |> Map.put(:_dac_keypair, dac_keypair)
+      |> Map.put(:_dac_keypair, {Development.dac_public_key(), Development.dac_private_key()})
+
     {:ok, state}
   end
 
@@ -44,13 +59,12 @@ defmodule MatterEx.Cluster.OperationalCredentials do
   def handle_command(:attestation_request, params, state) do
     attestation_nonce = params[:attestation_nonce] || :crypto.strong_rand_bytes(32)
 
-    # Build AttestationElements TLV: certification_declaration + attestation_nonce + timestamp
-    certification_declaration = <<>>
-    attestation_elements = TLV.encode(%{
-      1 => {:bytes, certification_declaration},
-      2 => {:bytes, attestation_nonce},
-      3 => {:uint, System.system_time(:second)}
-    })
+    attestation_elements =
+      TLV.encode(%{
+        1 => {:bytes, Development.certification_declaration()},
+        2 => {:bytes, attestation_nonce},
+        3 => {:uint, System.system_time(:second)}
+      })
 
     # TBS = AttestationElements || AttestationChallenge (from session)
     # chip-tool verifies: ECDSA_verify(SHA256(TBS), signature, dac_pubkey)
@@ -66,11 +80,12 @@ defmodule MatterEx.Cluster.OperationalCredentials do
   def handle_command(:certificate_chain_request, params, state) do
     cert_type = params[:certificate_type] || 1
 
-    # Use persistent DAC keypair for both PAI (type 1) and DAC (type 2)
-    {pub, priv} = Map.fetch!(state, :_dac_keypair)
-
-    # Build a minimal DER-encoded self-signed X.509 certificate
-    cert = Certificate.self_signed_der(pub, priv, "MatterEx #{if cert_type == 1, do: "PAI", else: "DAC"}")
+    cert =
+      case cert_type do
+        1 -> Development.dac_cert()
+        2 -> Development.pai_cert()
+        _ -> <<>>
+      end
 
     # CertificateChainResponse: Certificate
     {:ok, %{0 => {:bytes, cert}}, state}
@@ -128,7 +143,14 @@ defmodule MatterEx.Cluster.OperationalCredentials do
   end
 
   def handle_command(:remove_fabric, params, state) do
-    fabric_index = params[:fabric_index] || 0
+    fabric_index =
+      case params[:fabric_index] do
+        index when is_integer(index) and index > 0 ->
+          index
+
+        _ ->
+          get_in(params, [:_context, :fabric_index]) || 0
+      end
 
     nocs = Map.get(state, :nocs, [])
     fabrics = Map.get(state, :fabrics, [])
@@ -139,16 +161,21 @@ defmodule MatterEx.Cluster.OperationalCredentials do
       nocs = Enum.reject(nocs, &(get_fi.(&1) == fabric_index))
       fabrics = Enum.reject(fabrics, &(get_fi.(&1) == fabric_index))
 
-      state = state
+      state =
+        state
         |> Map.put(:nocs, nocs)
         |> Map.put(:fabrics, fabrics)
         |> Map.put(:commissioned_fabrics, length(nocs))
 
+      if Process.whereis(Commissioning) do
+        Commissioning.remove_fabric(fabric_index)
+      end
+
       # NOCResponse: StatusCode=Success(0)
-      {:ok, %{0 => {:uint, 0}, 1 => {:uint, fabric_index}, 2 => {:string, ""}}, state}
+      {:ok, noc_response(0, fabric_index, ""), state}
     else
       # NOCResponse: StatusCode=InvalidFabricIndex(11)
-      {:ok, %{0 => {:uint, 11}, 1 => {:uint, 0}, 2 => {:string, "unknown fabric"}}, state}
+      {:ok, noc_response(11, 0, "unknown fabric"), state}
     end
   end
 
@@ -160,14 +187,14 @@ defmodule MatterEx.Cluster.OperationalCredentials do
 
     case fabrics do
       [] ->
-        {:ok, %{0 => {:uint, 11}, 1 => {:uint, 0}, 2 => {:string, "no fabrics"}}, state}
+        {:ok, noc_response(11, 0, "no fabrics"), state}
 
       _ ->
         # Update the last fabric's label (in production, derive from session)
         updated = List.update_at(fabrics, -1, &Map.put(&1, 5, {:string, label}))
         state = Map.put(state, :fabrics, updated)
-        {:uint, last_fi} = List.last(updated)[254]
-        {:ok, %{0 => {:uint, 0}, 1 => {:uint, last_fi}, 2 => {:string, ""}}, state}
+        {_type, last_fi} = List.last(updated)[254]
+        {:ok, noc_response(0, last_fi, ""), state}
     end
   end
 
@@ -175,11 +202,17 @@ defmodule MatterEx.Cluster.OperationalCredentials do
     require Logger
     noc_value = params[:noc_value]
     ipk_value = params[:ipk_value]
-    Logger.debug("AddNOC: noc=#{if noc_value, do: byte_size(noc_value)}B ipk=#{if ipk_value, do: "#{Base.encode16(ipk_value)}(#{byte_size(ipk_value)}B)", else: "nil"} all_keys=#{inspect(Map.keys(params) -- [:_context])}")
+
+    Logger.debug(
+      "AddNOC: noc=#{if noc_value, do: byte_size(noc_value)}B ipk=#{if ipk_value, do: "#{Base.encode16(ipk_value)}(#{byte_size(ipk_value)}B)", else: "nil"} all_keys=#{inspect(Map.keys(params) -- [:_context])}"
+    )
 
     case CASEMessages.decode_noc(noc_value) do
       {:ok, %{node_id: node_id, fabric_id: fabric_id, public_key: pub_key}} ->
-        Logger.debug("AddNOC decoded: node_id=#{inspect(node_id)}(0x#{Integer.to_string(node_id || 0, 16)}) fabric_id=#{inspect(fabric_id)}(0x#{Integer.to_string(fabric_id || 0, 16)}) pub_key=#{if pub_key, do: byte_size(pub_key), else: "nil"}B")
+        Logger.debug(
+          "AddNOC decoded: node_id=#{inspect(node_id)}(0x#{Integer.to_string(node_id || 0, 16)}) fabric_id=#{inspect(fabric_id)}(0x#{Integer.to_string(fabric_id || 0, 16)}) pub_key=#{if pub_key, do: byte_size(pub_key), else: "nil"}B"
+        )
+
         # Verify public key matches the keypair we generated during CSRRequest
         stored_keypair = Map.get(state, :_keypair)
 
@@ -189,7 +222,15 @@ defmodule MatterEx.Cluster.OperationalCredentials do
 
           if Process.whereis(Commissioning) do
             icac_value = params[:icac_value]
-            Commissioning.store_noc(fabric_index, noc_value, icac_value, ipk_value, node_id, fabric_id)
+
+            Commissioning.store_noc(
+              fabric_index,
+              noc_value,
+              icac_value,
+              ipk_value,
+              node_id,
+              fabric_id
+            )
 
             # Store the admin subject for ACL seeding
             case_admin_subject = params[:case_admin_subject]
@@ -201,41 +242,58 @@ defmodule MatterEx.Cluster.OperationalCredentials do
 
           # Update nocs list (TLV-tagged: tag 0=NOC, 1=ICAC, 254=FabricIndex)
           nocs = Map.get(state, :nocs, [])
+
           noc_entry = %{
             0 => {:bytes, noc_value},
             1 => {:bytes, params[:icac_value] || <<>>},
-            254 => {:uint, fabric_index}
+            254 => {:uint8, fabric_index}
           }
+
           nocs = nocs ++ [noc_entry]
 
           # Update fabrics list (TLV-tagged: 1=RootPubKey, 2=VendorID, 3=FabricID, 4=NodeID, 5=Label, 254=FabricIndex)
           fabrics = Map.get(state, :fabrics, [])
+          root_public_key = root_public_key()
+
           fabric_entry = %{
-            1 => {:bytes, <<>>},
-            2 => {:uint, params[:admin_vendor_id] || 0},
-            3 => {:uint, fabric_id},
-            4 => {:uint, node_id},
+            1 => {:bytes, root_public_key || <<>>},
+            2 => {:uint16, params[:admin_vendor_id] || 0},
+            3 => {:uint64, fabric_id},
+            4 => {:uint64, node_id},
             5 => {:string, ""},
-            254 => {:uint, fabric_index}
+            254 => {:uint8, fabric_index}
           }
+
           fabrics = fabrics ++ [fabric_entry]
 
-          state = state
+          state =
+            state
             |> Map.put(:nocs, nocs)
             |> Map.put(:fabrics, fabrics)
             |> Map.put(:commissioned_fabrics, length(nocs))
             |> Map.put(:_next_fabric_index, fabric_index + 1)
 
           # NOCResponse: StatusCode=Success(0), FabricIndex, DebugText=""
-          {:ok, %{0 => {:uint, 0}, 1 => {:uint, fabric_index}, 2 => {:string, ""}}, state}
+          {:ok, noc_response(0, fabric_index, ""), state}
         else
           # NOCResponse: StatusCode=InvalidPublicKey(1)
-          {:ok, %{0 => {:uint, 1}, 1 => {:uint, 0}, 2 => {:string, "public key mismatch"}}, state}
+          {:ok, noc_response(1, 0, "public key mismatch"), state}
         end
 
       {:error, _reason} ->
         # NOCResponse: StatusCode=InvalidNOC(3)
-        {:ok, %{0 => {:uint, 3}, 1 => {:uint, 0}, 2 => {:string, "invalid NOC"}}, state}
+        {:ok, noc_response(3, 0, "invalid NOC"), state}
+    end
+  end
+
+  defp noc_response(status, fabric_index, debug_text) do
+    %{0 => {:uint8, status}, 1 => {:uint8, fabric_index}, 2 => {:string, debug_text}}
+  end
+
+  defp root_public_key do
+    if Process.whereis(Commissioning) do
+      Commissioning.get_root_cert()
+      |> CASEMessages.extract_public_key()
     end
   end
 end

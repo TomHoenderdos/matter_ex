@@ -68,6 +68,11 @@ defmodule MatterEx.Device do
       MatterEx.Cluster.OperationalCredentials,
       MatterEx.Cluster.AccessControl,
       MatterEx.Cluster.NetworkCommissioning,
+      MatterEx.Cluster.GeneralDiagnostics,
+      MatterEx.Cluster.TimeSynchronization,
+      MatterEx.Cluster.ICDManagement,
+      MatterEx.Cluster.ApplePrivate,
+      MatterEx.Cluster.AdminCommissioning,
       MatterEx.Cluster.GroupKeyManagement
     ]
 
@@ -124,7 +129,19 @@ defmodule MatterEx.Device do
       end
 
       def init(_opts) do
-        children = unquote(Macro.escape(build_child_specs(env.module, all_endpoints, device_opts, parts_list, endpoint_server_lists)))
+        children =
+          unquote(
+            Macro.escape(
+              build_child_specs(
+                env.module,
+                all_endpoints,
+                device_opts,
+                parts_list,
+                endpoint_server_lists
+              )
+            )
+          )
+
         Supervisor.init(children, strategy: :one_for_one)
       end
 
@@ -167,7 +184,13 @@ defmodule MatterEx.Device do
   end
 
   # Build child specs at compile time
-  defp build_child_specs(device_module, all_endpoints, device_opts, parts_list, endpoint_server_lists) do
+  defp build_child_specs(
+         device_module,
+         all_endpoints,
+         device_opts,
+         parts_list,
+         endpoint_server_lists
+       ) do
     event_store_name = :"#{device_module}.ep0.event_store"
 
     event_store_spec = %{
@@ -182,7 +205,14 @@ defmodule MatterEx.Device do
 
           init_opts =
             [name: name, endpoint: ep_id, event_store: event_store_name] ++
-              cluster_init_opts(cluster_mod, ep_id, ep_opts, device_opts, parts_list, endpoint_server_lists)
+              cluster_init_opts(
+                cluster_mod,
+                ep_id,
+                ep_opts,
+                device_opts,
+                parts_list,
+                endpoint_server_lists
+              )
 
           %{
             id: name,
@@ -199,11 +229,26 @@ defmodule MatterEx.Device do
   @device_type_tag 0
   @revision_tag 1
 
-  defp device_type_struct(id, revision \\ 1) do
+  defp device_type_struct(id, revision \\ nil) do
+    revision = revision || device_type_revision(id)
     %{@device_type_tag => {:uint, id}, @revision_tag => {:uint, revision}}
   end
 
-  defp cluster_init_opts(MatterEx.Cluster.Descriptor, ep_id, ep_opts, _device_opts, parts_list, endpoint_server_lists) do
+  defp device_type_revision(id) do
+    case MatterEx.DeviceTypes.get(id) do
+      %{revision: revision} -> revision
+      _ -> 1
+    end
+  end
+
+  defp cluster_init_opts(
+         MatterEx.Cluster.Descriptor,
+         ep_id,
+         ep_opts,
+         _device_opts,
+         parts_list,
+         endpoint_server_lists
+       ) do
     device_type_id = if ep_id == 0, do: 0x0016, else: Keyword.get(ep_opts, :device_type, 0)
     device_types = [device_type_struct(device_type_id)]
 
@@ -214,15 +259,35 @@ defmodule MatterEx.Device do
     ]
   end
 
-  defp cluster_init_opts(MatterEx.Cluster.BasicInformation, _ep_id, _ep_opts, device_opts, _parts_list, _endpoint_server_lists) do
+  defp cluster_init_opts(
+         MatterEx.Cluster.BasicInformation,
+         _ep_id,
+         _ep_opts,
+         device_opts,
+         _parts_list,
+         _endpoint_server_lists
+       ) do
     Keyword.take(device_opts, [
-      :vendor_name, :vendor_id, :product_name, :product_id,
-      :node_label, :hardware_version, :hardware_version_string,
-      :software_version, :software_version_string
+      :vendor_name,
+      :vendor_id,
+      :product_name,
+      :product_id,
+      :node_label,
+      :hardware_version,
+      :hardware_version_string,
+      :software_version,
+      :software_version_string
     ])
   end
 
-  defp cluster_init_opts(_mod, _ep_id, _ep_opts, _device_opts, _parts_list, _endpoint_server_lists) do
+  defp cluster_init_opts(
+         _mod,
+         _ep_id,
+         _ep_opts,
+         _device_opts,
+         _parts_list,
+         _endpoint_server_lists
+       ) do
     []
   end
 end

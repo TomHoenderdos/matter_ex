@@ -98,7 +98,9 @@ defmodule MatterEx.Crypto.SPAKE2PlusTest do
       {:ok, prover_keys} = SPAKE2Plus.prover_finish(prover_ctx, pb, verifier.w1)
 
       wrong_mac = :crypto.strong_rand_bytes(32)
-      assert {:error, :confirmation_failed} = SPAKE2Plus.verify_confirmation(prover_keys.cb, wrong_mac)
+
+      assert {:error, :confirmation_failed} =
+               SPAKE2Plus.verify_confirmation(prover_keys.cb, wrong_mac)
     end
 
     test "wrong passcode produces different keys" do
@@ -152,17 +154,17 @@ defmodule MatterEx.Crypto.SPAKE2PlusTest do
 
     # Vector 1 specific values
     @tv1_x_scalar :binary.decode_unsigned(
-                     Base.decode16!(
-                       "8B0F3F383905CF3A3BB955EF8FB62E24849DD349A05CA79AAFB18041D30CBDB6"
-                     ),
-                     :big
-                   )
+                    Base.decode16!(
+                      "8B0F3F383905CF3A3BB955EF8FB62E24849DD349A05CA79AAFB18041D30CBDB6"
+                    ),
+                    :big
+                  )
     @tv1_y_scalar :binary.decode_unsigned(
-                     Base.decode16!(
-                       "2E0895B0E763D6D5A9564433E64AC3CAC74FF897F6C3445247BA1BAB40082A91"
-                     ),
-                     :big
-                   )
+                    Base.decode16!(
+                      "2E0895B0E763D6D5A9564433E64AC3CAC74FF897F6C3445247BA1BAB40082A91"
+                    ),
+                    :big
+                  )
 
     @tv1_expected_x Base.decode16!(
                       "04AF09987A593D3BAC8694B123839422C3CC87E37D6B41C1D630F000DD64980E537AE704BCEDE04EA3BEC9B7475B32FA2CA3B684BE14D11645E38EA6609EB39E7E"
@@ -293,17 +295,17 @@ defmodule MatterEx.Crypto.SPAKE2PlusTest do
     @rfc_context_v4 "SPAKE2+-P256-SHA256-HKDF draft-01"
 
     @tv4_x_scalar :binary.decode_unsigned(
-                     Base.decode16!(
-                       "5B478619804F4938D361FBBA3A20648725222F0A54CC4C876139EFE7D9A21786"
-                     ),
-                     :big
-                   )
+                    Base.decode16!(
+                      "5B478619804F4938D361FBBA3A20648725222F0A54CC4C876139EFE7D9A21786"
+                    ),
+                    :big
+                  )
     @tv4_y_scalar :binary.decode_unsigned(
-                     Base.decode16!(
-                       "766770DAD8C8EECBA936823C0AED044B8C3C4F7655E8BEEC44A15DCBCAF78E5E"
-                     ),
-                     :big
-                   )
+                    Base.decode16!(
+                      "766770DAD8C8EECBA936823C0AED044B8C3C4F7655E8BEEC44A15DCBCAF78E5E"
+                    ),
+                    :big
+                  )
 
     @tv4_expected_x Base.decode16!(
                       "04A6DB23D001723FB01FCFC9D08746C3C2A0A3FEFF8635D29CAD2853E7358623425CF39712E928054561BA71E2DC11F300F1760E71EB177021A8F85E78689071CD"

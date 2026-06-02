@@ -75,9 +75,29 @@ defmodule MatterEx.IM.SubscriptionManagerTest do
   end
 
   describe "due_reports/2" do
+    test "returns IDs when min_interval elapsed for change detection" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 5, 60)
+
+      sub = SubscriptionManager.get(mgr, sub_id)
+      due = SubscriptionManager.due_reports(mgr, sub.last_report_at + 5)
+
+      assert [{^sub_id, _paths}] = due
+    end
+
+    test "min_interval zero is checked no faster than once per second" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 600)
+
+      sub = SubscriptionManager.get(mgr, sub_id)
+
+      assert SubscriptionManager.due_reports(mgr, sub.last_report_at) == []
+      assert [{^sub_id, _paths}] = SubscriptionManager.due_reports(mgr, sub.last_report_at + 1)
+    end
+
     test "returns IDs when max_interval elapsed" do
       mgr = SubscriptionManager.new()
-      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 10)
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 60, 10)
 
       # Get the subscription's last_report_at
       sub = SubscriptionManager.get(mgr, sub_id)
@@ -89,10 +109,11 @@ defmodule MatterEx.IM.SubscriptionManagerTest do
 
     test "returns empty when interval not elapsed" do
       mgr = SubscriptionManager.new()
-      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 10, 60)
 
       sub = SubscriptionManager.get(mgr, sub_id)
-      now = sub.last_report_at + 5  # only 5 seconds, need 60
+      # only 5 seconds, need 10
+      now = sub.last_report_at + 5
 
       assert SubscriptionManager.due_reports(mgr, now) == []
     end
@@ -100,10 +121,11 @@ defmodule MatterEx.IM.SubscriptionManagerTest do
     test "multiple subscriptions with different intervals" do
       mgr = SubscriptionManager.new()
       {id1, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 10)
-      {_id2, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
+      {_id2, mgr} = SubscriptionManager.subscribe(mgr, @paths, 30, 60)
 
       sub1 = SubscriptionManager.get(mgr, id1)
-      now = sub1.last_report_at + 15  # 15s > 10s max for sub1, < 60s for sub2
+      # 15s > 1s check interval for sub1, < 30s check interval for sub2
+      now = sub1.last_report_at + 15
 
       due = SubscriptionManager.due_reports(mgr, now)
       assert length(due) == 1

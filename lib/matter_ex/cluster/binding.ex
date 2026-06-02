@@ -11,7 +11,7 @@ defmodule MatterEx.Cluster.Binding do
 
   use MatterEx.Cluster, id: 0x001E, name: :binding
 
-  attribute 0x0000, :binding, :list, default: [], writable: true
-  attribute 0xFFFC, :feature_map, :uint32, default: 0
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 1
+  attribute(0x0000, :binding, :list, default: [], writable: true)
+  attribute(0xFFFC, :feature_map, :uint32, default: 0)
+  attribute(0xFFFD, :cluster_revision, :uint16, default: 1)
 end

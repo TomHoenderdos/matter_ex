@@ -21,12 +21,16 @@ defmodule MatterEx.MDNS.DNSTest do
       encoded = DNS.encode_name("MATTER-0F00._matterc._udp.local")
 
       assert encoded == <<
-        11, "MATTER-0F00",
-        8, "_matterc",
-        4, "_udp",
-        5, "local",
-        0
-      >>
+               11,
+               "MATTER-0F00",
+               8,
+               "_matterc",
+               4,
+               "_udp",
+               5,
+               "local",
+               0
+             >>
     end
   end
 
@@ -50,14 +54,17 @@ defmodule MatterEx.MDNS.DNSTest do
     test "decodes name with pointer compression" do
       # Build a message where a name at offset 20 points back to offset 0
       name_at_0 = <<5, "local", 0>>
-      padding = :binary.copy(<<0>>, 13)  # fill to offset 20
-      pointer = <<0xC0, 0x00>>  # pointer to offset 0
+      # fill to offset 20
+      padding = :binary.copy(<<0>>, 13)
+      # pointer to offset 0
+      pointer = <<0xC0, 0x00>>
 
       message = name_at_0 <> padding <> pointer
 
       {name, consumed} = DNS.decode_name(message, 20)
       assert name == "local"
-      assert consumed == 2  # only the pointer bytes consumed
+      # only the pointer bytes consumed
+      assert consumed == 2
     end
 
     test "round-trip encode/decode" do
@@ -141,13 +148,15 @@ defmodule MatterEx.MDNS.DNSTest do
       binary = DNS.encode_message(msg)
 
       # Header: 12 bytes
-      <<id::16, flags::16, qdcount::16, ancount::16, _nscount::16, _arcount::16, _body::binary>> = binary
+      <<id::16, flags::16, qdcount::16, ancount::16, _nscount::16, _arcount::16, _body::binary>> =
+        binary
+
       assert id == 0
       assert qdcount == 1
       assert ancount == 0
 
       # QR bit should be 0 (query)
-      assert (flags >>> 15) == 0
+      assert flags >>> 15 == 0
     end
 
     test "encodes response with answer" do
@@ -157,8 +166,13 @@ defmodule MatterEx.MDNS.DNSTest do
         aa: true,
         questions: [],
         answers: [
-          %{name: "_matterc._udp.local", type: :ptr, class: :in, ttl: 120,
-            data: "MATTER-0F00._matterc._udp.local"}
+          %{
+            name: "_matterc._udp.local",
+            type: :ptr,
+            class: :in,
+            ttl: 120,
+            data: "MATTER-0F00._matterc._udp.local"
+          }
         ]
       }
 
@@ -166,7 +180,7 @@ defmodule MatterEx.MDNS.DNSTest do
 
       <<_id::16, flags::16, qdcount::16, ancount::16, _rest::binary>> = binary
       # QR=1, AA=1
-      assert (flags >>> 15) == 1
+      assert flags >>> 15 == 1
       assert (flags >>> 10 &&& 1) == 1
       assert qdcount == 0
       assert ancount == 1
@@ -179,8 +193,14 @@ defmodule MatterEx.MDNS.DNSTest do
         aa: true,
         questions: [],
         answers: [
-          %{name: "host.local", type: :a, class: :in, cache_flush: true,
-            ttl: 120, data: {192, 168, 1, 100}}
+          %{
+            name: "host.local",
+            type: :a,
+            class: :in,
+            cache_flush: true,
+            ttl: 120,
+            data: {192, 168, 1, 100}
+          }
         ]
       }
 
@@ -196,9 +216,13 @@ defmodule MatterEx.MDNS.DNSTest do
   describe "message decoding" do
     test "decodes query" do
       msg = %{
-        id: 0, qr: :query, aa: false,
+        id: 0,
+        qr: :query,
+        aa: false,
         questions: [%{name: "_matterc._udp.local", type: :ptr, class: :in}],
-        answers: [], authority: [], additional: []
+        answers: [],
+        authority: [],
+        additional: []
       }
 
       binary = DNS.encode_message(msg)
@@ -214,7 +238,9 @@ defmodule MatterEx.MDNS.DNSTest do
 
     test "decodes response with A record" do
       msg = %{
-        id: 0, qr: :response, aa: true,
+        id: 0,
+        qr: :response,
+        aa: true,
         questions: [],
         answers: [
           %{name: "host.local", type: :a, class: :in, ttl: 120, data: {192, 168, 1, 100}}
@@ -235,11 +261,18 @@ defmodule MatterEx.MDNS.DNSTest do
 
     test "decodes response with SRV record" do
       msg = %{
-        id: 0, qr: :response, aa: true,
+        id: 0,
+        qr: :response,
+        aa: true,
         questions: [],
         answers: [
-          %{name: "instance._tcp.local", type: :srv, class: :in, ttl: 120,
-            data: {0, 0, 5540, "host.local"}}
+          %{
+            name: "instance._tcp.local",
+            type: :srv,
+            class: :in,
+            ttl: 120,
+            data: {0, 0, 5540, "host.local"}
+          }
         ]
       }
 
@@ -257,11 +290,18 @@ defmodule MatterEx.MDNS.DNSTest do
 
     test "decodes response with TXT record" do
       msg = %{
-        id: 0, qr: :response, aa: true,
+        id: 0,
+        qr: :response,
+        aa: true,
         questions: [],
         answers: [
-          %{name: "instance._udp.local", type: :txt, class: :in, ttl: 4500,
-            data: ["D=3840", "VP=65521+32769", "CM=1"]}
+          %{
+            name: "instance._udp.local",
+            type: :txt,
+            class: :in,
+            ttl: 4500,
+            data: ["D=3840", "VP=65521+32769", "CM=1"]
+          }
         ]
       }
 
@@ -275,11 +315,18 @@ defmodule MatterEx.MDNS.DNSTest do
 
     test "decodes response with PTR record" do
       msg = %{
-        id: 0, qr: :response, aa: true,
+        id: 0,
+        qr: :response,
+        aa: true,
         questions: [],
         answers: [
-          %{name: "_matterc._udp.local", type: :ptr, class: :in, ttl: 4500,
-            data: "MATTER-0F00._matterc._udp.local"}
+          %{
+            name: "_matterc._udp.local",
+            type: :ptr,
+            class: :in,
+            ttl: 4500,
+            data: "MATTER-0F00._matterc._udp.local"
+          }
         ]
       }
 
@@ -293,17 +340,42 @@ defmodule MatterEx.MDNS.DNSTest do
 
     test "round-trip full response with multiple records" do
       msg = %{
-        id: 0, qr: :response, aa: true,
+        id: 0,
+        qr: :response,
+        aa: true,
         questions: [],
         answers: [
-          %{name: "_matterc._udp.local", type: :ptr, class: :in, ttl: 4500,
-            data: "MATTER-0F00._matterc._udp.local"},
-          %{name: "MATTER-0F00._matterc._udp.local", type: :srv, class: :in,
-            cache_flush: true, ttl: 120, data: {0, 0, 5540, "matter_ex.local"}},
-          %{name: "MATTER-0F00._matterc._udp.local", type: :txt, class: :in,
-            cache_flush: true, ttl: 4500, data: ["D=3840", "CM=1"]},
-          %{name: "matter_ex.local", type: :a, class: :in,
-            cache_flush: true, ttl: 120, data: {192, 168, 1, 100}}
+          %{
+            name: "_matterc._udp.local",
+            type: :ptr,
+            class: :in,
+            ttl: 4500,
+            data: "MATTER-0F00._matterc._udp.local"
+          },
+          %{
+            name: "MATTER-0F00._matterc._udp.local",
+            type: :srv,
+            class: :in,
+            cache_flush: true,
+            ttl: 120,
+            data: {0, 0, 5540, "matter_ex.local"}
+          },
+          %{
+            name: "MATTER-0F00._matterc._udp.local",
+            type: :txt,
+            class: :in,
+            cache_flush: true,
+            ttl: 4500,
+            data: ["D=3840", "CM=1"]
+          },
+          %{
+            name: "matter_ex.local",
+            type: :a,
+            class: :in,
+            cache_flush: true,
+            ttl: 120,
+            data: {192, 168, 1, 100}
+          }
         ]
       }
 

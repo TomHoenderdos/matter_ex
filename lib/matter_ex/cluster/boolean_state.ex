@@ -7,6 +7,6 @@ defmodule MatterEx.Cluster.BooleanState do
 
   use MatterEx.Cluster, id: 0x0045, name: :boolean_state
 
-  attribute 0x0000, :state_value, :boolean, default: false
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 1
+  attribute(0x0000, :state_value, :boolean, default: false)
+  attribute(0xFFFD, :cluster_revision, :uint16, default: 1)
 end

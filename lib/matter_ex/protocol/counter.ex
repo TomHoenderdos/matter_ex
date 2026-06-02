@@ -13,9 +13,9 @@ defmodule MatterEx.Protocol.Counter do
   @max_counter 0xFFFFFFFF
 
   @type t :: %__MODULE__{
-    local_counter: non_neg_integer(),
-    peer_windows: %{term() => {non_neg_integer(), non_neg_integer()}}
-  }
+          local_counter: non_neg_integer(),
+          peer_windows: %{term() => {non_neg_integer(), non_neg_integer()}}
+        }
 
   defstruct local_counter: 0,
             peer_windows: %{}
@@ -75,7 +75,7 @@ defmodule MatterEx.Protocol.Counter do
     cond do
       counter > max ->
         shift = counter - max
-        new_bitmap = (bitmap <<< shift) ||| 1
+        new_bitmap = bitmap <<< shift ||| 1
         new_windows = Map.put(state.peer_windows, peer_id, {counter, new_bitmap})
         {:ok, %{state | peer_windows: new_windows}}
 
@@ -85,10 +85,10 @@ defmodule MatterEx.Protocol.Counter do
       max - counter < @window_size ->
         pos = max - counter
 
-        if (bitmap &&& (1 <<< pos)) != 0 do
+        if (bitmap &&& 1 <<< pos) != 0 do
           {:error, :duplicate}
         else
-          new_bitmap = bitmap ||| (1 <<< pos)
+          new_bitmap = bitmap ||| 1 <<< pos
           new_windows = Map.put(state.peer_windows, peer_id, {max, new_bitmap})
           {:ok, %{state | peer_windows: new_windows}}
         end

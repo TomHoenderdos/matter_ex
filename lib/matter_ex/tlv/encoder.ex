@@ -52,6 +52,22 @@ defmodule MatterEx.TLV.Encoder do
   end
 
   # Unsigned integers — choose smallest encoding
+  defp encode_with_tag(tc, tag, {:uint8, n}) when n in 0..0xFF do
+    [control(tc, @uint8), tag, <<n::little-unsigned-8>>]
+  end
+
+  defp encode_with_tag(tc, tag, {:uint16, n}) when n in 0..0xFFFF do
+    [control(tc, @uint16), tag, <<n::little-unsigned-16>>]
+  end
+
+  defp encode_with_tag(tc, tag, {:uint32, n}) when n in 0..0xFFFFFFFF do
+    [control(tc, @uint32), tag, <<n::little-unsigned-32>>]
+  end
+
+  defp encode_with_tag(tc, tag, {:uint64, n}) when n >= 0 do
+    [control(tc, @uint64), tag, <<n::little-unsigned-64>>]
+  end
+
   defp encode_with_tag(tc, tag, {:uint, n}) when n in 0..0xFF do
     [control(tc, @uint8), tag, <<n::little-unsigned-8>>]
   end
@@ -69,6 +85,22 @@ defmodule MatterEx.TLV.Encoder do
   end
 
   # Signed integers — choose smallest encoding
+  defp encode_with_tag(tc, tag, {:int8, n}) when n in -128..127 do
+    [control(tc, @int8), tag, <<n::little-signed-8>>]
+  end
+
+  defp encode_with_tag(tc, tag, {:int16, n}) when n in -32_768..32_767 do
+    [control(tc, @int16), tag, <<n::little-signed-16>>]
+  end
+
+  defp encode_with_tag(tc, tag, {:int32, n}) when n in -2_147_483_648..2_147_483_647 do
+    [control(tc, @int32), tag, <<n::little-signed-32>>]
+  end
+
+  defp encode_with_tag(tc, tag, {:int64, n}) when is_integer(n) do
+    [control(tc, @int64), tag, <<n::little-signed-64>>]
+  end
+
   defp encode_with_tag(tc, tag, {:int, n}) when n in -128..127 do
     [control(tc, @int8), tag, <<n::little-signed-8>>]
   end
@@ -185,7 +217,7 @@ defmodule MatterEx.TLV.Encoder do
 
   # Build control byte: (tag_control << 5) | element_type
   defp control(tag_control, elem_type) do
-    <<(tag_control <<< 5) ||| elem_type>>
+    <<tag_control <<< 5 ||| elem_type>>
   end
 
   # Choose smallest length prefix for strings/bytes

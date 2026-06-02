@@ -11,24 +11,24 @@ defmodule MatterEx.Cluster.BooleanStateConfiguration do
   use MatterEx.Cluster, id: 0x0080, name: :boolean_state_configuration
 
   # CurrentSensitivityLevel: 0=Low, 1=Medium, 2=High
-  attribute 0x0000, :current_sensitivity_level, :uint8, default: 1, writable: true
+  attribute(0x0000, :current_sensitivity_level, :uint8, default: 1, writable: true)
   # SupportedSensitivityLevels: number of levels supported
-  attribute 0x0001, :supported_sensitivity_levels, :uint8, default: 3
+  attribute(0x0001, :supported_sensitivity_levels, :uint8, default: 3)
   # DefaultSensitivityLevel
-  attribute 0x0002, :default_sensitivity_level, :uint8, default: 1
+  attribute(0x0002, :default_sensitivity_level, :uint8, default: 1)
   # AlarmsActive: bitmap of currently active alarms (bit 0=visual, bit 1=audible)
-  attribute 0x0003, :alarms_active, :bitmap8, default: 0
+  attribute(0x0003, :alarms_active, :bitmap8, default: 0)
   # AlarmsSuppressed: bitmap of suppressed alarms
-  attribute 0x0004, :alarms_suppressed, :bitmap8, default: 0
+  attribute(0x0004, :alarms_suppressed, :bitmap8, default: 0)
   # AlarmsEnabled: bitmap of enabled alarms
-  attribute 0x0005, :alarms_enabled, :bitmap8, default: 0x03, writable: true
+  attribute(0x0005, :alarms_enabled, :bitmap8, default: 0x03, writable: true)
   # AlarmsSupported: bitmap of supported alarm types
-  attribute 0x0006, :alarms_supported, :bitmap8, default: 0x03
-  attribute 0xFFFC, :feature_map, :uint32, default: 0x03
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 1
+  attribute(0x0006, :alarms_supported, :bitmap8, default: 0x03)
+  attribute(0xFFFC, :feature_map, :uint32, default: 0x03)
+  attribute(0xFFFD, :cluster_revision, :uint16, default: 1)
 
-  command 0x00, :suppress_alarm, [alarms_to_suppress: :bitmap8]
-  command 0x01, :enable_disable_alarm, [alarms_to_enable_disable: :bitmap8]
+  command(0x00, :suppress_alarm, alarms_to_suppress: :bitmap8)
+  command(0x01, :enable_disable_alarm, alarms_to_enable_disable: :bitmap8)
 
   @impl MatterEx.Cluster
   def handle_command(:suppress_alarm, params, state) do

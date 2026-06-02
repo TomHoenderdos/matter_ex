@@ -5,12 +5,12 @@ defmodule MatterEx.Cluster.OnOff do
 
   use MatterEx.Cluster, id: 0x0006, name: :on_off
 
-  attribute 0x0000, :on_off, :boolean, default: false, writable: true
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 4
+  attribute(0x0000, :on_off, :boolean, default: false, writable: true)
+  attribute(0xFFFD, :cluster_revision, :uint16, default: 4)
 
-  command 0x00, :off, []
-  command 0x01, :on, []
-  command 0x02, :toggle, []
+  command(0x00, :off, [])
+  command(0x01, :on, [])
+  command(0x02, :toggle, [])
 
   @impl MatterEx.Cluster
   def handle_command(:off, _params, state) do

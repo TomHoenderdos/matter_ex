@@ -169,11 +169,12 @@ defmodule MatterEx.IMTest do
       msg = %IM.ReportData{
         subscription_id: 42,
         attribute_reports: [
-          {:data, %{
-            version: 1,
-            path: %{endpoint: 1, cluster: 0x0006, attribute: 0x0000},
-            value: {:bool, true}
-          }}
+          {:data,
+           %{
+             version: 1,
+             path: %{endpoint: 1, cluster: 0x0006, attribute: 0x0000},
+             value: {:bool, true}
+           }}
         ]
       }
 
@@ -188,11 +189,12 @@ defmodule MatterEx.IMTest do
     test "encode/decode with status report" do
       msg = %IM.ReportData{
         attribute_reports: [
-          {:status, %{
-            path: %{endpoint: 1, cluster: 0x0006, attribute: 0x0000},
-            status: 0x86,
-            cluster_status: nil
-          }}
+          {:status,
+           %{
+             path: %{endpoint: 1, cluster: 0x0006, attribute: 0x0000},
+             status: 0x86,
+             cluster_status: nil
+           }}
         ]
       }
 
@@ -218,13 +220,14 @@ defmodule MatterEx.IMTest do
     test "encode/decode with event reports" do
       msg = %IM.ReportData{
         event_reports: [
-          {:data, %{
-            path: %{endpoint: 0, cluster: 0x0028, event: 0x00},
-            event_number: 0,
-            priority: 2,
-            system_timestamp: 1_000_000,
-            data: %{0 => {:uint, 1}}
-          }}
+          {:data,
+           %{
+             path: %{endpoint: 0, cluster: 0x0028, event: 0x00},
+             event_number: 0,
+             priority: 2,
+             system_timestamp: 1_000_000,
+             data: %{0 => {:uint, 1}}
+           }}
         ]
       }
 
@@ -241,16 +244,18 @@ defmodule MatterEx.IMTest do
     test "multiple attribute reports" do
       msg = %IM.ReportData{
         attribute_reports: [
-          {:data, %{
-            version: 1,
-            path: %{endpoint: 1, cluster: 0x0006, attribute: 0x0000},
-            value: {:bool, true}
-          }},
-          {:data, %{
-            version: 2,
-            path: %{endpoint: 1, cluster: 0x0008, attribute: 0x0000},
-            value: {:uint, 128}
-          }}
+          {:data,
+           %{
+             version: 1,
+             path: %{endpoint: 1, cluster: 0x0006, attribute: 0x0000},
+             value: {:bool, true}
+           }},
+          {:data,
+           %{
+             version: 2,
+             path: %{endpoint: 1, cluster: 0x0008, attribute: 0x0000},
+             value: {:uint, 128}
+           }}
         ]
       }
 
@@ -394,10 +399,11 @@ defmodule MatterEx.IMTest do
     test "encode/decode with command response" do
       msg = %IM.InvokeResponse{
         invoke_responses: [
-          {:command, %{
-            path: %{endpoint: 1, cluster: 0x0006, command: 0x02},
-            fields: %{0 => {:uint, 0}}
-          }}
+          {:command,
+           %{
+             path: %{endpoint: 1, cluster: 0x0006, command: 0x02},
+             fields: %{0 => {:uint, 0}}
+           }}
         ]
       }
 
@@ -411,11 +417,12 @@ defmodule MatterEx.IMTest do
     test "encode/decode with status response" do
       msg = %IM.InvokeResponse{
         invoke_responses: [
-          {:status, %{
-            path: %{endpoint: 1, cluster: 0x0006, command: 0x02},
-            status: 0x00,
-            cluster_status: nil
-          }}
+          {:status,
+           %{
+             path: %{endpoint: 1, cluster: 0x0006, command: 0x02},
+             status: 0x00,
+             cluster_status: nil
+           }}
         ]
       }
 
@@ -429,15 +436,17 @@ defmodule MatterEx.IMTest do
     test "mixed command and status responses" do
       msg = %IM.InvokeResponse{
         invoke_responses: [
-          {:command, %{
-            path: %{endpoint: 1, cluster: 0x0006, command: 0x01},
-            fields: nil
-          }},
-          {:status, %{
-            path: %{endpoint: 1, cluster: 0x0006, command: 0x02},
-            status: 0x81,
-            cluster_status: nil
-          }}
+          {:command,
+           %{
+             path: %{endpoint: 1, cluster: 0x0006, command: 0x01},
+             fields: nil
+           }},
+          {:status,
+           %{
+             path: %{endpoint: 1, cluster: 0x0006, command: 0x02},
+             status: 0x81,
+             cluster_status: nil
+           }}
         ]
       }
 
@@ -502,11 +511,12 @@ defmodule MatterEx.IMTest do
     test "encode/decode with more_chunked_messages=true" do
       msg = %IM.ReportData{
         attribute_reports: [
-          {:data, %{
-            version: 1,
-            path: %{endpoint: 1, cluster: 0x0006, attribute: 0x0000},
-            value: {:bool, true}
-          }}
+          {:data,
+           %{
+             version: 1,
+             path: %{endpoint: 1, cluster: 0x0006, attribute: 0x0000},
+             value: {:bool, true}
+           }}
         ],
         more_chunked_messages: true
       }
@@ -526,13 +536,15 @@ defmodule MatterEx.IMTest do
 
   describe "chunk_report_data/2" do
     test "returns single chunk for small reports" do
-      reports = for i <- 1..3 do
-        {:data, %{
-          version: 1,
-          path: %{endpoint: 1, cluster: 0x0006, attribute: i},
-          value: {:uint, i}
-        }}
-      end
+      reports =
+        for i <- 1..3 do
+          {:data,
+           %{
+             version: 1,
+             path: %{endpoint: 1, cluster: 0x0006, attribute: i},
+             value: {:uint, i}
+           }}
+        end
 
       msg = %IM.ReportData{attribute_reports: reports}
       chunks = IM.chunk_report_data(msg, 5)
@@ -541,13 +553,15 @@ defmodule MatterEx.IMTest do
     end
 
     test "splits large reports into multiple chunks" do
-      reports = for i <- 1..10 do
-        {:data, %{
-          version: 1,
-          path: %{endpoint: 1, cluster: 0x0006, attribute: i},
-          value: {:uint, i}
-        }}
-      end
+      reports =
+        for i <- 1..10 do
+          {:data,
+           %{
+             version: 1,
+             path: %{endpoint: 1, cluster: 0x0006, attribute: i},
+             value: {:uint, i}
+           }}
+        end
 
       msg = %IM.ReportData{attribute_reports: reports}
       chunks = IM.chunk_report_data(msg, 3)
@@ -566,13 +580,15 @@ defmodule MatterEx.IMTest do
     end
 
     test "preserves subscription_id across chunks" do
-      reports = for i <- 1..6 do
-        {:data, %{
-          version: 1,
-          path: %{endpoint: 1, cluster: 0x0006, attribute: i},
-          value: {:uint, i}
-        }}
-      end
+      reports =
+        for i <- 1..6 do
+          {:data,
+           %{
+             version: 1,
+             path: %{endpoint: 1, cluster: 0x0006, attribute: i},
+             value: {:uint, i}
+           }}
+        end
 
       msg = %IM.ReportData{subscription_id: 42, attribute_reports: reports}
       chunks = IM.chunk_report_data(msg, 2)
@@ -588,13 +604,15 @@ defmodule MatterEx.IMTest do
     end
 
     test "exact multiple of chunk size" do
-      reports = for i <- 1..6 do
-        {:data, %{
-          version: 1,
-          path: %{endpoint: 1, cluster: 0x0006, attribute: i},
-          value: {:uint, i}
-        }}
-      end
+      reports =
+        for i <- 1..6 do
+          {:data,
+           %{
+             version: 1,
+             path: %{endpoint: 1, cluster: 0x0006, attribute: i},
+             value: {:uint, i}
+           }}
+        end
 
       msg = %IM.ReportData{attribute_reports: reports}
       chunks = IM.chunk_report_data(msg, 3)

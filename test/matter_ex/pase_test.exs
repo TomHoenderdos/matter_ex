@@ -6,7 +6,7 @@ defmodule MatterEx.PASETest do
   alias MatterEx.Protocol.StatusReport
   alias MatterEx.Session
 
-  @passcode 20202021
+  @passcode 20_202_021
   @salt :crypto.strong_rand_bytes(32)
   @iterations 1000
 
@@ -44,11 +44,12 @@ defmodule MatterEx.PASETest do
 
   describe "Session" do
     test "new creates session with counter" do
-      session = Session.new(
-        local_session_id: 1,
-        peer_session_id: 2,
-        encryption_key: :crypto.strong_rand_bytes(16)
-      )
+      session =
+        Session.new(
+          local_session_id: 1,
+          peer_session_id: 2,
+          encryption_key: :crypto.strong_rand_bytes(16)
+        )
 
       assert session.local_session_id == 1
       assert session.peer_session_id == 2
@@ -57,11 +58,13 @@ defmodule MatterEx.PASETest do
 
     test "derives directional keys from Ke" do
       ke = :crypto.strong_rand_bytes(16)
-      session = Session.new(
-        local_session_id: 100,
-        peer_session_id: 200,
-        encryption_key: ke
-      )
+
+      session =
+        Session.new(
+          local_session_id: 100,
+          peer_session_id: 200,
+          encryption_key: ke
+        )
 
       assert byte_size(session.encrypt_key) == 16
       assert byte_size(session.decrypt_key) == 16
@@ -85,7 +88,10 @@ defmodule MatterEx.PASETest do
 
     test "PBKDFParamRequest with options" do
       random = :crypto.strong_rand_bytes(32)
-      encoded = Messages.encode_pbkdf_param_request(random, 10, passcode_id: 1, has_pbkdf_params: true)
+
+      encoded =
+        Messages.encode_pbkdf_param_request(random, 10, passcode_id: 1, has_pbkdf_params: true)
+
       assert {:ok, decoded} = Messages.decode_pbkdf_param_request(encoded)
       assert decoded.passcode_id == 1
       assert decoded.has_pbkdf_params == true
@@ -139,16 +145,19 @@ defmodule MatterEx.PASETest do
 
   describe "PASE device flow" do
     test "handle PBKDFParamRequest → sends PBKDFParamResponse" do
-      device = PASE.new_device(
-        passcode: @passcode, salt: @salt,
-        iterations: @iterations, local_session_id: 1
-      )
+      device =
+        PASE.new_device(
+          passcode: @passcode,
+          salt: @salt,
+          iterations: @iterations,
+          local_session_id: 1
+        )
 
       random = :crypto.strong_rand_bytes(32)
       req_payload = Messages.encode_pbkdf_param_request(random, 42)
 
       assert {:reply, :pbkdf_param_response, resp_payload, device} =
-        PASE.handle(device, :pbkdf_param_request, req_payload)
+               PASE.handle(device, :pbkdf_param_request, req_payload)
 
       assert {:ok, resp} = Messages.decode_pbkdf_param_response(resp_payload)
       assert resp.initiator_random == random
@@ -179,10 +188,13 @@ defmodule MatterEx.PASETest do
   describe "full PASE end-to-end" do
     test "commissioner ↔ device complete handshake" do
       # Setup
-      device = PASE.new_device(
-        passcode: @passcode, salt: @salt,
-        iterations: @iterations, local_session_id: 1
-      )
+      device =
+        PASE.new_device(
+          passcode: @passcode,
+          salt: @salt,
+          iterations: @iterations,
+          local_session_id: 1
+        )
 
       comm = PASE.new_commissioner(passcode: @passcode, local_session_id: 2)
 
@@ -226,12 +238,15 @@ defmodule MatterEx.PASETest do
     end
 
     test "different passcodes cause confirmation failure" do
-      device = PASE.new_device(
-        passcode: @passcode, salt: @salt,
-        iterations: @iterations, local_session_id: 1
-      )
+      device =
+        PASE.new_device(
+          passcode: @passcode,
+          salt: @salt,
+          iterations: @iterations,
+          local_session_id: 1
+        )
 
-      comm = PASE.new_commissioner(passcode: 12345678, local_session_id: 2)
+      comm = PASE.new_commissioner(passcode: 12_345_678, local_session_id: 2)
 
       {:send, :pbkdf_param_request, req_payload, comm} = PASE.initiate(comm)
 
@@ -246,19 +261,25 @@ defmodule MatterEx.PASETest do
 
       # Commissioner should fail to verify cB since keys don't match
       assert {:error, :confirmation_failed} =
-        PASE.handle(comm, :pase_pake2, pake2_payload)
+               PASE.handle(comm, :pase_pake2, pake2_payload)
     end
 
     test "multiple handshakes produce different keys" do
-      device1 = PASE.new_device(
-        passcode: @passcode, salt: @salt,
-        iterations: @iterations, local_session_id: 1
-      )
+      device1 =
+        PASE.new_device(
+          passcode: @passcode,
+          salt: @salt,
+          iterations: @iterations,
+          local_session_id: 1
+        )
 
-      device2 = PASE.new_device(
-        passcode: @passcode, salt: @salt,
-        iterations: @iterations, local_session_id: 3
-      )
+      device2 =
+        PASE.new_device(
+          passcode: @passcode,
+          salt: @salt,
+          iterations: @iterations,
+          local_session_id: 3
+        )
 
       comm1 = PASE.new_commissioner(passcode: @passcode, local_session_id: 2)
       comm2 = PASE.new_commissioner(passcode: @passcode, local_session_id: 4)
@@ -276,14 +297,17 @@ defmodule MatterEx.PASETest do
 
   describe "error cases" do
     test "message in wrong state" do
-      device = PASE.new_device(
-        passcode: @passcode, salt: @salt,
-        iterations: @iterations, local_session_id: 1
-      )
+      device =
+        PASE.new_device(
+          passcode: @passcode,
+          salt: @salt,
+          iterations: @iterations,
+          local_session_id: 1
+        )
 
       # Device is in :idle, should not accept Pake1
       assert {:error, :unexpected_message} =
-        PASE.handle(device, :pase_pake1, <<>>)
+               PASE.handle(device, :pase_pake1, <<>>)
     end
 
     test "commissioner message in wrong state" do
@@ -291,31 +315,40 @@ defmodule MatterEx.PASETest do
 
       # Commissioner is in :idle, should not accept PBKDFParamResponse
       assert {:error, :unexpected_message} =
-        PASE.handle(comm, :pbkdf_param_response, <<>>)
+               PASE.handle(comm, :pbkdf_param_response, <<>>)
     end
 
     test "malformed PBKDFParamRequest" do
-      device = PASE.new_device(
-        passcode: @passcode, salt: @salt,
-        iterations: @iterations, local_session_id: 1
-      )
+      device =
+        PASE.new_device(
+          passcode: @passcode,
+          salt: @salt,
+          iterations: @iterations,
+          local_session_id: 1
+        )
 
       assert {:error, _reason} = PASE.handle(device, :pbkdf_param_request, <<0>>)
     end
 
     test "device rejects bad cA in Pake3" do
-      device = PASE.new_device(
-        passcode: @passcode, salt: @salt,
-        iterations: @iterations, local_session_id: 1
-      )
+      device =
+        PASE.new_device(
+          passcode: @passcode,
+          salt: @salt,
+          iterations: @iterations,
+          local_session_id: 1
+        )
 
       comm = PASE.new_commissioner(passcode: @passcode, local_session_id: 2)
 
       {:send, :pbkdf_param_request, req_payload, comm} = PASE.initiate(comm)
+
       {:reply, :pbkdf_param_response, resp_payload, device} =
         PASE.handle(device, :pbkdf_param_request, req_payload)
+
       {:send, :pase_pake1, pake1_payload, _comm} =
         PASE.handle(comm, :pbkdf_param_response, resp_payload)
+
       {:reply, :pase_pake2, _pake2_payload, device} =
         PASE.handle(device, :pase_pake1, pake1_payload)
 
@@ -323,35 +356,45 @@ defmodule MatterEx.PASETest do
       fake_pake3 = Messages.encode_pake3(:crypto.strong_rand_bytes(32))
 
       assert {:error, :confirmation_failed} =
-        PASE.handle(device, :pase_pake3, fake_pake3)
+               PASE.handle(device, :pase_pake3, fake_pake3)
     end
 
     test "commissioner rejects failed StatusReport" do
-      device = PASE.new_device(
-        passcode: @passcode, salt: @salt,
-        iterations: @iterations, local_session_id: 1
-      )
+      device =
+        PASE.new_device(
+          passcode: @passcode,
+          salt: @salt,
+          iterations: @iterations,
+          local_session_id: 1
+        )
 
       comm = PASE.new_commissioner(passcode: @passcode, local_session_id: 2)
 
       # Run through to pake3_sent state
       {:send, :pbkdf_param_request, req_payload, comm} = PASE.initiate(comm)
+
       {:reply, :pbkdf_param_response, resp_payload, device} =
         PASE.handle(device, :pbkdf_param_request, req_payload)
+
       {:send, :pase_pake1, pake1_payload, comm} =
         PASE.handle(comm, :pbkdf_param_response, resp_payload)
+
       {:reply, :pase_pake2, pake2_payload, _device} =
         PASE.handle(device, :pase_pake1, pake1_payload)
+
       {:send, :pase_pake3, _pake3_payload, comm} =
         PASE.handle(comm, :pase_pake2, pake2_payload)
 
       # Send a failure StatusReport instead of success
-      failure_sr = StatusReport.encode(%StatusReport{
-        general_code: 1, protocol_id: 0, protocol_code: 2
-      })
+      failure_sr =
+        StatusReport.encode(%StatusReport{
+          general_code: 1,
+          protocol_id: 0,
+          protocol_code: 2
+        })
 
       assert {:error, :session_establishment_failed} =
-        PASE.handle(comm, :status_report, failure_sr)
+               PASE.handle(comm, :status_report, failure_sr)
     end
   end
 
@@ -363,7 +406,10 @@ defmodule MatterEx.PASETest do
     {:send, :pase_pake1, pake1, comm} = PASE.handle(comm, :pbkdf_param_response, resp)
     {:reply, :pase_pake2, pake2, device} = PASE.handle(device, :pase_pake1, pake1)
     {:send, :pase_pake3, pake3, comm} = PASE.handle(comm, :pase_pake2, pake2)
-    {:established, :status_report, sr, _session, _device} = PASE.handle(device, :pase_pake3, pake3)
+
+    {:established, :status_report, sr, _session, _device} =
+      PASE.handle(device, :pase_pake3, pake3)
+
     {:established, session, _comm} = PASE.handle(comm, :status_report, sr)
     session
   end

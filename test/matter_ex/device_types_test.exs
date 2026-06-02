@@ -9,8 +9,10 @@ defmodule MatterEx.DeviceTypesTest do
       assert dt.name == :on_off_light
       assert dt.id == 0x0100
       assert dt.revision == 3
-      assert 0x001D in dt.required_clusters  # Descriptor
-      assert 0x0006 in dt.required_clusters  # OnOff
+      # Descriptor
+      assert 0x001D in dt.required_clusters
+      # OnOff
+      assert 0x0006 in dt.required_clusters
     end
 
     test "returns nil for unknown ID" do
@@ -20,15 +22,25 @@ defmodule MatterEx.DeviceTypesTest do
     test "root node includes required endpoint 0 clusters" do
       dt = DeviceTypes.get(0x0016)
       assert dt.name == :root_node
-      assert 0x003E in dt.required_clusters  # OperationalCredentials
-      assert 0x0033 in dt.required_clusters  # GeneralDiagnostics
+      # OperationalCredentials
+      assert 0x003E in dt.required_clusters
+      # GeneralDiagnostics
+      assert 0x0033 in dt.required_clusters
+      # AccessControl
+      assert 0x001F in dt.required_clusters
+      # GeneralCommissioning
+      assert 0x0030 in dt.required_clusters
+      # AdministratorCommissioning
+      assert 0x003C in dt.required_clusters
     end
 
     test "thermostat device type" do
       dt = DeviceTypes.get(0x0301)
       assert dt.name == :thermostat
-      assert 0x0201 in dt.required_clusters  # Thermostat cluster
-      assert 0x0202 in dt.optional_clusters  # FanControl is optional
+      # Thermostat cluster
+      assert 0x0201 in dt.required_clusters
+      # FanControl is optional
+      assert 0x0202 in dt.optional_clusters
     end
   end
 
@@ -36,8 +48,10 @@ defmodule MatterEx.DeviceTypesTest do
     test "returns list of all device type IDs" do
       ids = DeviceTypes.list()
       assert is_list(ids)
-      assert 0x0100 in ids  # On/Off Light
-      assert 0x0016 in ids  # Root Node
+      # On/Off Light
+      assert 0x0100 in ids
+      # Root Node
+      assert 0x0016 in ids
       assert length(ids) > 20
     end
   end

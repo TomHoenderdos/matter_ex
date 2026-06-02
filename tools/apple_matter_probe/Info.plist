@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>apple-matter-probe</string>
+  <key>CFBundleIdentifier</key>
+  <string>dev.matterex.apple-matter-probe</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>Apple Matter Probe</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_matter._tcp</string>
+    <string>_matterc._udp</string>
+    <string>_matterd._udp</string>
+  </array>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>Commission Matter devices over Bluetooth LE.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Discover and commission Matter devices on the local network.</string>
+</dict>
+</plist>

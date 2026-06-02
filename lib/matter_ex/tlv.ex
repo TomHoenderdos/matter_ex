@@ -40,7 +40,7 @@ defmodule MatterEx.TLV do
   nil, maps (for structs), and lists (for arrays/lists).
   """
 
-  alias MatterEx.TLV.{Encoder, Decoder}
+  alias MatterEx.TLV.{Decoder, Encoder}
 
   @doc """
   Encode a map as a TLV anonymous struct.

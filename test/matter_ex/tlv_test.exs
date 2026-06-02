@@ -105,6 +105,13 @@ defmodule MatterEx.TLVTest do
     test "int64: large negative" do
       assert %{1 => -2_147_483_649} == roundtrip(%{1 => {:int, -2_147_483_649}})
     end
+
+    test "typed signed integers" do
+      assert %{1 => -1} == roundtrip(%{1 => {:int8, -1}})
+      assert %{1 => -129} == roundtrip(%{1 => {:int16, -129}})
+      assert %{1 => 40_000} == roundtrip(%{1 => {:int32, 40_000}})
+      assert %{1 => 3_000_000_000} == roundtrip(%{1 => {:int64, 3_000_000_000}})
+    end
   end
 
   # ── Booleans ───────────────────────────────────────────────────────
@@ -232,11 +239,15 @@ defmodule MatterEx.TLVTest do
 
     test "deeply nested structs" do
       input = %{
-        0 => {:struct, %{
-          0 => {:struct, %{
-            0 => {:uint, 99}
-          }}
-        }}
+        0 =>
+          {:struct,
+           %{
+             0 =>
+               {:struct,
+                %{
+                  0 => {:uint, 99}
+                }}
+           }}
       }
 
       assert %{0 => %{0 => %{0 => 99}}} == roundtrip(input)
@@ -271,10 +282,12 @@ defmodule MatterEx.TLVTest do
 
     test "nested arrays" do
       input = %{
-        1 => {:array, [
-          {:array, [{:uint, 1}, {:uint, 2}]},
-          {:array, [{:uint, 3}, {:uint, 4}]}
-        ]}
+        1 =>
+          {:array,
+           [
+             {:array, [{:uint, 1}, {:uint, 2}]},
+             {:array, [{:uint, 3}, {:uint, 4}]}
+           ]}
       }
 
       assert %{1 => [[1, 2], [3, 4]]} == roundtrip(input)
@@ -282,10 +295,12 @@ defmodule MatterEx.TLVTest do
 
     test "array of structs" do
       input = %{
-        1 => {:array, [
-          {:struct, %{0 => {:uint, 1}, 1 => {:string, "a"}}},
-          {:struct, %{0 => {:uint, 2}, 1 => {:string, "b"}}}
-        ]}
+        1 =>
+          {:array,
+           [
+             {:struct, %{0 => {:uint, 1}, 1 => {:string, "a"}}},
+             {:struct, %{0 => {:uint, 2}, 1 => {:string, "b"}}}
+           ]}
       }
 
       assert %{1 => [%{0 => 1, 1 => "a"}, %{0 => 2, 1 => "b"}]} == roundtrip(input)
@@ -317,10 +332,12 @@ defmodule MatterEx.TLVTest do
       input = %{
         1 => {:uint, 42},
         2 => {:string, "hello"},
-        3 => {:struct, %{
-          0 => {:bool, true},
-          1 => {:bytes, <<0xDE, 0xAD>>}
-        }}
+        3 =>
+          {:struct,
+           %{
+             0 => {:bool, true},
+             1 => {:bytes, <<0xDE, 0xAD>>}
+           }}
       }
 
       expected = %{
@@ -451,8 +468,11 @@ defmodule MatterEx.TLVTest do
 
       assert <<
                0x15,
-               0x35, 0x01,
-               0x24, 0x00, 0x05,
+               0x35,
+               0x01,
+               0x24,
+               0x00,
+               0x05,
                0x18,
                0x18
              >> == encoded
@@ -463,9 +483,12 @@ defmodule MatterEx.TLVTest do
 
       assert <<
                0x15,
-               0x36, 0x01,
-               0x04, 0x01,
-               0x04, 0x02,
+               0x36,
+               0x01,
+               0x04,
+               0x01,
+               0x04,
+               0x02,
                0x18,
                0x18
              >> == encoded
@@ -477,9 +500,15 @@ defmodule MatterEx.TLVTest do
 
       assert <<
                0x15,
-               0x24, 0x00, 0x00,
-               0x24, 0x01, 0x01,
-               0x24, 0x02, 0x02,
+               0x24,
+               0x00,
+               0x00,
+               0x24,
+               0x01,
+               0x01,
+               0x24,
+               0x02,
+               0x02,
                0x18
              >> == encoded
     end
@@ -597,10 +626,12 @@ defmodule MatterEx.TLVTest do
 
     test "struct containing array containing struct" do
       input = %{
-        0 => {:array, [
-          {:struct, %{0 => {:uint, 1}, 1 => {:string, "a"}}},
-          {:struct, %{0 => {:uint, 2}, 1 => {:string, "b"}}}
-        ]}
+        0 =>
+          {:array,
+           [
+             {:struct, %{0 => {:uint, 1}, 1 => {:string, "a"}}},
+             {:struct, %{0 => {:uint, 2}, 1 => {:string, "b"}}}
+           ]}
       }
 
       expected = %{

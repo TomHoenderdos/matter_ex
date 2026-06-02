@@ -9,7 +9,12 @@ defmodule MatterEx.Protocol.ProtocolID do
   @bdx 0x0002
   @user_directed_commissioning 0x0003
 
-  @type protocol :: :secure_channel | :interaction_model | :bdx | :user_directed_commissioning | {:unknown, non_neg_integer()}
+  @type protocol ::
+          :secure_channel
+          | :interaction_model
+          | :bdx
+          | :user_directed_commissioning
+          | {:unknown, non_neg_integer()}
   @type opcode :: atom() | {:unknown, non_neg_integer()}
 
   # ── Protocol name lookup ──────────────────────────────────────────

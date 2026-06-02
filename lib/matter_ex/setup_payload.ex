@@ -28,17 +28,24 @@ defmodule MatterEx.SetupPayload do
   import Bitwise
 
   # Base-38 alphabet as tuple for O(1) lookup (Matter spec Table 39)
-  @base38_alphabet {?0, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-                    ?A, ?B, ?C, ?D, ?E, ?F, ?G, ?H, ?I, ?J,
-                    ?K, ?L, ?M, ?N, ?O, ?P, ?Q, ?R, ?S, ?T,
-                    ?U, ?V, ?W, ?X, ?Y, ?Z, ?-, ?.}
+  @base38_alphabet {?0, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?A, ?B, ?C, ?D, ?E, ?F, ?G, ?H, ?I,
+                    ?J, ?K, ?L, ?M, ?N, ?O, ?P, ?Q, ?R, ?S, ?T, ?U, ?V, ?W, ?X, ?Y, ?Z, ?-, ?.}
 
   # Invalid passcodes per Matter spec 5.1.7.1
   @invalid_passcodes MapSet.new([
-    0, 11111111, 22222222, 33333333, 44444444,
-    55555555, 66666666, 77777777, 88888888, 99999999,
-    12345678, 87654321
-  ])
+                       0,
+                       11_111_111,
+                       22_222_222,
+                       33_333_333,
+                       44_444_444,
+                       55_555_555,
+                       66_666_666,
+                       77_777_777,
+                       88_888_888,
+                       99_999_999,
+                       12_345_678,
+                       87_654_321
+                     ])
 
   # ── QR Code Payload ──────────────────────────────────────────────────
 
@@ -77,16 +84,16 @@ defmodule MatterEx.SetupPayload do
     #   bits 57-83: passcode (27)
     #   bits 84-87: padding (4)
     packed =
-      version
-      ||| (vendor_id <<< 3)
-      ||| (product_id <<< 19)
-      ||| (flow <<< 35)
-      ||| (discovery <<< 37)
-      ||| (discriminator <<< 45)
-      ||| (passcode <<< 57)
+      version |||
+        vendor_id <<< 3 |||
+        product_id <<< 19 |||
+        flow <<< 35 |||
+        discovery <<< 37 |||
+        discriminator <<< 45 |||
+        passcode <<< 57
 
     # Extract 11 bytes in little-endian order
-    bytes = for i <- 0..10, do: (packed >>> (i * 8)) &&& 0xFF
+    bytes = for i <- 0..10, do: packed >>> (i * 8) &&& 0xFF
 
     # Base-38 encode in chunks: 3, 3, 3, 2 bytes
     "MT:" <> base38_encode_chunked(bytes)
@@ -110,17 +117,17 @@ defmodule MatterEx.SetupPayload do
     flow = Keyword.get(opts, :flow, 0)
 
     # Short discriminator: top 4 bits of the 12-bit discriminator
-    short_disc = (discriminator >>> 8) &&& 0xF
+    short_disc = discriminator >>> 8 &&& 0xF
     vid_pid_present = if flow != 0, do: 1, else: 0
 
     # Digit 1 (1 digit): vid_pid_present(1 bit) | discriminator bits [11:10] (2 bits)
-    digit1 = (vid_pid_present <<< 2) ||| ((short_disc >>> 2) &&& 0x3)
+    digit1 = vid_pid_present <<< 2 ||| (short_disc >>> 2 &&& 0x3)
 
     # Chunk 2 (5 digits): discriminator bits [9:8] (2 bits) | passcode bits [13:0] (14 bits)
-    chunk2 = ((short_disc &&& 0x3) <<< 14) ||| (passcode &&& 0x3FFF)
+    chunk2 = (short_disc &&& 0x3) <<< 14 ||| (passcode &&& 0x3FFF)
 
     # Chunk 3 (4 digits): passcode bits [26:14] (13 bits)
-    chunk3 = (passcode >>> 14) &&& 0x1FFF
+    chunk3 = passcode >>> 14 &&& 0x1FFF
 
     code_without_check =
       Integer.to_string(digit1) <>
@@ -146,7 +153,7 @@ defmodule MatterEx.SetupPayload do
     value =
       bytes
       |> Enum.with_index()
-      |> Enum.reduce(0, fn {byte, i}, acc -> acc ||| (byte <<< (i * 8)) end)
+      |> Enum.reduce(0, fn {byte, i}, acc -> acc ||| byte <<< (i * 8) end)
 
     # Number of base-38 characters for this chunk size
     num_chars =

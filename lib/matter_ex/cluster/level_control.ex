@@ -7,14 +7,14 @@ defmodule MatterEx.Cluster.LevelControl do
 
   use MatterEx.Cluster, id: 0x0008, name: :level_control
 
-  attribute 0x0000, :current_level, :uint8, default: 0, writable: true, min: 0, max: 254
-  attribute 0x0003, :min_level, :uint8, default: 1
-  attribute 0x0004, :max_level, :uint8, default: 254
-  attribute 0x0011, :on_level, :uint8, default: 255, writable: true
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 5
+  attribute(0x0000, :current_level, :uint8, default: 0, writable: true, min: 0, max: 254)
+  attribute(0x0003, :min_level, :uint8, default: 1)
+  attribute(0x0004, :max_level, :uint8, default: 254)
+  attribute(0x0011, :on_level, :uint8, default: 255, writable: true)
+  attribute(0xFFFD, :cluster_revision, :uint16, default: 5)
 
-  command 0x00, :move_to_level, [level: :uint8]
-  command 0x04, :move_to_level_with_on_off, [level: :uint8]
+  command(0x00, :move_to_level, level: :uint8)
+  command(0x04, :move_to_level_with_on_off, level: :uint8)
 
   @impl MatterEx.Cluster
   def handle_command(:move_to_level, params, state) do

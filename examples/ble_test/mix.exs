@@ -3,7 +3,7 @@ defmodule BleTest.MixProject do
 
   @app :ble_test
   @version "0.1.0"
-  @all_targets [:rpi0_2]
+  @all_targets [:rpi0_2, :rpi4]
 
   def project do
     [
@@ -45,9 +45,14 @@ defmodule BleTest.MixProject do
 
       # Pi Zero 2W system
       {:nerves_system_rpi0_2, "~> 1.31", runtime: false, targets: :rpi0_2},
+      {:nerves_system_rpi4, "~> 1.24", runtime: false, targets: :rpi4},
+
+      # GPIO (for BT_REG_ON power-on on Raspberry Pi)
+      {:circuits_gpio, "~> 2.0", targets: @all_targets},
 
       # BlueHeron BLE stack (PR #138 branch with Pi Zero 2W support)
-      {:blue_heron, github: "TomHoenderdos/blue_heron", branch: "rpi-zero-2w-bluetooth-support", targets: @all_targets}
+      {:blue_heron,
+       path: "/Users/tomhoenderdos/Projects/blue_heron", targets: @all_targets, runtime: false}
     ]
   end
 
@@ -55,6 +60,7 @@ defmodule BleTest.MixProject do
     [
       overwrite: true,
       cookie: "#{@app}_cookie",
+      applications: [blue_heron: :load],
       include_erts: &Nerves.Release.erts/0,
       steps: [&Nerves.Release.init/1, :assemble],
       strip_beams: Mix.env() == :prod or [keep: ["Docs"]]

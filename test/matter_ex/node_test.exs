@@ -1,13 +1,13 @@
 defmodule MatterEx.NodeTest do
   use ExUnit.Case
 
-  alias MatterEx.{PASE, SecureChannel}
   alias MatterEx.IM
+  alias MatterEx.{PASE, SecureChannel}
   alias MatterEx.Protocol.{MessageCodec, ProtocolID}
   alias MatterEx.Protocol.MessageCodec.{Header, ProtoHeader}
   alias MatterEx.Transport.TCP, as: TCPFraming
 
-  @passcode 20202021
+  @passcode 20_202_021
   @salt :crypto.strong_rand_bytes(32)
   @iterations 1000
 
@@ -19,21 +19,18 @@ defmodule MatterEx.NodeTest do
       product_id: 0x8001
 
     endpoint 1, device_type: 0x0100 do
-      cluster MatterEx.Cluster.OnOff
+      cluster(MatterEx.Cluster.OnOff)
     end
   end
 
   setup do
     start_supervised!(TestLight)
 
-    node = start_supervised!({
-      MatterEx.Node,
-      device: TestLight,
-      passcode: @passcode,
-      salt: @salt,
-      iterations: @iterations,
-      port: 0
-    })
+    node =
+      start_supervised!({
+        MatterEx.Node,
+        device: TestLight, passcode: @passcode, salt: @salt, iterations: @iterations, port: 0
+      })
 
     port = MatterEx.Node.port(node)
     {:ok, client} = :gen_udp.open(0, [:binary, {:active, true}])
@@ -52,6 +49,16 @@ defmodule MatterEx.NodeTest do
       {:udp, ^client, _ip, _port, response} -> response
     after
       2000 -> flunk("No UDP response received within 2s")
+    end
+  end
+
+  defp send_and_receive_ipv6(client, port, data) do
+    :ok = :gen_udp.send(client, {0, 0, 0, 0, 0, 0, 0, 1}, port, data)
+
+    receive do
+      {:udp, ^client, _ip, _port, response} -> response
+    after
+      2000 -> flunk("No IPv6 UDP response received within 2s")
     end
   end
 
@@ -87,6 +94,7 @@ defmodule MatterEx.NodeTest do
     resp = send_and_receive(client, port, frame)
 
     {:ok, resp_msg} = MessageCodec.decode(resp)
+
     {:send, :pase_pake1, pake1_payload, comm} =
       PASE.handle(comm, :pbkdf_param_response, resp_msg.proto.payload)
 
@@ -95,6 +103,7 @@ defmodule MatterEx.NodeTest do
     resp = send_and_receive(client, port, frame)
 
     {:ok, pake2_msg} = MessageCodec.decode(resp)
+
     {:send, :pase_pake3, pake3_payload, comm} =
       PASE.handle(comm, :pase_pake2, pake2_msg.proto.payload)
 
@@ -103,6 +112,7 @@ defmodule MatterEx.NodeTest do
     resp = send_and_receive(client, port, frame)
 
     {:ok, sr_msg} = MessageCodec.decode(resp)
+
     {:established, comm_session, _comm} =
       PASE.handle(comm, :status_report, sr_msg.proto.payload)
 
@@ -138,6 +148,7 @@ defmodule MatterEx.NodeTest do
     resp = tcp_send_and_receive(tcp_socket, frame)
 
     {:ok, resp_msg} = MessageCodec.decode(resp)
+
     {:send, :pase_pake1, pake1_payload, comm} =
       PASE.handle(comm, :pbkdf_param_response, resp_msg.proto.payload)
 
@@ -145,6 +156,7 @@ defmodule MatterEx.NodeTest do
     resp = tcp_send_and_receive(tcp_socket, frame)
 
     {:ok, pake2_msg} = MessageCodec.decode(resp)
+
     {:send, :pase_pake3, pake3_payload, comm} =
       PASE.handle(comm, :pase_pake2, pake2_msg.proto.payload)
 
@@ -152,6 +164,7 @@ defmodule MatterEx.NodeTest do
     resp = tcp_send_and_receive(tcp_socket, frame)
 
     {:ok, sr_msg} = MessageCodec.decode(resp)
+
     {:established, comm_session, _comm} =
       PASE.handle(comm, :status_report, sr_msg.proto.payload)
 
@@ -185,6 +198,29 @@ defmodule MatterEx.NodeTest do
       assert comm_session.local_session_id == 2
       assert byte_size(comm_session.encrypt_key) == 16
       assert byte_size(comm_session.decrypt_key) == 16
+    end
+
+    test "accepts a new PASE handshake after one is established", %{client: client, port: port} do
+      first = run_pase_over_udp(client, port)
+      second = run_pase_over_udp(client, port)
+
+      assert first.local_session_id == 2
+      assert second.local_session_id == 2
+      assert first.decrypt_key != second.decrypt_key
+    end
+
+    test "responds on IPv6 UDP socket", %{port: port} do
+      {:ok, client} = :gen_udp.open(0, [:binary, {:active, true}, :inet6])
+      on_exit(fn -> :gen_udp.close(client) end)
+
+      comm = PASE.new_commissioner(passcode: @passcode, local_session_id: 2)
+      {:send, :pbkdf_param_request, req_payload, _comm} = PASE.initiate(comm)
+
+      frame = build_pase_frame(:pbkdf_param_request, req_payload, 1, 0)
+      resp = send_and_receive_ipv6(client, port, frame)
+
+      {:ok, msg} = MessageCodec.decode(resp)
+      assert msg.proto.opcode == ProtocolID.opcode(:secure_channel, :pbkdf_param_response)
     end
 
     test "PBKDFParamRequest returns valid response", %{client: client, port: port} do
@@ -225,10 +261,11 @@ defmodule MatterEx.NodeTest do
 
       comm_session = run_pase_over_tcp(tcp_socket)
 
-      read_req = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        fabric_filtered: true
-      })
+      read_req =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          fabric_filtered: true
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -259,15 +296,18 @@ defmodule MatterEx.NodeTest do
       comm_session = run_pase_over_tcp(tcp_socket)
 
       # Read on_off (false)
-      read_req = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        fabric_filtered: true
-      })
+      read_req =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          fabric_filtered: true
+        })
 
       proto = %ProtoHeader{
-        initiator: true, needs_ack: true,
+        initiator: true,
+        needs_ack: true,
         opcode: ProtocolID.opcode(:interaction_model, :read_request),
-        exchange_id: 10, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        exchange_id: 10,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
         payload: read_req
       }
 
@@ -279,14 +319,17 @@ defmodule MatterEx.NodeTest do
       assert data.value == false
 
       # Invoke "on"
-      invoke_req = IM.encode(%IM.InvokeRequest{
-        invoke_requests: [%{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}]
-      })
+      invoke_req =
+        IM.encode(%IM.InvokeRequest{
+          invoke_requests: [%{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}]
+        })
 
       proto2 = %ProtoHeader{
-        initiator: true, needs_ack: true,
+        initiator: true,
+        needs_ack: true,
         opcode: ProtocolID.opcode(:interaction_model, :invoke_request),
-        exchange_id: 11, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        exchange_id: 11,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
         payload: invoke_req
       }
 
@@ -295,15 +338,18 @@ defmodule MatterEx.NodeTest do
       {:ok, _msg2, comm_session} = SecureChannel.open(comm_session, resp2)
 
       # Read on_off (true)
-      read_req2 = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        fabric_filtered: true
-      })
+      read_req2 =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          fabric_filtered: true
+        })
 
       proto3 = %ProtoHeader{
-        initiator: true, needs_ack: true,
+        initiator: true,
+        needs_ack: true,
         opcode: ProtocolID.opcode(:interaction_model, :read_request),
-        exchange_id: 12, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        exchange_id: 12,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
         payload: read_req2
       }
 
@@ -325,10 +371,11 @@ defmodule MatterEx.NodeTest do
       comm_session = run_pase_over_udp(client, port)
 
       # Build encrypted ReadRequest
-      read_req = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        fabric_filtered: true
-      })
+      read_req =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          fabric_filtered: true
+        })
 
       proto = %ProtoHeader{
         initiator: true,
@@ -354,15 +401,18 @@ defmodule MatterEx.NodeTest do
       comm_session = run_pase_over_udp(client, port)
 
       # Read on_off (should be false)
-      read_req = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        fabric_filtered: true
-      })
+      read_req =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          fabric_filtered: true
+        })
 
       proto = %ProtoHeader{
-        initiator: true, needs_ack: true,
+        initiator: true,
+        needs_ack: true,
         opcode: ProtocolID.opcode(:interaction_model, :read_request),
-        exchange_id: 10, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        exchange_id: 10,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
         payload: read_req
       }
 
@@ -374,14 +424,17 @@ defmodule MatterEx.NodeTest do
       assert data.value == false
 
       # Invoke "on" command
-      invoke_req = IM.encode(%IM.InvokeRequest{
-        invoke_requests: [%{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}]
-      })
+      invoke_req =
+        IM.encode(%IM.InvokeRequest{
+          invoke_requests: [%{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}]
+        })
 
       proto2 = %ProtoHeader{
-        initiator: true, needs_ack: true,
+        initiator: true,
+        needs_ack: true,
         opcode: ProtocolID.opcode(:interaction_model, :invoke_request),
-        exchange_id: 11, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        exchange_id: 11,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
         payload: invoke_req
       }
 
@@ -390,15 +443,18 @@ defmodule MatterEx.NodeTest do
       {:ok, _msg2, comm_session} = SecureChannel.open(comm_session, resp2)
 
       # Read again (should be true now)
-      read_req2 = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        fabric_filtered: true
-      })
+      read_req2 =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          fabric_filtered: true
+        })
 
       proto3 = %ProtoHeader{
-        initiator: true, needs_ack: true,
+        initiator: true,
+        needs_ack: true,
         opcode: ProtocolID.opcode(:interaction_model, :read_request),
-        exchange_id: 12, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        exchange_id: 12,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
         payload: read_req2
       }
 
@@ -414,19 +470,25 @@ defmodule MatterEx.NodeTest do
   # ── Subscribe over UDP ─────────────────────────────────────────
 
   describe "subscribe over UDP" do
-    test "SubscribeRequest → priming ReportData → StatusResponse → SubscribeResponse", %{client: client, port: port} do
+    test "SubscribeRequest → priming ReportData → StatusResponse → SubscribeResponse", %{
+      client: client,
+      port: port
+    } do
       comm_session = run_pase_over_udp(client, port)
 
-      sub_req = IM.encode(%IM.SubscribeRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-        min_interval: 0,
-        max_interval: 60
-      })
+      sub_req =
+        IM.encode(%IM.SubscribeRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          min_interval: 0,
+          max_interval: 60
+        })
 
       proto = %ProtoHeader{
-        initiator: true, needs_ack: true,
+        initiator: true,
+        needs_ack: true,
         opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
-        exchange_id: 10, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        exchange_id: 10,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
         payload: sub_req
       }
 
@@ -442,11 +504,14 @@ defmodule MatterEx.NodeTest do
 
       # Phase 2: send StatusResponse → receive SubscribeResponse
       status_resp = IM.encode(%IM.StatusResponse{status: 0})
+
       status_proto = %ProtoHeader{
-        initiator: true, needs_ack: true,
+        initiator: true,
+        needs_ack: true,
         ack_counter: msg.header.message_counter,
         opcode: ProtocolID.opcode(:interaction_model, :status_response),
-        exchange_id: 10, protocol_id: ProtocolID.protocol_id(:interaction_model),
+        exchange_id: 10,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
         payload: status_resp
       }
 
@@ -509,6 +574,7 @@ defmodule MatterEx.NodeTest do
       payload = IM.encode(read_req)
 
       opcode_num = ProtocolID.opcode(:interaction_model, :read_request)
+
       proto = %ProtoHeader{
         initiator: true,
         opcode: opcode_num,

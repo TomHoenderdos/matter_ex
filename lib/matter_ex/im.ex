@@ -146,36 +146,39 @@ defmodule MatterEx.IM do
     event_filters = for f <- map[2] || [], do: decode_event_filter(f)
     dv_filters = for f <- map[4] || [], do: decode_data_version_filter(f)
 
-    {:ok, %ReadRequest{
-      attribute_paths: paths,
-      event_requests: event_reqs,
-      event_filters: event_filters,
-      data_version_filters: dv_filters,
-      fabric_filtered: Map.get(map, 3, false)
-    }}
+    {:ok,
+     %ReadRequest{
+       attribute_paths: paths,
+       event_requests: event_reqs,
+       event_filters: event_filters,
+       data_version_filters: dv_filters,
+       fabric_filtered: Map.get(map, 3, false)
+     }}
   end
 
   defp decode_message(:report_data, map) do
     reports = for r <- map[1] || [], do: decode_attribute_report(r)
     event_reports = for r <- map[2] || [], do: decode_event_report(r)
 
-    {:ok, %ReportData{
-      subscription_id: map[0],
-      attribute_reports: reports,
-      event_reports: event_reports,
-      more_chunked_messages: Map.get(map, 3, false),
-      suppress_response: Map.get(map, 4, false)
-    }}
+    {:ok,
+     %ReportData{
+       subscription_id: map[0],
+       attribute_reports: reports,
+       event_reports: event_reports,
+       more_chunked_messages: Map.get(map, 3, false),
+       suppress_response: Map.get(map, 4, false)
+     }}
   end
 
   defp decode_message(:write_request, map) do
     writes = for w <- map[2] || [], do: decode_attribute_data(w)
 
-    {:ok, %WriteRequest{
-      write_requests: writes,
-      suppress_response: Map.get(map, 0, false),
-      timed_request: Map.get(map, 1, false)
-    }}
+    {:ok,
+     %WriteRequest{
+       write_requests: writes,
+       suppress_response: Map.get(map, 0, false),
+       timed_request: Map.get(map, 1, false)
+     }}
   end
 
   defp decode_message(:write_response, map) do
@@ -186,11 +189,12 @@ defmodule MatterEx.IM do
   defp decode_message(:invoke_request, map) do
     invokes = for i <- map[2] || [], do: decode_command_data(i)
 
-    {:ok, %InvokeRequest{
-      invoke_requests: invokes,
-      suppress_response: Map.get(map, 0, false),
-      timed_request: Map.get(map, 1, false)
-    }}
+    {:ok,
+     %InvokeRequest{
+       invoke_requests: invokes,
+       suppress_response: Map.get(map, 0, false),
+       timed_request: Map.get(map, 1, false)
+     }}
   end
 
   defp decode_message(:invoke_response, map) do
@@ -201,20 +205,22 @@ defmodule MatterEx.IM do
   defp decode_message(:subscribe_request, map) do
     paths = for p <- map[3] || [], do: decode_attribute_path(p)
 
-    {:ok, %SubscribeRequest{
-      keep_subscriptions: Map.get(map, 0, true),
-      min_interval: Map.get(map, 1, 0),
-      max_interval: Map.get(map, 2, 60),
-      attribute_paths: paths,
-      fabric_filtered: Map.get(map, 7, true)
-    }}
+    {:ok,
+     %SubscribeRequest{
+       keep_subscriptions: Map.get(map, 0, true),
+       min_interval: Map.get(map, 1, 0),
+       max_interval: Map.get(map, 2, 60),
+       attribute_paths: paths,
+       fabric_filtered: Map.get(map, 7, true)
+     }}
   end
 
   defp decode_message(:subscribe_response, map) do
-    {:ok, %SubscribeResponse{
-      subscription_id: map[0],
-      max_interval: map[2]
-    }}
+    {:ok,
+     %SubscribeResponse{
+       subscription_id: map[0],
+       max_interval: map[2]
+     }}
   end
 
   defp decode_message(_, _), do: {:error, :unknown_opcode}
@@ -530,10 +536,12 @@ defmodule MatterEx.IM do
         else: status_ib
 
     %{
-      0 => {:struct, %{
-        0 => {:list, encode_event_path(status.path)},
-        1 => {:struct, status_ib}
-      }}
+      0 =>
+        {:struct,
+         %{
+           0 => {:list, encode_event_path(status.path)},
+           1 => {:struct, status_ib}
+         }}
     }
   end
 
@@ -544,7 +552,9 @@ defmodule MatterEx.IM do
       2 => {:uint, data.priority}
     }
 
-    map = if data[:system_timestamp], do: Map.put(map, 4, {:uint, data.system_timestamp}), else: map
+    map =
+      if data[:system_timestamp], do: Map.put(map, 4, {:uint, data.system_timestamp}), else: map
+
     map = if data[:data], do: Map.put(map, 7, {:struct, data.data}), else: map
     map
   end

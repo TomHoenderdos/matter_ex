@@ -19,6 +19,10 @@ config :shoehorn, init: [:nerves_runtime, :nerves_pack]
 # Advance the system clock on devices without real-time clocks.
 config :nerves, :erlinit, update_clock: true
 
+if Mix.target() == :rpi4 do
+  config :nerves, :firmware, fwup_conf: "fwup-rpi4.conf"
+end
+
 # Configure the device for SSH IEx prompt access and firmware updates
 #
 # * See https://hexdocs.pm/nerves_ssh/readme.html for general SSH configuration
@@ -78,11 +82,16 @@ config :mdns_lite,
     }
   ]
 
-# BlueHeron UART transport for onboard Broadcom Bluetooth
-# Pi Zero 2W uses /dev/ttyS0 at 115200 baud
+blue_heron_device =
+  case Mix.target() do
+    :rpi4 -> "/dev/ttyS0"
+    _ -> "/dev/ttyS0"
+  end
+
+# BlueHeron UART transport for onboard Broadcom Bluetooth.
 config :blue_heron,
   transport: [
-    device: "/dev/ttyS0",
+    device: blue_heron_device,
     speed: 115_200
   ]
 

@@ -12,34 +12,35 @@ defmodule MatterEx.Cluster.ICDManagement do
   use MatterEx.Cluster, id: 0x0046, name: :icd_management
 
   # IdleModeDuration: seconds in idle mode before sleeping (SIT: ≤15min, LIT: >15min)
-  attribute 0x0000, :idle_mode_duration, :uint32, default: 300
+  attribute(0x0000, :idle_mode_duration, :uint32, default: 300)
   # ActiveModeDuration: milliseconds to stay active after wake
-  attribute 0x0001, :active_mode_duration, :uint32, default: 300
+  attribute(0x0001, :active_mode_duration, :uint32, default: 300)
   # ActiveModeThreshold: milliseconds before returning to idle
-  attribute 0x0002, :active_mode_threshold, :uint16, default: 300
+  attribute(0x0002, :active_mode_threshold, :uint16, default: 300)
   # RegisteredClients: list of clients to send CheckIn messages
-  attribute 0x0003, :registered_clients, :list, default: []
+  attribute(0x0003, :registered_clients, :list, default: [])
   # ICDCounter: monotonic counter for CheckIn nonce
-  attribute 0x0004, :icd_counter, :uint32, default: 0
+  attribute(0x0004, :icd_counter, :uint32, default: 0)
   # ClientsSupportedPerFabric
-  attribute 0x0005, :clients_supported_per_fabric, :uint16, default: 2
+  attribute(0x0005, :clients_supported_per_fabric, :uint16, default: 2)
   # UserActiveModeTriggerHint: bitmask of user wake triggers
-  attribute 0x0006, :user_active_mode_trigger_hint, :bitmap32, default: 0
+  attribute(0x0006, :user_active_mode_trigger_hint, :bitmap32, default: 0)
   # UserActiveModeTriggerInstruction: human-readable wake instruction
-  attribute 0x0007, :user_active_mode_trigger_instruction, :string, default: ""
+  attribute(0x0007, :user_active_mode_trigger_instruction, :string, default: "")
   # OperatingMode: 0=SIT (Short Idle Time), 1=LIT (Long Idle Time)
-  attribute 0x0008, :operating_mode, :enum8, default: 0
-  attribute 0xFFFC, :feature_map, :uint32, default: 0x01
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 2
+  attribute(0x0008, :operating_mode, :enum8, default: 0)
+  attribute(0xFFFC, :feature_map, :uint32, default: 0x01)
+  attribute(0xFFFD, :cluster_revision, :uint16, default: 2)
 
-  command 0x00, :register_client, [
+  command(0x00, :register_client,
     check_in_node_id: :uint64,
     monitored_subject: :uint64,
     key: :bytes,
     verification_key: :bytes
-  ]
-  command 0x02, :unregister_client, [check_in_node_id: :uint64, verification_key: :bytes]
-  command 0x03, :stay_active_request, [stay_active_duration: :uint32]
+  )
+
+  command(0x02, :unregister_client, check_in_node_id: :uint64, verification_key: :bytes)
+  command(0x03, :stay_active_request, stay_active_duration: :uint32)
 
   @impl true
   def init(opts) do

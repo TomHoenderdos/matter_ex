@@ -3,8 +3,8 @@ defmodule MatterEx.ExchangeManagerTest do
 
   alias MatterEx.ExchangeManager
   alias MatterEx.IM
-  alias MatterEx.Protocol.MRP
   alias MatterEx.Protocol.MessageCodec.ProtoHeader
+  alias MatterEx.Protocol.MRP
 
   # Mock handler that returns canned IM responses
   @read_response %IM.ReportData{
@@ -35,10 +35,11 @@ defmodule MatterEx.ExchangeManagerTest do
   end
 
   defp read_request_proto(exchange_id \\ 1) do
-    payload = IM.encode(%IM.ReadRequest{
-      attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
-      fabric_filtered: true
-    })
+    payload =
+      IM.encode(%IM.ReadRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+        fabric_filtered: true
+      })
 
     %ProtoHeader{
       initiator: true,
@@ -78,11 +79,9 @@ defmodule MatterEx.ExchangeManagerTest do
       {_actions2, mgr} = ExchangeManager.handle_message(mgr, proto2, 101)
       {_actions3, mgr} = ExchangeManager.handle_message(mgr, proto3, 102)
 
-      # All exchanges closed, but MRP tracks all three
+      # All exchanges closed; MessageHandler records MRP after sealing.
       assert mgr.exchanges == %{}
-      assert MRP.pending?(mgr.mrp, 1)
-      assert MRP.pending?(mgr.mrp, 2)
-      assert MRP.pending?(mgr.mrp, 3)
+      assert mgr.mrp.pending == %{}
     end
   end
 
@@ -114,22 +113,24 @@ defmodule MatterEx.ExchangeManagerTest do
       mgr = new_manager()
       proto = read_request_proto(5)
 
-      # Send a reply (which gets recorded in MRP)
-      {_actions, mgr} = ExchangeManager.handle_message(mgr, proto, 100)
-      assert MRP.pending?(mgr.mrp, 5)
+      # MessageHandler records the sealed message counter in MRP.
+      msg_counter = 123
+      mgr = %{mgr | mrp: MRP.record_send(mgr.mrp, msg_counter, :erlang.term_to_binary(proto), 5)}
+      assert MRP.pending?(mgr.mrp, msg_counter)
 
-      # Receive standalone ACK for exchange 5
+      # Receive standalone ACK for the outgoing message counter.
       ack_proto = %ProtoHeader{
         initiator: true,
         opcode: 0x10,
         exchange_id: 5,
         protocol_id: 0x0000,
+        ack_counter: msg_counter,
         payload: <<>>
       }
 
       {actions, mgr} = ExchangeManager.handle_message(mgr, ack_proto, 101)
       assert actions == []
-      refute MRP.pending?(mgr.mrp, 5)
+      refute MRP.pending?(mgr.mrp, msg_counter)
     end
 
     test "standalone ACK for unknown exchange is ignored" do
@@ -151,7 +152,7 @@ defmodule MatterEx.ExchangeManagerTest do
   # ── MRP integration ────────────────────────────────────────────
 
   describe "MRP integration" do
-    test "reliable response recorded in MRP with schedule action" do
+    test "reliable response returns schedule action for post-seal MRP recording" do
       mgr = new_manager()
       proto = read_request_proto(7)
 
@@ -159,52 +160,71 @@ defmodule MatterEx.ExchangeManagerTest do
 
       assert [{:reply, _reply}, {:schedule_mrp, 7, 0, timeout}] = actions
       assert timeout > 0
-      assert MRP.pending?(mgr.mrp, 7)
+      assert mgr.mrp.pending == %{}
     end
 
     test "handle_timeout returns retransmit" do
       mgr = new_manager()
       proto = read_request_proto(7)
 
-      {_actions, mgr} = ExchangeManager.handle_message(mgr, proto, 100)
+      {[{:reply, reply}, _schedule], mgr} = ExchangeManager.handle_message(mgr, proto, 100)
+      mgr = %{mgr | mrp: MRP.record_send(mgr.mrp, 123, :erlang.term_to_binary(reply), 7)}
 
       assert {:retransmit, retransmit_proto, _mgr} =
-        ExchangeManager.handle_timeout(mgr, 7, 0)
+               ExchangeManager.handle_timeout(mgr, 123, 0)
 
       assert retransmit_proto.exchange_id == 7
-      assert retransmit_proto.opcode == 0x05  # report_data
+      # report_data
+      assert retransmit_proto.opcode == 0x05
+    end
+
+    test "handle_timeout retransmits stored sealed frame without changing pending id" do
+      mgr = new_manager()
+      frame = <<1, 2, 3, 4>>
+      pending = :erlang.term_to_binary({:sealed_frame, frame, 7})
+      mgr = %{mgr | mrp: MRP.record_send(mgr.mrp, 123, pending, 7)}
+
+      assert {:retransmit_frame, ^frame, 7, mgr} = ExchangeManager.handle_timeout(mgr, 123, 0)
+      assert MRP.pending?(mgr.mrp, 123)
     end
 
     test "handle_timeout gives up after max retransmissions" do
       mgr = new_manager()
       proto = read_request_proto(7)
-      {_actions, mgr} = ExchangeManager.handle_message(mgr, proto, 100)
+      {[{:reply, reply}, _schedule], mgr} = ExchangeManager.handle_message(mgr, proto, 100)
+      mgr = %{mgr | mrp: MRP.record_send(mgr.mrp, 123, :erlang.term_to_binary(reply), 7)}
 
       # Walk through retransmissions: attempt 0→1→2→3, then 4 gives up
       # MRP.max_transmissions() == 5 (1 original + 4 retries)
       mgr =
         Enum.reduce(0..3, mgr, fn attempt, acc ->
-          {:retransmit, _proto, acc} = ExchangeManager.handle_timeout(acc, 7, attempt)
+          {:retransmit, _proto, acc} = ExchangeManager.handle_timeout(acc, 123, attempt)
           acc
         end)
 
-      assert {:give_up, 7, mgr} = ExchangeManager.handle_timeout(mgr, 7, 4)
-      refute MRP.pending?(mgr.mrp, 7)
+      assert {:give_up, 7, mgr} = ExchangeManager.handle_timeout(mgr, 123, 4)
+      refute MRP.pending?(mgr.mrp, 123)
     end
 
     test "handle_timeout returns already_acked when exchange was ACKed" do
       mgr = new_manager()
       proto = read_request_proto(7)
-      {_actions, mgr} = ExchangeManager.handle_message(mgr, proto, 100)
+      {[{:reply, reply}, _schedule], mgr} = ExchangeManager.handle_message(mgr, proto, 100)
+      mgr = %{mgr | mrp: MRP.record_send(mgr.mrp, 123, :erlang.term_to_binary(reply), 7)}
 
       # ACK the exchange
       ack_proto = %ProtoHeader{
-        initiator: true, opcode: 0x10, exchange_id: 7,
-        protocol_id: 0x0000, payload: <<>>
+        initiator: true,
+        opcode: 0x10,
+        exchange_id: 7,
+        protocol_id: 0x0000,
+        ack_counter: 123,
+        payload: <<>>
       }
+
       {_, mgr} = ExchangeManager.handle_message(mgr, ack_proto, 101)
 
-      assert {:already_acked, _mgr} = ExchangeManager.handle_timeout(mgr, 7, 0)
+      assert {:already_acked, _mgr} = ExchangeManager.handle_timeout(mgr, 123, 0)
     end
   end
 
@@ -217,7 +237,8 @@ defmodule MatterEx.ExchangeManagerTest do
 
       {[{:reply, reply}, _mrp], _mgr} = ExchangeManager.handle_message(mgr, proto, 100)
 
-      assert reply.opcode == 0x05  # report_data
+      # report_data
+      assert reply.opcode == 0x05
       assert reply.protocol_id == 0x0001
       assert reply.exchange_id == 1
       assert reply.initiator == false
@@ -230,40 +251,52 @@ defmodule MatterEx.ExchangeManagerTest do
     test "WriteRequest → WriteResponse" do
       mgr = new_manager()
 
-      payload = IM.encode(%IM.WriteRequest{
-        write_requests: [
-          %{version: 0, path: %{endpoint: 1, cluster: 6, attribute: 0}, value: {:bool, false}}
-        ]
-      })
+      payload =
+        IM.encode(%IM.WriteRequest{
+          write_requests: [
+            %{version: 0, path: %{endpoint: 1, cluster: 6, attribute: 0}, value: {:bool, false}}
+          ]
+        })
 
       proto = %ProtoHeader{
-        initiator: true, needs_ack: true, opcode: 0x06,
-        exchange_id: 2, protocol_id: 0x0001, payload: payload
+        initiator: true,
+        needs_ack: true,
+        opcode: 0x06,
+        exchange_id: 2,
+        protocol_id: 0x0001,
+        payload: payload
       }
 
       {[{:reply, reply}, _mrp], _mgr} = ExchangeManager.handle_message(mgr, proto, 100)
 
-      assert reply.opcode == 0x07  # write_response
+      # write_response
+      assert reply.opcode == 0x07
       assert {:ok, %IM.WriteResponse{}} = IM.decode(:write_response, reply.payload)
     end
 
     test "InvokeRequest → InvokeResponse" do
       mgr = new_manager()
 
-      payload = IM.encode(%IM.InvokeRequest{
-        invoke_requests: [
-          %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
-        ]
-      })
+      payload =
+        IM.encode(%IM.InvokeRequest{
+          invoke_requests: [
+            %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
+          ]
+        })
 
       proto = %ProtoHeader{
-        initiator: true, needs_ack: true, opcode: 0x08,
-        exchange_id: 3, protocol_id: 0x0001, payload: payload
+        initiator: true,
+        needs_ack: true,
+        opcode: 0x08,
+        exchange_id: 3,
+        protocol_id: 0x0001,
+        payload: payload
       }
 
       {[{:reply, reply}, _mrp], _mgr} = ExchangeManager.handle_message(mgr, proto, 100)
 
-      assert reply.opcode == 0x09  # invoke_response
+      # invoke_response
+      assert reply.opcode == 0x09
       assert {:ok, %IM.InvokeResponse{}} = IM.decode(:invoke_response, reply.payload)
     end
 
@@ -271,8 +304,12 @@ defmodule MatterEx.ExchangeManagerTest do
       mgr = new_manager()
 
       proto = %ProtoHeader{
-        initiator: true, needs_ack: false, opcode: 0x01,
-        exchange_id: 1, protocol_id: 0xFFFF, payload: <<>>
+        initiator: true,
+        needs_ack: false,
+        opcode: 0x01,
+        exchange_id: 1,
+        protocol_id: 0xFFFF,
+        payload: <<>>
       }
 
       {actions, _mgr} = ExchangeManager.handle_message(mgr, proto, 100)
@@ -286,8 +323,12 @@ defmodule MatterEx.ExchangeManagerTest do
       payload = IM.encode(%IM.ReportData{attribute_reports: []})
 
       proto = %ProtoHeader{
-        initiator: true, needs_ack: true, opcode: 0x05,
-        exchange_id: 1, protocol_id: 0x0001, payload: payload
+        initiator: true,
+        needs_ack: true,
+        opcode: 0x05,
+        exchange_id: 1,
+        protocol_id: 0x0001,
+        payload: payload
       }
 
       {actions, _mgr} = ExchangeManager.handle_message(mgr, proto, 100)
@@ -295,11 +336,14 @@ defmodule MatterEx.ExchangeManagerTest do
       # Standalone ACK ProtoHeader
       assert [{:ack, ack_proto}] = actions
       assert %ProtoHeader{} = ack_proto
-      assert ack_proto.opcode == 0x10          # standalone_ack
-      assert ack_proto.protocol_id == 0x0000   # secure_channel
+      # standalone_ack
+      assert ack_proto.opcode == 0x10
+      # secure_channel
+      assert ack_proto.protocol_id == 0x0000
       assert ack_proto.ack_counter == 100
       assert ack_proto.exchange_id == 1
-      assert ack_proto.initiator == false       # responder side
+      # responder side
+      assert ack_proto.initiator == false
       assert ack_proto.needs_ack == false
       assert ack_proto.payload == <<>>
     end
@@ -329,7 +373,8 @@ defmodule MatterEx.ExchangeManagerTest do
 
       # Should reply with StatusResponse
       assert [{:reply, reply}, {:schedule_mrp, 10, 0, _timeout}] = actions
-      assert reply.opcode == 0x01  # status_response
+      # status_response
+      assert reply.opcode == 0x01
       assert {:ok, %IM.StatusResponse{status: 0}} = IM.decode(:status_response, reply.payload)
 
       # Exchange should still be open (timed)
@@ -358,12 +403,13 @@ defmodule MatterEx.ExchangeManagerTest do
       {_actions, mgr} = ExchangeManager.handle_message(mgr, timed_proto, 100)
 
       # 2. Send WriteRequest on same exchange
-      write_payload = IM.encode(%IM.WriteRequest{
-        write_requests: [
-          %{version: 0, path: %{endpoint: 1, cluster: 6, attribute: 0}, value: {:bool, true}}
-        ],
-        timed_request: true
-      })
+      write_payload =
+        IM.encode(%IM.WriteRequest{
+          write_requests: [
+            %{version: 0, path: %{endpoint: 1, cluster: 6, attribute: 0}, value: {:bool, true}}
+          ],
+          timed_request: true
+        })
 
       write_proto = %ProtoHeader{
         initiator: true,
@@ -378,7 +424,8 @@ defmodule MatterEx.ExchangeManagerTest do
 
       # Should get WriteResponse
       assert [{:reply, reply}, {:schedule_mrp, 10, 0, _timeout}] = actions
-      assert reply.opcode == 0x07  # write_response
+      # write_response
+      assert reply.opcode == 0x07
 
       # Exchange and timed state should be cleaned up
       assert mgr.exchanges == %{}
@@ -393,12 +440,13 @@ defmodule MatterEx.ExchangeManagerTest do
       {_actions, mgr} = ExchangeManager.handle_message(mgr, timed_proto, 100)
 
       # 2. Send InvokeRequest on same exchange
-      invoke_payload = IM.encode(%IM.InvokeRequest{
-        invoke_requests: [
-          %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
-        ],
-        timed_request: true
-      })
+      invoke_payload =
+        IM.encode(%IM.InvokeRequest{
+          invoke_requests: [
+            %{path: %{endpoint: 1, cluster: 6, command: 1}, fields: nil}
+          ],
+          timed_request: true
+        })
 
       invoke_proto = %ProtoHeader{
         initiator: true,
@@ -412,7 +460,8 @@ defmodule MatterEx.ExchangeManagerTest do
       {actions, mgr} = ExchangeManager.handle_message(mgr, invoke_proto, 101)
 
       assert [{:reply, reply}, {:schedule_mrp, 10, 0, _timeout}] = actions
-      assert reply.opcode == 0x09  # invoke_response
+      # invoke_response
+      assert reply.opcode == 0x09
 
       assert mgr.timed_exchanges == %{}
     end
@@ -424,9 +473,10 @@ defmodule MatterEx.ExchangeManagerTest do
     test "initiate assigns exchange_id and builds ProtoHeader" do
       mgr = new_manager()
 
-      payload = IM.encode(%IM.ReadRequest{
-        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
-      })
+      payload =
+        IM.encode(%IM.ReadRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}]
+        })
 
       {proto, _actions, mgr} =
         ExchangeManager.initiate(mgr, 0x0001, :read_request, payload)
@@ -434,7 +484,8 @@ defmodule MatterEx.ExchangeManagerTest do
       assert proto.exchange_id == 1
       assert proto.initiator == true
       assert proto.needs_ack == true
-      assert proto.opcode == 0x02  # read_request
+      # read_request
+      assert proto.opcode == 0x02
       assert proto.protocol_id == 0x0001
 
       # Next exchange gets ID 2
@@ -444,7 +495,7 @@ defmodule MatterEx.ExchangeManagerTest do
       assert proto2.exchange_id == 2
     end
 
-    test "initiate records in MRP and returns schedule action" do
+    test "initiate returns schedule action for post-seal MRP recording" do
       mgr = new_manager()
 
       payload = IM.encode(%IM.ReadRequest{attribute_paths: []})
@@ -454,7 +505,7 @@ defmodule MatterEx.ExchangeManagerTest do
 
       assert [{:schedule_mrp, 1, 0, timeout}] = actions
       assert timeout > 0
-      assert MRP.pending?(mgr.mrp, 1)
+      assert mgr.mrp.pending == %{}
     end
 
     test "initiate with reliable: false skips MRP" do

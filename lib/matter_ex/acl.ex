@@ -6,22 +6,24 @@ defmodule MatterEx.ACL do
   for a requested operation on a target. No state — just pattern matching.
   """
 
+  import Bitwise
+
   @type privilege :: :view | :proxy_view | :operate | :manage | :administer
   @type auth_mode :: :pase | :case | :group
 
   @type acl_entry :: %{
-    privilege: 1..5,
-    auth_mode: 2 | 3,
-    subjects: [non_neg_integer()] | nil,
-    targets: [map()] | nil,
-    fabric_index: non_neg_integer()
-  }
+          privilege: 1..5,
+          auth_mode: 2 | 3,
+          subjects: [non_neg_integer()] | nil,
+          targets: [map()] | nil,
+          fabric_index: non_neg_integer()
+        }
 
   @type context :: %{
-    auth_mode: auth_mode(),
-    subject: non_neg_integer(),
-    fabric_index: non_neg_integer()
-  }
+          auth_mode: auth_mode(),
+          subject: non_neg_integer(),
+          fabric_index: non_neg_integer()
+        }
 
   @privilege_levels %{
     view: 1,
@@ -30,6 +32,10 @@ defmodule MatterEx.ACL do
     manage: 4,
     administer: 5
   }
+
+  @min_case_authenticated_tag 0xFFFFFFFD00000000
+  @max_case_authenticated_tag 0xFFFFFFFDFFFFFFFF
+  @case_authenticated_tag_mask 0xFFFFFFFF
 
   @doc """
   Check whether the given context has sufficient privilege for the target.
@@ -80,7 +86,8 @@ defmodule MatterEx.ACL do
   # ACL entries may use atom keys (internal) or integer keys with tagged
   # values (TLV format: 1=privilege, 2=authMode, 3=subjects, 4=targets, 254=fabricIndex).
 
-  defp matches_fabric?(entry, context), do: get_field(entry, :fabric_index, 254) == context.fabric_index
+  defp matches_fabric?(entry, context),
+    do: get_field(entry, :fabric_index, 254) == context.fabric_index
 
   defp matches_auth_mode?(entry, context) do
     case context.auth_mode do
@@ -92,7 +99,48 @@ defmodule MatterEx.ACL do
 
   defp matches_subject?(entry, context) do
     subjects = get_field(entry, :subjects, 3)
-    subjects == nil || context.subject in unwrap_subjects(subjects)
+
+    subjects == nil ||
+      Enum.any?(context_subjects(context), fn subject ->
+        Enum.any?(unwrap_subjects(subjects), &subjects_match?(&1, subject))
+      end)
+  end
+
+  defp subjects_match?(acl_subject, context_subject) when acl_subject == context_subject, do: true
+
+  defp subjects_match?(acl_subject, context_subject)
+       when is_integer(acl_subject) and is_integer(context_subject) do
+    case_authenticated_tag_match?(acl_subject, context_subject)
+  end
+
+  defp subjects_match?(_, _), do: false
+
+  defp case_authenticated_tag_match?(acl_subject, context_subject) do
+    with true <- case_authenticated_tag_node_id?(acl_subject),
+         true <- case_authenticated_tag_node_id?(context_subject) do
+      acl_cat = band(acl_subject, @case_authenticated_tag_mask)
+      context_cat = band(context_subject, @case_authenticated_tag_mask)
+
+      cat_identifier(acl_cat) == cat_identifier(context_cat) &&
+        cat_version(acl_cat) > 0 &&
+        cat_version(context_cat) >= cat_version(acl_cat)
+    else
+      _ -> false
+    end
+  end
+
+  defp case_authenticated_tag_node_id?(subject) do
+    subject >= @min_case_authenticated_tag and subject <= @max_case_authenticated_tag
+  end
+
+  defp cat_identifier(cat), do: cat >>> 16
+  defp cat_version(cat), do: band(cat, 0xFFFF)
+
+  defp context_subjects(context) do
+    context
+    |> Map.get(:subjects, [Map.get(context, :subject)])
+    |> List.wrap()
+    |> Enum.reject(&is_nil/1)
   end
 
   defp matches_target?(entry, _target) when not is_map(entry), do: false
@@ -101,13 +149,17 @@ defmodule MatterEx.ACL do
     targets = get_field(entry, :targets, 4)
 
     case targets do
-      nil -> true
+      nil ->
+        true
+
       targets when is_list(targets) ->
         Enum.any?(targets, fn t ->
           (t[:endpoint] == nil || t[:endpoint] == endpoint_id) &&
             (t[:cluster] == nil || t[:cluster] == cluster_id)
         end)
-      _ -> true
+
+      _ ->
+        true
     end
   end
 

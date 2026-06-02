@@ -13,14 +13,14 @@ defmodule MatterEx.Commissioning do
   @default_name __MODULE__
 
   @type credentials :: %{
-    fabric_index: non_neg_integer(),
-    noc: binary(),
-    icac: binary() | nil,
-    private_key: binary(),
-    ipk: binary(),
-    node_id: integer(),
-    fabric_id: integer()
-  }
+          fabric_index: non_neg_integer(),
+          noc: binary(),
+          icac: binary() | nil,
+          private_key: binary(),
+          ipk: binary(),
+          node_id: integer(),
+          fabric_id: integer()
+        }
 
   defp initial_state do
     %{
@@ -76,10 +76,21 @@ defmodule MatterEx.Commissioning do
     Agent.get(name, & &1.pending_root_cert)
   end
 
-  @spec store_noc(non_neg_integer(), binary(), binary() | nil, binary(), integer(), integer(), GenServer.server()) :: :ok
+  @spec store_noc(
+          non_neg_integer(),
+          binary(),
+          binary() | nil,
+          binary(),
+          integer(),
+          integer(),
+          GenServer.server()
+        ) :: :ok
   def store_noc(fabric_index, noc, icac, ipk, node_id, fabric_id, name \\ @default_name) do
     require Logger
-    Logger.debug("Commissioning.store_noc: fabric=#{fabric_index} node=#{node_id} fabric_id=#{fabric_id} ipk=#{Base.encode16(ipk)}(#{byte_size(ipk)}B)")
+
+    Logger.debug(
+      "Commissioning.store_noc: fabric=#{fabric_index} node=#{node_id} fabric_id=#{fabric_id} ipk=#{Base.encode16(ipk)}(#{byte_size(ipk)}B)"
+    )
 
     Agent.update(name, fn state ->
       {_pub, priv} = state.pending_keypair
@@ -88,7 +99,10 @@ defmodule MatterEx.Commissioning do
       if root_cert do
         alias MatterEx.CASE.Messages, as: CASEMessages
         rpk = CASEMessages.extract_public_key(root_cert)
-        Logger.debug("Commissioning.store_noc: root_cert=#{byte_size(root_cert)}B root_pub_key=#{if rpk, do: "#{Base.encode16(rpk)}(#{byte_size(rpk)}B)", else: "nil"}")
+
+        Logger.debug(
+          "Commissioning.store_noc: root_cert=#{byte_size(root_cert)}B root_pub_key=#{if rpk, do: "#{Base.encode16(rpk)}(#{byte_size(rpk)}B)", else: "nil"}"
+        )
       else
         Logger.debug("Commissioning.store_noc: root_cert=nil")
       end
@@ -105,9 +119,10 @@ defmodule MatterEx.Commissioning do
         case_admin_subject: nil
       }
 
-      %{state |
-        fabrics: Map.put(state.fabrics, fabric_index, fabric_entry),
-        last_added_fabric: fabric_index
+      %{
+        state
+        | fabrics: Map.put(state.fabrics, fabric_index, fabric_entry),
+          last_added_fabric: fabric_index
       }
     end)
   end
@@ -115,9 +130,11 @@ defmodule MatterEx.Commissioning do
   @spec store_admin_subject(non_neg_integer(), non_neg_integer(), GenServer.server()) :: :ok
   def store_admin_subject(fabric_index, subject, name \\ @default_name) do
     Agent.update(name, fn state ->
-      fabrics = Map.update!(state.fabrics, fabric_index, fn entry ->
-        Map.put(entry, :case_admin_subject, subject)
-      end)
+      fabrics =
+        Map.update!(state.fabrics, fabric_index, fn entry ->
+          Map.put(entry, :case_admin_subject, subject)
+        end)
+
       %{state | fabrics: fabrics}
     end)
   end
@@ -133,9 +150,10 @@ defmodule MatterEx.Commissioning do
   end
 
   @spec complete(GenServer.server()) :: :ok
-  def complete(_name \\ @default_name) do
-    # No-op now — "commissioned" is implied by having fabrics
-    :ok
+  def complete(name \\ @default_name) do
+    Agent.update(name, fn state ->
+      %{state | armed: false, pending_root_cert: nil, pending_keypair: nil}
+    end)
   end
 
   @spec commissioned?(GenServer.server()) :: boolean()
@@ -195,6 +213,28 @@ defmodule MatterEx.Commissioning do
   @spec get_fabric_indices(GenServer.server()) :: [non_neg_integer()]
   def get_fabric_indices(name \\ @default_name) do
     Agent.get(name, fn state -> Map.keys(state.fabrics) end)
+  end
+
+  @spec remove_fabric(non_neg_integer(), GenServer.server()) :: :ok
+  def remove_fabric(fabric_index, name \\ @default_name) when is_integer(fabric_index) do
+    Agent.update(name, fn state ->
+      fabrics = Map.delete(state.fabrics, fabric_index)
+
+      last_added_fabric =
+        if state.last_added_fabric == fabric_index do
+          fabrics |> Map.keys() |> List.first()
+        else
+          state.last_added_fabric
+        end
+
+      state = %{state | fabrics: fabrics, last_added_fabric: last_added_fabric}
+
+      if map_size(fabrics) == 0 do
+        %{state | pending_root_cert: nil, pending_keypair: nil, armed: false}
+      else
+        state
+      end
+    end)
   end
 
   @spec last_added_fabric(GenServer.server()) :: non_neg_integer() | nil

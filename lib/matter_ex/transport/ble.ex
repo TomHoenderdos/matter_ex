@@ -33,8 +33,8 @@ defmodule MatterEx.Transport.BLE do
 
   # CHIPoBLE GATT Service
   @gatt_service_uuid 0xFFF6
-  @tx_characteristic "18EE2EF5-263D-4559-959F-4F9C429F9D11"
-  @rx_characteristic "18EE2EF5-263D-4559-959F-4F9C429F9D12"
+  @rx_characteristic "18EE2EF5-263D-4559-959F-4F9C429F9D11"
+  @tx_characteristic "18EE2EF5-263D-4559-959F-4F9C429F9D12"
   @additional_data_uuid "64630238-8772-45F2-B87D-748A83218F04"
 
   defmodule State do
@@ -47,6 +47,7 @@ defmodule MatterEx.Transport.BLE do
       :discriminator,
       :vendor_id,
       :product_id,
+      :pending_handshake_data,
       btp: nil,
       phase: :idle
     ]
@@ -125,6 +126,7 @@ defmodule MatterEx.Transport.BLE do
           discriminator: discriminator,
           vendor_id: vendor_id,
           product_id: product_id,
+          pending_handshake_data: nil,
           btp: BTP.new(),
           phase: :idle
         }
@@ -158,43 +160,44 @@ defmodule MatterEx.Transport.BLE do
 
   @impl true
   def handle_info({:ble_connected, connection_ref}, state) do
-    new_state = %{state |
-      connection_ref: connection_ref,
-      phase: :handshaking,
-      btp: BTP.new()
-    }
+    new_state = %{state | connection_ref: connection_ref, phase: :handshaking, btp: BTP.new()}
 
     Kernel.send(state.owner, {:ble_connected, self()})
-    {:noreply, new_state}
+
+    case state.pending_handshake_data do
+      nil ->
+        {:noreply, new_state}
+
+      data ->
+        Process.send_after(self(), {:process_pending_handshake, data}, 10)
+        {:noreply, %{new_state | pending_handshake_data: nil}}
+    end
+  end
+
+  def handle_info({:process_pending_handshake, data}, %{phase: :handshaking} = state) do
+    handle_handshake_data(data, state)
+  end
+
+  def handle_info({:process_pending_handshake, _data}, state) do
+    {:noreply, state}
   end
 
   def handle_info({:ble_data, _ref, data}, %{phase: :handshaking} = state) do
-    case BTP.decode_handshake(data) do
-      {:request, params} ->
-        # Respond with handshake response, negotiating MTU and window size
-        mtu = min(params.mtu, state.btp.mtu)
-        window_size = min(params.window_size, state.btp.window_size)
-        response = BTP.handshake_response(4, mtu: mtu, window_size: window_size)
+    handle_handshake_data(data, state)
+  end
 
-        state.adapter.send_data(state.adapter_handle, state.connection_ref, response)
-
-        new_btp = %{state.btp | mtu: mtu, window_size: window_size}
-        {:noreply, %{state | phase: :connected, btp: new_btp}}
-
-      _ ->
-        # Unexpected data during handshake — ignore
-        {:noreply, state}
-    end
+  def handle_info({:ble_data, ref, data}, %{phase: :idle} = state) do
+    {:noreply, %{state | connection_ref: ref, pending_handshake_data: data}}
   end
 
   def handle_info({:ble_data, _ref, data}, %{phase: :connected} = state) do
     case BTP.receive_segment(state.btp, data) do
       {:ok, new_btp} ->
-        {:noreply, %{state | btp: new_btp}}
+        {:noreply, send_pending_ack(%{state | btp: new_btp})}
 
       {:complete, message, new_btp} ->
         Kernel.send(state.owner, {:ble_data, self(), message})
-        {:noreply, %{state | btp: new_btp}}
+        {:noreply, send_pending_ack(%{state | btp: new_btp})}
 
       {:ack_only, _ack_num, new_btp} ->
         {:noreply, %{state | btp: new_btp}}
@@ -212,11 +215,14 @@ defmodule MatterEx.Transport.BLE do
   def handle_info({:ble_disconnected, _ref}, state) do
     Kernel.send(state.owner, {:ble_disconnected, self()})
 
-    {:noreply, %{state |
-      connection_ref: nil,
-      phase: :idle,
-      btp: BTP.new(mtu: state.btp.mtu, window_size: state.btp.window_size)
-    }}
+    {:noreply,
+     %{
+       state
+       | connection_ref: nil,
+         pending_handshake_data: nil,
+         phase: :idle,
+         btp: BTP.new(mtu: state.btp.mtu, window_size: state.btp.window_size)
+     }}
   end
 
   @impl true
@@ -229,6 +235,39 @@ defmodule MatterEx.Transport.BLE do
   end
 
   # ── Private ────────────────────────────────────────────────────────
+
+  defp handle_handshake_data(data, state) do
+    case BTP.decode_handshake(data) do
+      {:request, params} ->
+        # A central MTU of 0 means it could not determine the negotiated ATT MTU.
+        requested_mtu = if params.mtu == 0, do: state.btp.mtu, else: params.mtu
+        mtu = min(requested_mtu, state.btp.mtu)
+        window_size = min(params.window_size, state.btp.window_size)
+        response = BTP.handshake_response(4, mtu: mtu, window_size: window_size)
+
+        state.adapter.send_data(state.adapter_handle, state.connection_ref, response)
+
+        # As the BLE peripheral, the capabilities response consumes sequence 0
+        # in CHIP's BTP state machine; the first Matter data fragment starts at 1.
+        new_btp = %{state.btp | mtu: mtu, window_size: window_size, tx_seq: 1}
+        {:noreply, %{state | phase: :connected, btp: new_btp}}
+
+      _ ->
+        # Unexpected data during handshake — ignore
+        {:noreply, state}
+    end
+  end
+
+  defp send_pending_ack(state) do
+    case BTP.ack_if_pending(state.btp) do
+      {:ok, nil, btp} ->
+        %{state | btp: btp}
+
+      {:ok, packet, btp} ->
+        state.adapter.send_data(state.adapter_handle, state.connection_ref, packet)
+        %{state | btp: btp}
+    end
+  end
 
   defp build_ad_data(discriminator, vendor_id, product_id) do
     <<discriminator::little-16, vendor_id::little-16, product_id::little-16>>

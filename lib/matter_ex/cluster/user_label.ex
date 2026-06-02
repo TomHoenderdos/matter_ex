@@ -11,7 +11,7 @@ defmodule MatterEx.Cluster.UserLabel do
   use MatterEx.Cluster, id: 0x0041, name: :user_label
 
   # LabelList: list of %{label: string, value: string}
-  attribute 0x0000, :label_list, :list, default: [], writable: true
-  attribute 0xFFFC, :feature_map, :uint32, default: 0
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 1
+  attribute(0x0000, :label_list, :list, default: [], writable: true)
+  attribute(0xFFFC, :feature_map, :uint32, default: 0)
+  attribute(0xFFFD, :cluster_revision, :uint16, default: 1)
 end

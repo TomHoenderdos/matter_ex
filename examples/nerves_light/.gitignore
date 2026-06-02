@@ -1,5 +1,0 @@
-/_build/
-/deps/
-*.ez
-*.beam
-/nerves_light.tar.gz

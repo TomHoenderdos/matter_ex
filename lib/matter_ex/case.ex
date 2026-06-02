@@ -115,29 +115,29 @@ defmodule MatterEx.CASE do
     random = :crypto.strong_rand_bytes(32)
     {eph_pub, eph_priv} = Certificate.generate_keypair()
 
-    dest_id = Messages.compute_destination_id(
-      cs.ipk, random, cs.root_public_key || <<>>, cs.peer_fabric_id, cs.peer_node_id
-    )
+    dest_id =
+      Messages.compute_destination_id(
+        cs.ipk,
+        random,
+        cs.root_public_key || <<>>,
+        cs.peer_fabric_id,
+        cs.peer_node_id
+      )
 
     payload = Messages.encode_sigma1(random, cs.local_session_id, dest_id, eph_pub)
 
     {:send, :case_sigma1, payload,
-     %{cs |
-       state: :sigma1_sent,
-       eph_priv: eph_priv,
-       eph_pub: eph_pub,
-       transcript: payload
-     }}
+     %{cs | state: :sigma1_sent, eph_priv: eph_priv, eph_pub: eph_pub, transcript: payload}}
   end
 
   # ── Handle incoming messages ──────────────────────────────────────
 
   @spec handle(t(), atom(), binary()) ::
-    {:reply, atom(), binary(), t()}
-    | {:send, atom(), binary(), t()}
-    | {:established, atom(), binary(), Session.t(), t()}
-    | {:established, Session.t(), t()}
-    | {:error, atom()}
+          {:reply, atom(), binary(), t()}
+          | {:send, atom(), binary(), t()}
+          | {:established, atom(), binary(), Session.t(), t()}
+          | {:established, Session.t(), t()}
+          | {:error, atom()}
 
   # Device: receive Sigma1 → reply Sigma2
   def handle(%__MODULE__{role: :device, state: :idle} = cs, :case_sigma1, payload) do
@@ -150,19 +150,29 @@ defmodule MatterEx.CASE do
         # Verify destination_id
         rpk = cs.root_public_key || <<>>
 
-        Logger.debug("CASE dest_id inputs: ipk=#{Base.encode16(cs.ipk)}(#{byte_size(cs.ipk)}B) " <>
-          "random=#{Base.encode16(msg.initiator_random)}(#{byte_size(msg.initiator_random)}B) " <>
-          "rpk=#{Base.encode16(rpk)}(#{byte_size(rpk)}B) " <>
-          "fabric_id=#{cs.fabric_id} node_id=#{cs.node_id}")
-
-        expected_dest = Messages.compute_destination_id(
-          cs.ipk, msg.initiator_random, rpk, cs.fabric_id, cs.node_id
+        Logger.debug(
+          "CASE dest_id inputs: ipk=#{Base.encode16(cs.ipk)}(#{byte_size(cs.ipk)}B) " <>
+            "random=#{Base.encode16(msg.initiator_random)}(#{byte_size(msg.initiator_random)}B) " <>
+            "rpk=#{Base.encode16(rpk)}(#{byte_size(rpk)}B) " <>
+            "fabric_id=#{cs.fabric_id} node_id=#{cs.node_id}"
         )
+
+        expected_dest =
+          Messages.compute_destination_id(
+            cs.ipk,
+            msg.initiator_random,
+            rpk,
+            cs.fabric_id,
+            cs.node_id
+          )
 
         if expected_dest == msg.destination_id or cs.skip_dest_check do
           process_sigma1(cs, msg, payload)
         else
-          Logger.debug("CASE dest_id mismatch: expected=#{Base.encode16(expected_dest)} got=#{Base.encode16(msg.destination_id)}")
+          Logger.debug(
+            "CASE dest_id mismatch: expected=#{Base.encode16(expected_dest)} got=#{Base.encode16(msg.destination_id)}"
+          )
+
           {:error, :destination_mismatch}
         end
 
@@ -200,17 +210,18 @@ defmodule MatterEx.CASE do
         # Session salt = IPK || SHA256(full transcript)
         session_salt = cs.ipk <> :crypto.hash(:sha256, cs.transcript)
 
-        session = Session.new(
-          local_session_id: cs.local_session_id,
-          peer_session_id: cs.peer_session_id,
-          encryption_key: cs.shared_secret,
-          salt: session_salt,
-          role: :initiator,
-          local_node_id: cs.node_id,
-          peer_node_id: cs.peer_node_id,
-          auth_mode: :case,
-          fabric_index: cs.fabric_index
-        )
+        session =
+          Session.new(
+            local_session_id: cs.local_session_id,
+            peer_session_id: cs.peer_session_id,
+            encryption_key: cs.shared_secret,
+            salt: session_salt,
+            role: :initiator,
+            local_node_id: cs.node_id,
+            peer_node_id: cs.peer_node_id,
+            auth_mode: :case,
+            fabric_index: cs.fabric_index
+          )
 
         {:established, session, %{cs | state: :established}}
 
@@ -243,7 +254,14 @@ defmodule MatterEx.CASE do
     transcript_hash = :crypto.hash(:sha256, sigma1_bytes)
 
     # Derive S2K with proper salt: IPK || random || eph_pub || transcript_hash
-    s2k = Messages.derive_sigma2_key(cs.ipk, shared_secret, responder_random, eph_pub, transcript_hash)
+    s2k =
+      Messages.derive_sigma2_key(
+        cs.ipk,
+        shared_secret,
+        responder_random,
+        eph_pub,
+        transcript_hash
+      )
 
     # Build TBS as TLV structure: {1:NOC, 2:ICAC, 3:sender_eph, 4:receiver_eph}
     tbs2 = Messages.build_tbs(cs.noc, cs.icac, eph_pub, msg.initiator_eph_pub)
@@ -257,22 +275,25 @@ defmodule MatterEx.CASE do
     encrypted2 = Messages.encrypt_tbe(:sigma2, s2k, tbe_plaintext)
 
     # Build Sigma2 response (same responder_random used in salt)
-    sigma2_payload = Messages.encode_sigma2(
-      responder_random,
-      cs.local_session_id,
-      eph_pub,
-      encrypted2
-    )
+    sigma2_payload =
+      Messages.encode_sigma2(
+        responder_random,
+        cs.local_session_id,
+        eph_pub,
+        encrypted2,
+        Messages.default_session_parameters()
+      )
 
     {:reply, :case_sigma2, sigma2_payload,
-     %{cs |
-       state: :sigma2_sent,
-       eph_priv: eph_priv,
-       eph_pub: eph_pub,
-       peer_eph_pub: msg.initiator_eph_pub,
-       peer_session_id: msg.initiator_session_id,
-       shared_secret: shared_secret,
-       transcript: sigma1_bytes <> sigma2_payload
+     %{
+       cs
+       | state: :sigma2_sent,
+         eph_priv: eph_priv,
+         eph_pub: eph_pub,
+         peer_eph_pub: msg.initiator_eph_pub,
+         peer_session_id: msg.initiator_session_id,
+         shared_secret: shared_secret,
+         transcript: sigma1_bytes <> sigma2_payload
      }}
   end
 
@@ -286,7 +307,14 @@ defmodule MatterEx.CASE do
     transcript_hash = :crypto.hash(:sha256, cs.transcript)
 
     # Derive S2K with proper salt: IPK || random || eph_pub || transcript_hash
-    s2k = Messages.derive_sigma2_key(cs.ipk, shared_secret, msg.responder_random, msg.responder_eph_pub, transcript_hash)
+    s2k =
+      Messages.derive_sigma2_key(
+        cs.ipk,
+        shared_secret,
+        msg.responder_random,
+        msg.responder_eph_pub,
+        transcript_hash
+      )
 
     case Messages.decrypt_tbe(:sigma2, s2k, msg.encrypted2) do
       {:ok, tbe_plaintext} ->
@@ -343,12 +371,13 @@ defmodule MatterEx.CASE do
     sigma3_payload = Messages.encode_sigma3(encrypted3)
 
     {:send, :case_sigma3, sigma3_payload,
-     %{cs |
-       state: :sigma3_sent,
-       peer_session_id: msg.responder_session_id,
-       peer_eph_pub: msg.responder_eph_pub,
-       shared_secret: shared_secret,
-       transcript: transcript <> sigma3_payload
+     %{
+       cs
+       | state: :sigma3_sent,
+         peer_session_id: msg.responder_session_id,
+         peer_eph_pub: msg.responder_eph_pub,
+         shared_secret: shared_secret,
+         transcript: transcript <> sigma3_payload
      }}
   end
 
@@ -379,7 +408,7 @@ defmodule MatterEx.CASE do
   defp verify_sigma3_and_establish(cs, tbe, sigma3_bytes) do
     # Extract initiator's public key from NOC
     case Messages.decode_noc(tbe.noc) do
-      {:ok, %{public_key: initiator_pub, node_id: peer_node_id}} ->
+      {:ok, %{public_key: initiator_pub, node_id: peer_node_id} = decoded_noc} ->
         # Build TBS as TLV structure for verification
         tbs3 = Messages.build_tbs(tbe.noc, tbe.icac, cs.peer_eph_pub, cs.eph_pub)
 
@@ -397,17 +426,21 @@ defmodule MatterEx.CASE do
 
           sr_payload = StatusReport.encode(sr)
 
-          session = Session.new(
-            local_session_id: cs.local_session_id,
-            peer_session_id: cs.peer_session_id,
-            encryption_key: cs.shared_secret,
-            salt: session_salt,
-            role: :responder,
-            local_node_id: cs.node_id,
-            peer_node_id: peer_node_id,
-            auth_mode: :case,
-            fabric_index: cs.fabric_index
-          )
+          peer_subjects = case_peer_subjects(peer_node_id, decoded_noc)
+
+          session =
+            Session.new(
+              local_session_id: cs.local_session_id,
+              peer_session_id: cs.peer_session_id,
+              encryption_key: cs.shared_secret,
+              salt: session_salt,
+              role: :responder,
+              local_node_id: cs.node_id,
+              peer_node_id: peer_node_id,
+              peer_subjects: peer_subjects,
+              auth_mode: :case,
+              fabric_index: cs.fabric_index
+            )
 
           {:established, :status_report, sr_payload, session,
            %{cs | state: :established, peer_node_id: peer_node_id}}
@@ -418,5 +451,19 @@ defmodule MatterEx.CASE do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp case_peer_subjects(peer_node_id, decoded_noc) do
+    cat_subjects =
+      decoded_noc
+      |> Map.get(:case_authenticated_tags, [])
+      |> List.wrap()
+      |> Enum.filter(&is_integer/1)
+      |> Enum.map(&Bitwise.bor(0xFFFFFFFD00000000, &1))
+
+    [peer_node_id | cat_subjects]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.reject(&(&1 == 0))
+    |> Enum.uniq()
   end
 end

@@ -22,23 +22,25 @@ defmodule MatterEx.Session do
     :attestation_challenge,
     :local_node_id,
     :peer_node_id,
+    :peer_subjects,
     :counter,
     :auth_mode,
     :fabric_index
   ]
 
   @type t :: %__MODULE__{
-    local_session_id: non_neg_integer(),
-    peer_session_id: non_neg_integer(),
-    encrypt_key: binary(),
-    decrypt_key: binary(),
-    attestation_challenge: binary(),
-    local_node_id: non_neg_integer(),
-    peer_node_id: non_neg_integer(),
-    counter: Counter.t(),
-    auth_mode: :pase | :case,
-    fabric_index: non_neg_integer() | nil
-  }
+          local_session_id: non_neg_integer(),
+          peer_session_id: non_neg_integer(),
+          encrypt_key: binary(),
+          decrypt_key: binary(),
+          attestation_challenge: binary(),
+          local_node_id: non_neg_integer(),
+          peer_node_id: non_neg_integer(),
+          peer_subjects: [non_neg_integer()],
+          counter: Counter.t(),
+          auth_mode: :pase | :case,
+          fabric_index: non_neg_integer() | nil
+        }
 
   @doc """
   Create a new session with derived directional keys and a fresh message counter.
@@ -65,6 +67,9 @@ defmodule MatterEx.Session do
         :responder -> {r2i, i2r}
       end
 
+    peer_node_id = Keyword.get(opts, :peer_node_id, 0)
+    peer_subjects = Keyword.get(opts, :peer_subjects, [peer_node_id])
+
     %__MODULE__{
       local_session_id: Keyword.fetch!(opts, :local_session_id),
       peer_session_id: Keyword.fetch!(opts, :peer_session_id),
@@ -72,7 +77,8 @@ defmodule MatterEx.Session do
       decrypt_key: decrypt_key,
       attestation_challenge: challenge,
       local_node_id: Keyword.get(opts, :local_node_id, 0),
-      peer_node_id: Keyword.get(opts, :peer_node_id, 0),
+      peer_node_id: peer_node_id,
+      peer_subjects: peer_subjects,
       counter: Counter.new(),
       auth_mode: Keyword.get(opts, :auth_mode, :pase),
       fabric_index: Keyword.get(opts, :fabric_index)

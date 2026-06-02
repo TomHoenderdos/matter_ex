@@ -36,36 +36,38 @@ defmodule MatterEx.MessageHandler do
   alias MatterEx.{CASE, ExchangeManager, PASE, SecureChannel, Session}
   alias MatterEx.IM
   alias MatterEx.IM.{Router, SubscriptionManager}
-  alias MatterEx.Protocol.{Counter, MessageCodec, ProtocolID}
+  alias MatterEx.Protocol.{Counter, MessageCodec, MRP, ProtocolID}
   alias MatterEx.Protocol.MessageCodec.{Header, ProtoHeader}
 
   @type action ::
-    {:send, binary()}
-    | {:schedule_mrp, non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer()}
-    | {:session_established, non_neg_integer()}
-    | {:session_closed, non_neg_integer()}
+          {:send, binary()}
+          | {:send, non_neg_integer(), binary()}
+          | {:schedule_mrp, non_neg_integer(), non_neg_integer(), non_neg_integer(),
+             non_neg_integer()}
+          | {:session_established, non_neg_integer()}
+          | {:session_closed, non_neg_integer()}
 
   @type session_entry :: %{
-    session: Session.t(),
-    exchange_mgr: ExchangeManager.t(),
-    subscription_mgr: SubscriptionManager.t(),
-    exchange_to_sub: %{non_neg_integer() => non_neg_integer()}
-  }
+          session: Session.t(),
+          exchange_mgr: ExchangeManager.t(),
+          subscription_mgr: SubscriptionManager.t(),
+          exchange_to_sub: %{non_neg_integer() => non_neg_integer()}
+        }
 
   @type group_key_entry :: %{
-    group_id: non_neg_integer(),
-    session_id: non_neg_integer(),
-    encrypt_key: binary()
-  }
+          group_id: non_neg_integer(),
+          session_id: non_neg_integer(),
+          encrypt_key: binary()
+        }
 
   @type t :: %__MODULE__{
-    device: module() | nil,
-    pase: PASE.t() | nil,
-    case_states: %{non_neg_integer() => CASE.t()},
-    sessions: %{non_neg_integer() => session_entry()},
-    group_keys: %{non_neg_integer() => group_key_entry()},
-    plaintext_counter: Counter.t()
-  }
+          device: module() | nil,
+          pase: PASE.t() | nil,
+          case_states: %{non_neg_integer() => CASE.t()},
+          sessions: %{non_neg_integer() => session_entry()},
+          group_keys: %{non_neg_integer() => group_key_entry()},
+          plaintext_counter: Counter.t()
+        }
 
   defstruct device: nil,
             pase: nil,
@@ -93,12 +95,13 @@ defmodule MatterEx.MessageHandler do
   """
   @spec new(keyword()) :: t()
   def new(opts) do
-    pase = PASE.new_device(
-      passcode: Keyword.fetch!(opts, :passcode),
-      salt: Keyword.fetch!(opts, :salt),
-      iterations: Keyword.fetch!(opts, :iterations),
-      local_session_id: Keyword.fetch!(opts, :local_session_id)
-    )
+    pase =
+      PASE.new_device(
+        passcode: Keyword.fetch!(opts, :passcode),
+        salt: Keyword.fetch!(opts, :salt),
+        iterations: Keyword.fetch!(opts, :iterations),
+        local_session_id: Keyword.fetch!(opts, :local_session_id)
+      )
 
     case_states = maybe_init_case(opts)
 
@@ -145,37 +148,102 @@ defmodule MatterEx.MessageHandler do
   Returns `{action_or_nil, updated_state}`.
   """
   @spec handle_mrp_timeout(t(), non_neg_integer(), non_neg_integer(), non_neg_integer()) ::
-    {action() | nil, t()}
-  def handle_mrp_timeout(%__MODULE__{} = state, session_id, exchange_id, attempt) do
+          {action() | [action()] | nil, t()}
+  def handle_mrp_timeout(%__MODULE__{} = state, session_id, pending_id, attempt) do
     case Map.get(state.sessions, session_id) do
       nil ->
         Logger.warning("MRP timeout for unknown session #{session_id}")
         {nil, state}
 
       %{session: session, exchange_mgr: mgr} = entry ->
-        case ExchangeManager.handle_timeout(mgr, exchange_id, attempt) do
-          {:retransmit, proto, mgr} ->
-            Logger.debug("MRP retransmit session=#{session_id} exchange=#{exchange_id} attempt=#{attempt}")
-            {frame, session} = SecureChannel.seal(session, proto)
-            entry = %{entry | session: session, exchange_mgr: mgr}
-            sessions = Map.put(state.sessions, session_id, entry)
-            {{:send, frame}, %{state | sessions: sessions}}
+        case ExchangeManager.handle_timeout(mgr, pending_id, attempt) do
+          {:retransmit_frame, frame, exchange_id, mgr} ->
+            Logger.debug(
+              "MRP retransmit session=#{session_id} pending=#{pending_id} exchange=#{exchange_id} attempt=#{attempt}"
+            )
 
-          {:give_up, _exchange_id, mgr} ->
-            Logger.warning("MRP gave up on session=#{session_id} exchange=#{exchange_id} after #{attempt + 1} attempts")
+            entry = %{entry | exchange_mgr: mgr}
+            sessions = Map.put(state.sessions, session_id, entry)
+            timeout = MRP.backoff_ms(mgr.mrp, attempt + 1, deterministic: true)
+
+            actions = [
+              {:send, session_id, frame},
+              {:schedule_mrp, session_id, pending_id, attempt + 1, timeout}
+            ]
+
+            {actions, %{state | sessions: sessions}}
+
+          {:retransmit, proto, mgr} ->
+            Logger.debug(
+              "MRP retransmit session=#{session_id} pending=#{pending_id} exchange=#{proto.exchange_id} attempt=#{attempt}"
+            )
+
+            {frame, session, message_counter} = SecureChannel.seal_with_counter(session, proto)
+
+            mgr = %{
+              mgr
+              | mrp: MRP.rekey(mgr.mrp, pending_id, message_counter)
+            }
+
+            exchange_to_sub =
+              case Map.pop(Map.get(entry, :exchange_to_sub, %{}), pending_id) do
+                {nil, exchange_to_sub} -> exchange_to_sub
+                {sub_id, exchange_to_sub} -> Map.put(exchange_to_sub, message_counter, sub_id)
+              end
+
+            entry = %{
+              entry
+              | session: session,
+                exchange_mgr: mgr,
+                exchange_to_sub: exchange_to_sub
+            }
+
+            sessions = Map.put(state.sessions, session_id, entry)
+            timeout = MRP.backoff_ms(mgr.mrp, attempt + 1, deterministic: true)
+
+            actions = [
+              {:send, session_id, frame},
+              {:schedule_mrp, session_id, message_counter, attempt + 1, timeout}
+            ]
+
+            {actions, %{state | sessions: sessions}}
+
+          {:give_up, exchange_id, mgr} ->
+            Logger.warning(
+              "MRP gave up on session=#{session_id} pending=#{pending_id} after #{attempt + 1} attempts"
+            )
+
             exchange_to_sub = Map.get(entry, :exchange_to_sub, %{})
 
             {sub_mgr, exchange_to_sub} =
-              case Map.pop(exchange_to_sub, exchange_id) do
+              case Map.pop(exchange_to_sub, pending_id) do
                 {nil, exchange_to_sub} ->
                   {entry.subscription_mgr, exchange_to_sub}
 
                 {sub_id, exchange_to_sub} ->
-                  Logger.info("Cleaning up subscription #{sub_id} after MRP give_up on exchange #{exchange_id}")
-                  {SubscriptionManager.unsubscribe(entry.subscription_mgr, sub_id), exchange_to_sub}
+                  Logger.info(
+                    "Cleaning up subscription #{sub_id} after MRP give_up on pending #{pending_id}"
+                  )
+
+                  {SubscriptionManager.unsubscribe(entry.subscription_mgr, sub_id),
+                   exchange_to_sub}
               end
 
-            entry = %{entry | exchange_mgr: mgr, subscription_mgr: sub_mgr, exchange_to_sub: exchange_to_sub}
+            entry = %{
+              entry
+              | exchange_mgr: mgr,
+                subscription_mgr: sub_mgr,
+                exchange_to_sub: exchange_to_sub
+            }
+
+            exchange_mgr = %{
+              entry.exchange_mgr
+              | pending_subscribe_responses:
+                  Map.delete(entry.exchange_mgr.pending_subscribe_responses, exchange_id)
+            }
+
+            entry = %{entry | exchange_mgr: exchange_mgr}
+
             sessions = Map.put(state.sessions, session_id, entry)
             {nil, %{state | sessions: sessions}}
 
@@ -242,10 +310,11 @@ defmodule MatterEx.MessageHandler do
   defp handle_plaintext(state, frame) do
     case MessageCodec.decode(frame) do
       {:ok, message} ->
-        opcode_name = ProtocolID.opcode_name(
-          message.proto.protocol_id,
-          message.proto.opcode
-        )
+        opcode_name =
+          ProtocolID.opcode_name(
+            message.proto.protocol_id,
+            message.proto.opcode
+          )
 
         cond do
           opcode_name in @case_opcodes ->
@@ -266,6 +335,8 @@ defmodule MatterEx.MessageHandler do
   end
 
   defp handle_pase_message(state, message, opcode_name) do
+    state = maybe_reset_pase(state, opcode_name)
+
     case PASE.handle(state.pase, opcode_name, message.proto.payload) do
       {:reply, resp_type, resp_payload, pase} ->
         frame = build_plaintext_frame(state, message, resp_type, resp_payload)
@@ -274,14 +345,23 @@ defmodule MatterEx.MessageHandler do
         {[{:send, frame}], %{state | pase: pase, plaintext_counter: counter}}
 
       {:established, :status_report, sr_payload, session, pase} ->
-        Logger.info("PASE session established: local=#{session.local_session_id} peer=#{session.peer_session_id}")
+        Logger.info(
+          "PASE session established: local=#{session.local_session_id} peer=#{session.peer_session_id}"
+        )
+
         frame = build_plaintext_frame(state, message, :status_report, sr_payload)
         {_counter_val, counter} = Counter.next(state.plaintext_counter)
 
         handler = build_im_handler(state.device, session)
         mgr = ExchangeManager.new(handler: handler)
 
-        entry = %{session: session, exchange_mgr: mgr, subscription_mgr: SubscriptionManager.new(), exchange_to_sub: %{}}
+        entry = %{
+          session: session,
+          exchange_mgr: mgr,
+          subscription_mgr: SubscriptionManager.new(),
+          exchange_to_sub: %{}
+        }
+
         sessions = Map.put(state.sessions, session.local_session_id, entry)
 
         actions = [
@@ -296,6 +376,24 @@ defmodule MatterEx.MessageHandler do
         {[{:error, reason}], state}
     end
   end
+
+  defp maybe_reset_pase(%{pase: %{state: :idle}} = state, _opcode_name), do: state
+
+  defp maybe_reset_pase(%{pase: pase} = state, :pbkdf_param_request) do
+    Logger.debug("PASE: resetting state #{pase.state} for new PBKDFParamRequest")
+
+    pase =
+      PASE.new_device(
+        passcode: pase.passcode,
+        salt: pase.salt,
+        iterations: pase.iterations,
+        local_session_id: :rand.uniform(65534)
+      )
+
+    %{state | pase: pase}
+  end
+
+  defp maybe_reset_pase(state, _opcode_name), do: state
 
   # ── Plaintext path (CASE) ──────────────────────────────────────────
 
@@ -313,7 +411,11 @@ defmodule MatterEx.MessageHandler do
   # computation doesn't match).
   defp try_case_fabrics(state, message, opcode_name, [], :destination_mismatch, false) do
     [{fabric_index, case_state} | _] = Map.to_list(state.case_states)
-    Logger.debug("CASE: no fabric matched destination_id, retrying fabric #{fabric_index} with skip_dest_check")
+
+    Logger.debug(
+      "CASE: no fabric matched destination_id, retrying fabric #{fabric_index} with skip_dest_check"
+    )
+
     relaxed = %{case_state | skip_dest_check: true}
     try_case_fabrics(state, message, opcode_name, [{fabric_index, relaxed}], nil, true)
   end
@@ -324,14 +426,22 @@ defmodule MatterEx.MessageHandler do
     {[{:error, reason}], state}
   end
 
-  defp try_case_fabrics(state, message, opcode_name, [{fabric_index, case_state} | rest], _last_error, retry) do
+  defp try_case_fabrics(
+         state,
+         message,
+         opcode_name,
+         [{fabric_index, case_state} | rest],
+         _last_error,
+         retry
+       ) do
     # Reset stuck CASE state when receiving a new Sigma1 (e.g., previous handshake timed out)
-    case_state = if opcode_name == :case_sigma1 and case_state.state != :idle do
-      Logger.debug("CASE: resetting stuck state #{case_state.state} for fabric #{fabric_index}")
-      reset_one_case(case_state)
-    else
-      case_state
-    end
+    case_state =
+      if opcode_name == :case_sigma1 and case_state.state != :idle do
+        Logger.debug("CASE: resetting stuck state #{case_state.state} for fabric #{fabric_index}")
+        reset_one_case(case_state)
+      else
+        case_state
+      end
 
     case CASE.handle(case_state, opcode_name, message.proto.payload) do
       {:reply, resp_type, resp_payload, updated_cs} ->
@@ -341,25 +451,36 @@ defmodule MatterEx.MessageHandler do
         {[{:send, frame}], %{state | case_states: case_states, plaintext_counter: counter}}
 
       {:established, :status_report, sr_payload, session, _updated_cs} ->
-        Logger.info("CASE session established: local=#{session.local_session_id} peer=#{session.peer_session_id}")
+        Logger.info(
+          "CASE session established: local=#{session.local_session_id} peer=#{session.peer_session_id}"
+        )
+
         frame = build_plaintext_frame(state, message, :status_report, sr_payload)
         {_counter_val, counter} = Counter.next(state.plaintext_counter)
 
         handler = build_im_handler(state.device, session)
         mgr = ExchangeManager.new(handler: handler)
 
-        entry = %{session: session, exchange_mgr: mgr, subscription_mgr: SubscriptionManager.new(), exchange_to_sub: %{}}
-        sessions = Map.put(state.sessions, session.local_session_id, entry)
+        entry = %{
+          session: session,
+          exchange_mgr: mgr,
+          subscription_mgr: SubscriptionManager.new(),
+          exchange_to_sub: %{}
+        }
+
+        {closed_session_ids, sessions} =
+          put_replacing_duplicate_case_session(state.sessions, session, entry)
 
         # Reset this fabric's CASE state for next handshake
         case_states = Map.put(state.case_states, fabric_index, reset_one_case(case_state))
 
-        actions = [
-          {:send, frame},
-          {:session_established, session.local_session_id}
-        ]
+        actions =
+          [{:send, frame}] ++
+            Enum.map(closed_session_ids, &{:session_closed, &1}) ++
+            [{:session_established, session.local_session_id}]
 
-        {actions, %{state | case_states: case_states, sessions: sessions, plaintext_counter: counter}}
+        {actions,
+         %{state | case_states: case_states, sessions: sessions, plaintext_counter: counter}}
 
       {:error, reason} ->
         # Try next fabric
@@ -380,28 +501,33 @@ defmodule MatterEx.MessageHandler do
     if noc && private_key && ipk && node_id && fabric_id do
       # IPK from AddNOC is the epoch key — derive the actual IPK per Matter spec 4.16.2.1:
       # IPK = HKDF(salt=CompressedFabricId, ikm=epochKey, info="GroupKey v1.0", length=16)
-      derived_ipk = if root_public_key do
-        alias MatterEx.Crypto.KDF
-        cfid = MatterEx.MDNS.compressed_fabric_id(root_public_key, fabric_id)
-        KDF.hkdf(cfid, ipk, "GroupKey v1.0", 16)
-      else
-        ipk
-      end
+      derived_ipk =
+        if root_public_key do
+          alias MatterEx.Crypto.KDF
+          cfid = MatterEx.MDNS.compressed_fabric_id(root_public_key, fabric_id)
+          KDF.hkdf(cfid, ipk, "GroupKey v1.0", 16)
+        else
+          ipk
+        end
 
-      Logger.debug("maybe_init_case: node_id=#{inspect(node_id)}(0x#{Integer.to_string(node_id, 16)}) fabric_id=#{inspect(fabric_id)}(0x#{Integer.to_string(fabric_id, 16)}) epoch_key=#{Base.encode16(ipk)}(#{byte_size(ipk)}B) derived_ipk=#{Base.encode16(derived_ipk)}(#{byte_size(derived_ipk)}B) root_pub=#{if root_public_key, do: "#{Base.encode16(root_public_key)}(#{byte_size(root_public_key)}B)", else: "nil"}")
+      Logger.debug(
+        "maybe_init_case: node_id=#{inspect(node_id)}(0x#{Integer.to_string(node_id, 16)}) fabric_id=#{inspect(fabric_id)}(0x#{Integer.to_string(fabric_id, 16)}) epoch_key=#{Base.encode16(ipk)}(#{byte_size(ipk)}B) derived_ipk=#{Base.encode16(derived_ipk)}(#{byte_size(derived_ipk)}B) root_pub=#{if root_public_key, do: "#{Base.encode16(root_public_key)}(#{byte_size(root_public_key)}B)", else: "nil"}"
+      )
+
       case_session_id = :rand.uniform(65534)
 
-      cs = CASE.new_device(
-        noc: noc,
-        icac: icac,
-        private_key: private_key,
-        ipk: derived_ipk,
-        root_public_key: root_public_key,
-        node_id: node_id,
-        fabric_id: fabric_id,
-        fabric_index: fabric_index,
-        local_session_id: case_session_id
-      )
+      cs =
+        CASE.new_device(
+          noc: noc,
+          icac: icac,
+          private_key: private_key,
+          ipk: derived_ipk,
+          root_public_key: root_public_key,
+          node_id: node_id,
+          fabric_id: fabric_id,
+          fabric_index: fabric_index,
+          local_session_id: case_session_id
+        )
 
       %{fabric_index => cs}
     else
@@ -409,7 +535,31 @@ defmodule MatterEx.MessageHandler do
     end
   end
 
+  defp put_replacing_duplicate_case_session(sessions, session, entry) do
+    duplicate? = fn
+      {sid, %{session: existing}} when sid != session.local_session_id ->
+        existing.auth_mode == :case and existing.fabric_index == session.fabric_index and
+          existing.peer_node_id == session.peer_node_id
+
+      _ ->
+        false
+    end
+
+    closed_session_ids =
+      sessions
+      |> Enum.filter(duplicate?)
+      |> Enum.map(fn {sid, _entry} -> sid end)
+
+    sessions =
+      sessions
+      |> Map.drop(closed_session_ids)
+      |> Map.put(session.local_session_id, entry)
+
+    {closed_session_ids, sessions}
+  end
+
   defp extract_root_public_key(nil), do: nil
+
   defp extract_root_public_key(root_cert) do
     alias MatterEx.CASE.Messages, as: CASEMessages
     CASEMessages.extract_public_key(root_cert)
@@ -470,7 +620,9 @@ defmodule MatterEx.MessageHandler do
 
       %{encrypt_key: key, group_id: group_id} ->
         source_node_id = header.source_node_id || 0
-        nonce = MessageCodec.build_nonce(header.security_flags, header.message_counter, source_node_id)
+
+        nonce =
+          MessageCodec.build_nonce(header.security_flags, header.message_counter, source_node_id)
 
         case MessageCodec.decode_encrypted(frame, key, nonce) do
           {:ok, message} ->
@@ -521,52 +673,123 @@ defmodule MatterEx.MessageHandler do
         case SecureChannel.open(session, frame) do
           {:ok, message, session} ->
             opcode = ProtocolID.opcode_name(message.proto.protocol_id, message.proto.opcode)
-            Logger.debug("Decrypted message: protocol=#{inspect(message.proto.protocol_id)} opcode=#{inspect(message.proto.opcode)} (#{inspect(opcode)}) payload=#{byte_size(message.proto.payload)}B exchange=#{message.proto.exchange_id}")
 
-            # Pre-process subscribe_request: register subscription, build priming report, inject temp handler
-            {mgr, sub_mgr} = maybe_setup_subscription(mgr, sub_mgr, opcode, message.proto, state.device, session)
-
-            {em_actions, mgr} = ExchangeManager.handle_message(
-              mgr, message.proto, message.header.message_counter
+            Logger.debug(
+              "Decrypted message: protocol=#{inspect(message.proto.protocol_id)} opcode=#{inspect(message.proto.opcode)} (#{inspect(opcode)}) payload=#{byte_size(message.proto.payload)}B exchange=#{message.proto.exchange_id}"
             )
 
-            # Restore the original handler after subscribe processing
-            mgr = if opcode == :subscribe_request do
-              %{mgr | handler: build_im_handler(state.device, session)}
-            else
-              mgr
-            end
+            MatterEx.DebugTrace.record(%{
+              type: :incoming_im,
+              session_id: session_id,
+              session_auth: session.auth_mode,
+              fabric_index: session.fabric_index,
+              exchange_id: message.proto.exchange_id,
+              message_counter: message.header.message_counter,
+              opcode: opcode,
+              payload_size: byte_size(message.proto.payload),
+              needs_ack: message.proto.needs_ack,
+              ack_counter: message.proto.ack_counter,
+              pending_subscribe_responses: Map.keys(mgr.pending_subscribe_responses),
+              mrp_pending: Map.keys(mgr.mrp.pending)
+            })
 
-            {actions, session} = process_exchange_actions(em_actions, session, session_id)
+            # Pre-process subscribe_request: register subscription, build priming report, inject temp handler
+            {mgr, sub_mgr} =
+              maybe_setup_subscription(mgr, sub_mgr, opcode, message.proto, state.device, session)
+
+            {em_actions, mgr} =
+              ExchangeManager.handle_message(
+                mgr,
+                message.proto,
+                message.header.message_counter
+              )
+
+            # Restore the original handler after subscribe processing
+            mgr =
+              if opcode == :subscribe_request do
+                %{mgr | handler: build_im_handler(state.device, session)}
+              else
+                mgr
+              end
+
+            {actions, session, mgr} =
+              process_exchange_actions(em_actions, session, session_id, mgr)
+
+            removed_fabric_index =
+              removed_fabric_index_from_successful_response(
+                opcode,
+                message.proto.payload,
+                em_actions,
+                session
+              )
+
             entry = %{entry | session: session, exchange_mgr: mgr, subscription_mgr: sub_mgr}
             sessions = Map.put(state.sessions, session_id, entry)
-            {actions, %{state | sessions: sessions}}
+
+            state =
+              %{state | sessions: sessions}
+              |> maybe_unsubscribe_removed_fabric(removed_fabric_index)
+
+            {actions, state}
 
           {:error, reason} ->
-            Logger.warning("Failed to decrypt frame for session #{session_id}: #{inspect(reason)}")
+            Logger.warning(
+              "Failed to decrypt frame for session #{session_id}: #{inspect(reason)}"
+            )
+
             {[{:error, reason}], state}
         end
     end
   end
 
-  defp process_exchange_actions(em_actions, session, session_id) do
-    Enum.flat_map_reduce(em_actions, session, fn action, session ->
-      case action do
-        {:reply, proto} ->
-          {frame, session} = SecureChannel.seal(session, proto)
-          {[{:send, frame}], session}
+  defp process_exchange_actions(em_actions, session, session_id, mgr) do
+    {actions, {session, mgr, _last_reliable}} =
+      Enum.flat_map_reduce(em_actions, {session, mgr, nil}, fn action,
+                                                               {session, mgr, last_reliable} ->
+        case action do
+          {:reply, proto} ->
+            {frame, session, message_counter} = SecureChannel.seal_with_counter(session, proto)
 
-        {:schedule_mrp, exchange_id, attempt, timeout_ms} ->
-          {[{:schedule_mrp, session_id, exchange_id, attempt, timeout_ms}], session}
+            mgr =
+              if proto.needs_ack do
+                mrp =
+                  MRP.record_send(
+                    mgr.mrp,
+                    message_counter,
+                    :erlang.term_to_binary({:sealed_frame, frame, proto.exchange_id}),
+                    proto.exchange_id
+                  )
 
-        {:ack, proto} ->
-          {frame, session} = SecureChannel.seal(session, proto)
-          {[{:send, frame}], session}
+                %{mgr | mrp: mrp}
+              else
+                mgr
+              end
 
-        {:error, _reason} = err ->
-          {[err], session}
-      end
-    end)
+            last_reliable =
+              if proto.needs_ack, do: {proto.exchange_id, message_counter}, else: last_reliable
+
+            {[{:send, frame}], {session, mgr, last_reliable}}
+
+          {:schedule_mrp, exchange_id, attempt, timeout_ms} ->
+            pending_id =
+              case last_reliable do
+                {^exchange_id, message_counter} -> message_counter
+                _ -> exchange_id
+              end
+
+            {[{:schedule_mrp, session_id, pending_id, attempt, timeout_ms}],
+             {session, mgr, last_reliable}}
+
+          {:ack, proto} ->
+            {frame, session} = SecureChannel.seal(session, proto)
+            {[{:send, frame}], {session, mgr, last_reliable}}
+
+          {:error, _reason} = err ->
+            {[err], {session, mgr, last_reliable}}
+        end
+      end)
+
+    {actions, session, mgr}
   end
 
   # ── Private helpers ────────────────────────────────────────────────
@@ -574,34 +797,76 @@ defmodule MatterEx.MessageHandler do
   defp maybe_setup_subscription(mgr, sub_mgr, :subscribe_request, proto, device, session) do
     case IM.decode(:subscribe_request, proto.payload) do
       {:ok, %IM.SubscribeRequest{} = req} ->
-        {sub_id, sub_mgr} = SubscriptionManager.subscribe(
-          sub_mgr,
-          req.attribute_paths,
-          req.min_interval,
-          req.max_interval
-        )
+        attribute_paths = subscribe_attribute_paths(req.attribute_paths)
+
+        {sub_id, sub_mgr} =
+          SubscriptionManager.subscribe(
+            sub_mgr,
+            attribute_paths,
+            req.min_interval,
+            req.max_interval
+          )
 
         # Build priming ReportData with initial attribute values
         context = session_context(session)
-        priming_report = if device do
-          report = Router.handle_read(device, %IM.ReadRequest{attribute_paths: req.attribute_paths}, context)
-          %IM.ReportData{
-            subscription_id: sub_id,
-            attribute_reports: report.attribute_reports,
-            event_reports: report.event_reports,
-            suppress_response: false
-          }
-        else
-          %IM.ReportData{subscription_id: sub_id, suppress_response: false}
-        end
+
+        priming_report =
+          if device do
+            report =
+              Router.handle_read(
+                device,
+                %IM.ReadRequest{attribute_paths: attribute_paths},
+                context
+              )
+
+            %IM.ReportData{
+              subscription_id: sub_id,
+              attribute_reports: report.attribute_reports,
+              event_reports: report.event_reports,
+              suppress_response: false
+            }
+          else
+            %IM.ReportData{subscription_id: sub_id, suppress_response: false}
+          end
+
+        priming_payload = IM.encode(priming_report)
+        now = System.monotonic_time(:second)
+
+        sub_mgr =
+          SubscriptionManager.record_sent(
+            sub_mgr,
+            sub_id,
+            report_values(priming_report.attribute_reports),
+            now
+          )
+
+        MatterEx.DebugTrace.record(%{
+          type: :subscribe_setup,
+          exchange_id: proto.exchange_id,
+          subscription_id: sub_id,
+          requested_paths: summarize_paths(req.attribute_paths),
+          stored_paths: summarize_paths(attribute_paths),
+          min_interval: req.min_interval,
+          max_interval: req.max_interval,
+          priming_attribute_count: length(priming_report.attribute_reports),
+          priming_event_count: length(priming_report.event_reports),
+          priming_payload_size: byte_size(priming_payload),
+          suppress_response: priming_report.suppress_response
+        })
 
         # Inject temporary handler that returns the priming ReportData
         temp_handler = fn _opcode, _request -> priming_report end
 
         # Store the encoded SubscribeResponse for phase 2 (sent after client ACKs priming report)
-        sub_response = %IM.SubscribeResponse{subscription_id: sub_id, max_interval: req.max_interval}
+        sub_response = %IM.SubscribeResponse{
+          subscription_id: sub_id,
+          max_interval: req.max_interval
+        }
+
         encoded_sub_response = IM.encode(sub_response)
-        pending = Map.put(mgr.pending_subscribe_responses, proto.exchange_id, encoded_sub_response)
+
+        pending =
+          Map.put(mgr.pending_subscribe_responses, proto.exchange_id, encoded_sub_response)
 
         {%{mgr | handler: temp_handler, pending_subscribe_responses: pending}, sub_mgr}
 
@@ -610,7 +875,152 @@ defmodule MatterEx.MessageHandler do
     end
   end
 
-  defp maybe_setup_subscription(mgr, sub_mgr, _opcode, _proto, _device, _session), do: {mgr, sub_mgr}
+  defp maybe_setup_subscription(mgr, sub_mgr, _opcode, _proto, _device, _session),
+    do: {mgr, sub_mgr}
+
+  defp removed_fabric_index_from_successful_response(
+         :invoke_request,
+         request_payload,
+         em_actions,
+         session
+       ) do
+    request_fabric_index = remove_fabric_index_from_request(request_payload, session)
+    response_fabric_index = remove_fabric_index_from_response(em_actions)
+
+    cond do
+      is_integer(response_fabric_index) and response_fabric_index > 0 ->
+        response_fabric_index
+
+      is_integer(request_fabric_index) and response_fabric_index == :success ->
+        request_fabric_index
+
+      true ->
+        nil
+    end
+  end
+
+  defp removed_fabric_index_from_successful_response(
+         _opcode,
+         _request_payload,
+         _em_actions,
+         _session
+       ),
+       do: nil
+
+  defp remove_fabric_index_from_request(payload, session) do
+    with {:ok, %IM.InvokeRequest{} = request} <- IM.decode(:invoke_request, payload),
+         invoke when not is_nil(invoke) <-
+           Enum.find(
+             request.invoke_requests,
+             &(get_in(&1, [Access.key(:path), Access.key(:endpoint)]) == 0 and
+                 get_in(&1, [Access.key(:path), Access.key(:cluster)]) == 0x003E and
+                 get_in(&1, [Access.key(:path), Access.key(:command)]) == 0x0A)
+           ) do
+      case Map.get(invoke.fields, 0) do
+        index when is_integer(index) and index > 0 -> index
+        _ -> session.fabric_index
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  defp remove_fabric_index_from_response(em_actions) do
+    Enum.find_value(em_actions, fn
+      {:reply, proto} ->
+        with opcode when opcode == :invoke_response <-
+               ProtocolID.opcode_name(proto.protocol_id, proto.opcode),
+             {:ok, %IM.InvokeResponse{} = response} <- IM.decode(:invoke_response, proto.payload),
+             {:command, command} <-
+               Enum.find(response.invoke_responses, fn
+                 {:command, %{path: %{endpoint: 0, cluster: 0x003E, command: 0x08}}} -> true
+                 _ -> false
+               end),
+             0 <- Map.get(command.fields, 0) do
+          case Map.get(command.fields, 1) do
+            index when is_integer(index) and index > 0 -> index
+            _ -> :success
+          end
+        else
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp maybe_unsubscribe_removed_fabric(state, fabric_index)
+       when is_integer(fabric_index) and fabric_index > 0 do
+    sessions =
+      Map.new(state.sessions, fn {session_id, entry} ->
+        if entry.session.auth_mode == :case and entry.session.fabric_index == fabric_index do
+          sub_count = map_size(entry.subscription_mgr.subscriptions)
+
+          if sub_count > 0 do
+            Logger.info(
+              "RemoveFabric #{fabric_index}: removing #{sub_count} subscription(s) from session #{session_id}"
+            )
+
+            MatterEx.DebugTrace.record(%{
+              type: :remove_fabric_subscriptions_cleared,
+              fabric_index: fabric_index,
+              session_id: session_id,
+              subscription_count: sub_count
+            })
+          end
+
+          {session_id,
+           %{
+             entry
+             | subscription_mgr: SubscriptionManager.unsubscribe_all(entry.subscription_mgr)
+           }}
+        else
+          {session_id, entry}
+        end
+      end)
+
+    %{state | sessions: sessions}
+  end
+
+  defp maybe_unsubscribe_removed_fabric(state, _fabric_index), do: state
+
+  defp subscribe_attribute_paths(paths), do: paths
+
+  defp summarize_paths(paths) do
+    Enum.map(paths, fn path ->
+      %{
+        endpoint: Map.get(path, :endpoint),
+        cluster: Map.get(path, :cluster),
+        attribute: Map.get(path, :attribute)
+      }
+    end)
+  end
+
+  defp summarize_report_paths(reports) do
+    Enum.map(reports, fn
+      {:data, data} ->
+        %{
+          endpoint: data.path[:endpoint],
+          cluster: data.path[:cluster],
+          attribute: data.path[:attribute]
+        }
+
+      other ->
+        %{type: elem(other, 0)}
+    end)
+  end
+
+  defp report_values(attribute_reports) do
+    Enum.reduce(attribute_reports, %{}, fn
+      {:data, data}, acc ->
+        key = {data.path[:endpoint], data.path[:cluster], data.path[:attribute]}
+        Map.put(acc, key, data.value)
+
+      _, acc ->
+        acc
+    end)
+  end
 
   @doc """
   Check all sessions for subscriptions that are due for periodic reports.
@@ -640,11 +1050,28 @@ defmodule MatterEx.MessageHandler do
             {[], %{state | sessions: sessions}}
 
           {report_data, current_values} ->
+            changed_reports =
+              Enum.filter(report_data.attribute_reports, fn
+                {:data, data} ->
+                  key = {data.path[:endpoint], data.path[:cluster], data.path[:attribute]}
+                  Map.get(sub.last_values, key) != data.value
+
+                _ ->
+                  false
+              end)
+
             # Check if values changed and min_interval allows sending
             cond do
               current_values == sub.last_values ->
                 # No change — just update timer
-                sub_mgr = SubscriptionManager.record_report(entry.subscription_mgr, sub_id, current_values, now)
+                sub_mgr =
+                  SubscriptionManager.record_report(
+                    entry.subscription_mgr,
+                    sub_id,
+                    current_values,
+                    now
+                  )
+
                 entry = %{entry | subscription_mgr: sub_mgr}
                 sessions = Map.put(state.sessions, session_id, entry)
                 {[], %{state | sessions: sessions}}
@@ -652,37 +1079,92 @@ defmodule MatterEx.MessageHandler do
               SubscriptionManager.throttled?(entry.subscription_mgr, sub_id, now) ->
                 # Values changed but min_interval not elapsed — suppress
                 Logger.debug("Subscription #{sub_id}: suppressed report (min_interval throttle)")
-                sub_mgr = SubscriptionManager.record_report(entry.subscription_mgr, sub_id, sub.last_values, now)
+
+                sub_mgr =
+                  SubscriptionManager.record_report(
+                    entry.subscription_mgr,
+                    sub_id,
+                    sub.last_values,
+                    now
+                  )
+
                 entry = %{entry | subscription_mgr: sub_mgr}
                 sessions = Map.put(state.sessions, session_id, entry)
                 {[], %{state | sessions: sessions}}
 
               true ->
                 # Values changed and min_interval allows — send report
+                report_data = %{report_data | attribute_reports: changed_reports}
                 payload = IM.encode(report_data)
                 im_protocol_id = ProtocolID.protocol_id(:interaction_model)
 
-                {proto, mrp_actions, mgr} = ExchangeManager.initiate(
-                  entry.exchange_mgr,
-                  im_protocol_id,
-                  :report_data,
-                  payload
-                )
+                {proto, mrp_actions, mgr} =
+                  ExchangeManager.initiate(
+                    entry.exchange_mgr,
+                    im_protocol_id,
+                    :report_data,
+                    payload
+                  )
 
-                {frame, session} = SecureChannel.seal(entry.session, proto)
+                {frame, session, message_counter} =
+                  SecureChannel.seal_with_counter(entry.session, proto)
+
+                MatterEx.DebugTrace.record(%{
+                  type: :subscription_report_sent,
+                  session_id: session_id,
+                  subscription_id: sub_id,
+                  exchange_id: proto.exchange_id,
+                  message_counter: message_counter,
+                  attribute_count: length(changed_reports),
+                  payload_size: byte_size(payload),
+                  paths: summarize_report_paths(changed_reports),
+                  needs_ack: proto.needs_ack
+                })
+
+                mgr =
+                  if proto.needs_ack do
+                    mrp =
+                      MRP.record_send(
+                        mgr.mrp,
+                        message_counter,
+                        :erlang.term_to_binary({:sealed_frame, frame, proto.exchange_id}),
+                        proto.exchange_id
+                      )
+
+                    %{mgr | mrp: mrp}
+                  else
+                    mgr
+                  end
 
                 # Track exchange→subscription mapping for give_up cleanup
                 exchange_to_sub = Map.get(entry, :exchange_to_sub, %{})
-                exchange_to_sub = Map.put(exchange_to_sub, proto.exchange_id, sub_id)
+                exchange_to_sub = Map.put(exchange_to_sub, message_counter, sub_id)
 
-                sub_mgr = SubscriptionManager.record_sent(entry.subscription_mgr, sub_id, current_values, now)
-                entry = %{entry | session: session, exchange_mgr: mgr, subscription_mgr: sub_mgr, exchange_to_sub: exchange_to_sub}
+                sub_mgr =
+                  SubscriptionManager.record_sent(
+                    entry.subscription_mgr,
+                    sub_id,
+                    current_values,
+                    now
+                  )
+
+                entry = %{
+                  entry
+                  | session: session,
+                    exchange_mgr: mgr,
+                    subscription_mgr: sub_mgr,
+                    exchange_to_sub: exchange_to_sub
+                }
+
                 sessions = Map.put(state.sessions, session_id, entry)
 
-                send_actions = [{:send, frame}]
-                schedule_actions = Enum.map(mrp_actions, fn {:schedule_mrp, eid, attempt, timeout} ->
-                  {:schedule_mrp, session_id, eid, attempt, timeout}
-                end)
+                send_actions = [{:send, session_id, frame}]
+
+                schedule_actions =
+                  Enum.map(mrp_actions, fn {:schedule_mrp, eid, attempt, timeout} ->
+                    pending_id = if eid == proto.exchange_id, do: message_counter, else: eid
+                    {:schedule_mrp, session_id, pending_id, attempt, timeout}
+                  end)
 
                 {send_actions ++ schedule_actions, %{state | sessions: sessions}}
             end
@@ -702,6 +1184,7 @@ defmodule MatterEx.MessageHandler do
         {:data, data}, acc ->
           key = {data.path[:endpoint], data.path[:cluster], data.path[:attribute]}
           Map.put(acc, key, data.value)
+
         _, acc ->
           acc
       end)
@@ -723,11 +1206,36 @@ defmodule MatterEx.MessageHandler do
   end
 
   defp session_context(session) do
+    subjects =
+      [session.peer_node_id, session_peer_subjects(session), case_admin_subject(session)]
+      |> List.flatten()
+      |> Enum.reject(&is_nil/1)
+      |> Enum.reject(&(&1 == 0))
+      |> Enum.uniq()
+
     %{
       auth_mode: session.auth_mode || :pase,
       subject: session.peer_node_id || 0,
+      subjects: subjects,
       fabric_index: session.fabric_index || 0,
       attestation_challenge: session.attestation_challenge
     }
   end
+
+  defp session_peer_subjects(%{peer_subjects: subjects}) when is_list(subjects), do: subjects
+  defp session_peer_subjects(_), do: []
+
+  defp case_admin_subject(%{auth_mode: :case, fabric_index: fabric_index})
+       when is_integer(fabric_index) and fabric_index > 0 do
+    if Process.whereis(MatterEx.Commissioning) do
+      case MatterEx.Commissioning.get_credentials(fabric_index) do
+        %{case_admin_subject: subject} when is_integer(subject) -> subject
+        _ -> nil
+      end
+    else
+      nil
+    end
+  end
+
+  defp case_admin_subject(_session), do: nil
 end

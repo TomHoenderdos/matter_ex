@@ -10,8 +10,8 @@ defmodule MatterEx.Cluster.LocalizationConfiguration do
 
   use MatterEx.Cluster, id: 0x002B, name: :localization_configuration
 
-  attribute 0x0000, :active_locale, :string, default: "en-US", writable: true
-  attribute 0x0001, :supported_locales, :list, default: ["en-US"]
-  attribute 0xFFFC, :feature_map, :uint32, default: 0
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 1
+  attribute(0x0000, :active_locale, :string, default: "en-US", writable: true)
+  attribute(0x0001, :supported_locales, :list, default: ["en-US"])
+  attribute(0xFFFC, :feature_map, :uint32, default: 0)
+  attribute(0xFFFD, :cluster_revision, :uint16, default: 1)
 end

@@ -1,65 +1,65 @@
 defmodule MatterEx.ClusterTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
-  alias MatterEx.Cluster.OnOff
-  alias MatterEx.Cluster.Descriptor
-  alias MatterEx.Cluster.BasicInformation
-  alias MatterEx.Cluster.LevelControl
-  alias MatterEx.Cluster.ColorControl
-  alias MatterEx.Cluster.TemperatureMeasurement
-  alias MatterEx.Cluster.BooleanState
-  alias MatterEx.Cluster.Thermostat
   alias MatterEx.Cluster.AccessControl
-  alias MatterEx.Cluster.GeneralCommissioning
-  alias MatterEx.Cluster.GroupKeyManagement
-  alias MatterEx.Cluster.NetworkCommissioning
-  alias MatterEx.Cluster.OperationalCredentials
-  alias MatterEx.Cluster.Identify
-  alias MatterEx.Cluster.Binding
-  alias MatterEx.Cluster.PowerSource
-  alias MatterEx.Cluster.Scenes
-  alias MatterEx.Cluster.Groups
-  alias MatterEx.Cluster.DoorLock
-  alias MatterEx.Cluster.WindowCovering
-  alias MatterEx.Cluster.FanControl
-  alias MatterEx.Cluster.OccupancySensing
-  alias MatterEx.Cluster.IlluminanceMeasurement
-  alias MatterEx.Cluster.RelativeHumidityMeasurement
-  alias MatterEx.Cluster.PressureMeasurement
-  alias MatterEx.Cluster.FlowMeasurement
-  alias MatterEx.Cluster.PumpConfigurationAndControl
-  alias MatterEx.Cluster.GeneralDiagnostics
-  alias MatterEx.Cluster.SoftwareDiagnostics
-  alias MatterEx.Cluster.WiFiNetworkDiagnostics
-  alias MatterEx.Cluster.EthernetNetworkDiagnostics
   alias MatterEx.Cluster.AdminCommissioning
-  alias MatterEx.Cluster.LocalizationConfiguration
-  alias MatterEx.Cluster.TimeFormatLocalization
-  alias MatterEx.Cluster.UnitLocalization
-  alias MatterEx.Cluster.TimeSynchronization
-  alias MatterEx.Cluster.Switch
-  alias MatterEx.Cluster.ModeSelect
+  alias MatterEx.Cluster.AirQuality
+  alias MatterEx.Cluster.AudioOutput
+  alias MatterEx.Cluster.BasicInformation
+  alias MatterEx.Cluster.Binding
+  alias MatterEx.Cluster.BooleanState
+  alias MatterEx.Cluster.BooleanStateConfiguration
+  alias MatterEx.Cluster.CarbonDioxideConcentrationMeasurement
+  alias MatterEx.Cluster.ColorControl
+  alias MatterEx.Cluster.ContentLauncher
+  alias MatterEx.Cluster.Descriptor
+  alias MatterEx.Cluster.DeviceEnergyManagement
+  alias MatterEx.Cluster.DishwasherAlarm
+  alias MatterEx.Cluster.DoorLock
+  alias MatterEx.Cluster.ElectricalMeasurement
+  alias MatterEx.Cluster.EnergyPreference
+  alias MatterEx.Cluster.EthernetNetworkDiagnostics
+  alias MatterEx.Cluster.FanControl
   alias MatterEx.Cluster.FixedLabel
-  alias MatterEx.Cluster.UserLabel
+  alias MatterEx.Cluster.FlowMeasurement
+  alias MatterEx.Cluster.GeneralCommissioning
+  alias MatterEx.Cluster.GeneralDiagnostics
+  alias MatterEx.Cluster.GroupKeyManagement
+  alias MatterEx.Cluster.Groups
+  alias MatterEx.Cluster.ICDManagement
+  alias MatterEx.Cluster.Identify
+  alias MatterEx.Cluster.IlluminanceMeasurement
+  alias MatterEx.Cluster.LaundryWasherControls
+  alias MatterEx.Cluster.LevelControl
+  alias MatterEx.Cluster.LocalizationConfiguration
+  alias MatterEx.Cluster.MediaPlayback
+  alias MatterEx.Cluster.ModeSelect
+  alias MatterEx.Cluster.NetworkCommissioning
+  alias MatterEx.Cluster.OccupancySensing
+  alias MatterEx.Cluster.OnOff
+  alias MatterEx.Cluster.OperationalCredentials
   alias MatterEx.Cluster.OTASoftwareUpdateProvider
   alias MatterEx.Cluster.OTASoftwareUpdateRequestor
-  alias MatterEx.Cluster.ElectricalMeasurement
-  alias MatterEx.Cluster.PowerTopology
-  alias MatterEx.Cluster.AirQuality
   alias MatterEx.Cluster.PM25ConcentrationMeasurement
-  alias MatterEx.Cluster.CarbonDioxideConcentrationMeasurement
-  alias MatterEx.Cluster.ICDManagement
-  alias MatterEx.Cluster.DeviceEnergyManagement
-  alias MatterEx.Cluster.EnergyPreference
-  alias MatterEx.Cluster.MediaPlayback
-  alias MatterEx.Cluster.ContentLauncher
-  alias MatterEx.Cluster.AudioOutput
-  alias MatterEx.Cluster.LaundryWasherControls
-  alias MatterEx.Cluster.DishwasherAlarm
+  alias MatterEx.Cluster.PowerSource
+  alias MatterEx.Cluster.PowerTopology
+  alias MatterEx.Cluster.PressureMeasurement
+  alias MatterEx.Cluster.PumpConfigurationAndControl
   alias MatterEx.Cluster.RefrigeratorAlarm
+  alias MatterEx.Cluster.RelativeHumidityMeasurement
+  alias MatterEx.Cluster.Scenes
   alias MatterEx.Cluster.SmokeCOAlarm
-  alias MatterEx.Cluster.BooleanStateConfiguration
+  alias MatterEx.Cluster.SoftwareDiagnostics
+  alias MatterEx.Cluster.Switch
+  alias MatterEx.Cluster.TemperatureMeasurement
+  alias MatterEx.Cluster.Thermostat
+  alias MatterEx.Cluster.TimeFormatLocalization
+  alias MatterEx.Cluster.TimeSynchronization
+  alias MatterEx.Cluster.UnitLocalization
+  alias MatterEx.Cluster.UserLabel
   alias MatterEx.Cluster.ValveConfigurationAndControl
+  alias MatterEx.Cluster.WiFiNetworkDiagnostics
+  alias MatterEx.Cluster.WindowCovering
   alias MatterEx.Commissioning
 
   # ── Cluster macro metadata ────────────────────────────────────
@@ -245,6 +245,19 @@ defmodule MatterEx.ClusterTest do
       assert generated.default == [0x01, 0x03, 0x05]
     end
 
+    test "GeneralCommissioning supports IsCommissioningWithoutPower" do
+      defs = GeneralCommissioning.attribute_defs()
+      attr = Enum.find(defs, &(&1.id == 0x000C))
+      assert attr.name == :is_commissioning_without_power
+      assert attr.default == false
+    end
+
+    test "GeneralCommissioning advertises Apple-compatible fail-safe expiry" do
+      defs = GeneralCommissioning.attribute_defs()
+      attr = Enum.find(defs, &(&1.name == :basic_commissioning_info))
+      assert attr.default == %{0 => {:uint16, 120}, 1 => {:uint16, 900}}
+    end
+
     test "GeneralCommissioning command_defs" do
       defs = GeneralCommissioning.command_defs()
       assert length(defs) == 3
@@ -407,7 +420,10 @@ defmodule MatterEx.ClusterTest do
 
     test "failed write does not bump data_version", %{name: name} do
       assert 0 = GenServer.call(name, :read_data_version)
-      {:error, :unsupported_write} = GenServer.call(name, {:write_attribute, :cluster_revision, 99})
+
+      {:error, :unsupported_write} =
+        GenServer.call(name, {:write_attribute, :cluster_revision, 99})
+
       assert 0 = GenServer.call(name, :read_data_version)
     end
   end
@@ -421,7 +437,8 @@ defmodule MatterEx.ClusterTest do
       {:ok, pid} =
         Descriptor.start_link(
           name: name,
-          device_type_list: [%{0 => {:uint, 0x0100}, 1 => {:uint, 1}}],  # DeviceTypeStruct: 0=type, 1=revision
+          # DeviceTypeStruct: 0=type, 1=revision
+          device_type_list: [%{0 => {:uint, 0x0100}, 1 => {:uint, 1}}],
           server_list: [0x0006, 0x001D],
           parts_list: [1, 2]
         )
@@ -430,7 +447,8 @@ defmodule MatterEx.ClusterTest do
     end
 
     test "init populates from opts", %{name: name} do
-      assert {:ok, [%{0 => {:uint, 0x0100}, 1 => {:uint, 1}}]} =  # DeviceTypeStruct
+      # DeviceTypeStruct
+      assert {:ok, [%{0 => {:uint, 0x0100}, 1 => {:uint, 1}}]} =
                GenServer.call(name, {:read_attribute, :device_type_list})
 
       assert {:ok, [0x0006, 0x001D]} =
@@ -514,7 +532,9 @@ defmodule MatterEx.ClusterTest do
     end
 
     test "move_to_level_with_on_off works", %{name: name} do
-      assert {:ok, nil} = GenServer.call(name, {:invoke_command, :move_to_level_with_on_off, %{level: 200}})
+      assert {:ok, nil} =
+               GenServer.call(name, {:invoke_command, :move_to_level_with_on_off, %{level: 200}})
+
       assert {:ok, 200} = GenServer.call(name, {:read_attribute, :current_level})
     end
 
@@ -540,31 +560,51 @@ defmodule MatterEx.ClusterTest do
     end
 
     test "move_to_saturation sets saturation and color_mode=0", %{name: name} do
-      assert {:ok, nil} = GenServer.call(name, {:invoke_command, :move_to_saturation, %{saturation: 200}})
+      assert {:ok, nil} =
+               GenServer.call(name, {:invoke_command, :move_to_saturation, %{saturation: 200}})
+
       assert {:ok, 200} = GenServer.call(name, {:read_attribute, :current_saturation})
       assert {:ok, 0} = GenServer.call(name, {:read_attribute, :color_mode})
     end
 
     test "move_to_color sets x/y and color_mode=1", %{name: name} do
-      assert {:ok, nil} = GenServer.call(name, {:invoke_command, :move_to_color, %{color_x: 1000, color_y: 2000}})
+      assert {:ok, nil} =
+               GenServer.call(
+                 name,
+                 {:invoke_command, :move_to_color, %{color_x: 1000, color_y: 2000}}
+               )
+
       assert {:ok, 1000} = GenServer.call(name, {:read_attribute, :current_x})
       assert {:ok, 2000} = GenServer.call(name, {:read_attribute, :current_y})
       assert {:ok, 1} = GenServer.call(name, {:read_attribute, :color_mode})
     end
 
     test "move_to_color_temperature sets temp and color_mode=2", %{name: name} do
-      assert {:ok, nil} = GenServer.call(name, {:invoke_command, :move_to_color_temperature, %{color_temperature: 300}})
+      assert {:ok, nil} =
+               GenServer.call(
+                 name,
+                 {:invoke_command, :move_to_color_temperature, %{color_temperature: 300}}
+               )
+
       assert {:ok, 300} = GenServer.call(name, {:read_attribute, :color_temperature})
       assert {:ok, 2} = GenServer.call(name, {:read_attribute, :color_mode})
     end
 
     test "move_to_color_temperature clamps to min/max", %{name: name} do
       # Below min (153) → clamps to 153
-      GenServer.call(name, {:invoke_command, :move_to_color_temperature, %{color_temperature: 50}})
+      GenServer.call(
+        name,
+        {:invoke_command, :move_to_color_temperature, %{color_temperature: 50}}
+      )
+
       assert {:ok, 153} = GenServer.call(name, {:read_attribute, :color_temperature})
 
       # Above max (500) → clamps to 500
-      GenServer.call(name, {:invoke_command, :move_to_color_temperature, %{color_temperature: 1000}})
+      GenServer.call(
+        name,
+        {:invoke_command, :move_to_color_temperature, %{color_temperature: 1000}}
+      )
+
       assert {:ok, 500} = GenServer.call(name, {:read_attribute, :color_temperature})
     end
 
@@ -656,29 +696,54 @@ defmodule MatterEx.ClusterTest do
 
     test "setpoint_raise_lower heat mode raises heating setpoint", %{name: name} do
       # mode=0 (heat), amount=2 → +20 (0.2°C in 0.01°C units)
-      assert {:ok, nil} = GenServer.call(name, {:invoke_command, :setpoint_raise_lower, %{mode: 0, amount: 2}})
+      assert {:ok, nil} =
+               GenServer.call(
+                 name,
+                 {:invoke_command, :setpoint_raise_lower, %{mode: 0, amount: 2}}
+               )
+
       assert {:ok, 2020} = GenServer.call(name, {:read_attribute, :occupied_heating_setpoint})
     end
 
     test "setpoint_raise_lower cool mode raises cooling setpoint", %{name: name} do
       # mode=1 (cool), amount=-3 → -30
-      assert {:ok, nil} = GenServer.call(name, {:invoke_command, :setpoint_raise_lower, %{mode: 1, amount: -3}})
+      assert {:ok, nil} =
+               GenServer.call(
+                 name,
+                 {:invoke_command, :setpoint_raise_lower, %{mode: 1, amount: -3}}
+               )
+
       assert {:ok, 2570} = GenServer.call(name, {:read_attribute, :occupied_cooling_setpoint})
     end
 
     test "setpoint_raise_lower both mode raises both setpoints", %{name: name} do
-      assert {:ok, nil} = GenServer.call(name, {:invoke_command, :setpoint_raise_lower, %{mode: 2, amount: 5}})
+      assert {:ok, nil} =
+               GenServer.call(
+                 name,
+                 {:invoke_command, :setpoint_raise_lower, %{mode: 2, amount: 5}}
+               )
+
       assert {:ok, 2050} = GenServer.call(name, {:read_attribute, :occupied_heating_setpoint})
       assert {:ok, 2650} = GenServer.call(name, {:read_attribute, :occupied_cooling_setpoint})
     end
 
     test "setpoint_raise_lower clamps to abs limits", %{name: name} do
       # Try to lower heating below abs_min_heat (700)
-      assert {:ok, nil} = GenServer.call(name, {:invoke_command, :setpoint_raise_lower, %{mode: 0, amount: -200}})
+      assert {:ok, nil} =
+               GenServer.call(
+                 name,
+                 {:invoke_command, :setpoint_raise_lower, %{mode: 0, amount: -200}}
+               )
+
       assert {:ok, 700} = GenServer.call(name, {:read_attribute, :occupied_heating_setpoint})
 
       # Try to raise cooling above abs_max_cool (3200)
-      assert {:ok, nil} = GenServer.call(name, {:invoke_command, :setpoint_raise_lower, %{mode: 1, amount: 100}})
+      assert {:ok, nil} =
+               GenServer.call(
+                 name,
+                 {:invoke_command, :setpoint_raise_lower, %{mode: 1, amount: 100}}
+               )
+
       assert {:ok, 3200} = GenServer.call(name, {:read_attribute, :occupied_cooling_setpoint})
     end
   end
@@ -750,9 +815,12 @@ defmodule MatterEx.ClusterTest do
 
     test "arm_fail_safe returns success response", %{name: name} do
       assert {:ok, response} =
-               GenServer.call(name, {:invoke_command, :arm_fail_safe, %{expiry_length: 900, breadcrumb: 1}})
+               GenServer.call(
+                 name,
+                 {:invoke_command, :arm_fail_safe, %{expiry_length: 900, breadcrumb: 1}}
+               )
 
-      assert response[0] == {:uint, 0}
+      assert response[0] == {:uint8, 0}
       assert response[1] == {:string, ""}
       assert {:ok, 1} = GenServer.call(name, {:read_attribute, :breadcrumb})
     end
@@ -761,7 +829,7 @@ defmodule MatterEx.ClusterTest do
       assert {:ok, response} =
                GenServer.call(name, {:invoke_command, :commissioning_complete, %{}})
 
-      assert response[0] == {:uint, 0}
+      assert response[0] == {:uint8, 0}
     end
   end
 
@@ -794,7 +862,10 @@ defmodule MatterEx.ClusterTest do
       root_cert = :crypto.strong_rand_bytes(200)
 
       assert {:ok, nil} =
-               GenServer.call(name, {:invoke_command, :add_trusted_root_cert, %{root_ca_cert: root_cert}})
+               GenServer.call(
+                 name,
+                 {:invoke_command, :add_trusted_root_cert, %{root_ca_cert: root_cert}}
+               )
     end
 
     test "full CSR → AddRoot → AddNOC flow", %{name: name} do
@@ -802,7 +873,10 @@ defmodule MatterEx.ClusterTest do
 
       # 1. CSRRequest
       nonce = :crypto.strong_rand_bytes(32)
-      {:ok, csr_response} = GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: nonce}})
+
+      {:ok, csr_response} =
+        GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: nonce}})
+
       {:bytes, nocsr_elements} = csr_response[0]
 
       # Decode NOCSR to get the public key from the PKCS#10 CSR
@@ -812,25 +886,165 @@ defmodule MatterEx.ClusterTest do
 
       # 2. AddTrustedRootCert
       root_cert = :crypto.strong_rand_bytes(200)
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :add_trusted_root_cert, %{root_ca_cert: root_cert}})
+
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :add_trusted_root_cert, %{root_ca_cert: root_cert}}
+        )
 
       # 3. Build NOC using the public key from CSR
       noc = CASEMessages.encode_noc(42, 1, pub_key)
       ipk = :crypto.strong_rand_bytes(16)
 
-      {:ok, noc_response} = GenServer.call(name, {:invoke_command, :add_noc, %{
-        noc_value: noc,
-        ipk_value: ipk,
-        case_admin_subject: 112233,
-        admin_vendor_id: 0xFFF1
-      }})
+      {:ok, noc_response} =
+        GenServer.call(
+          name,
+          {:invoke_command, :add_noc,
+           %{
+             noc_value: noc,
+             ipk_value: ipk,
+             case_admin_subject: 112_233,
+             admin_vendor_id: 0xFFF1
+           }}
+        )
 
       # StatusCode=Success(0), FabricIndex=1
-      assert {:uint, 0} = noc_response[0]
-      assert {:uint, 1} = noc_response[1]
+      assert {:uint8, 0} = noc_response[0]
+      assert {:uint8, 1} = noc_response[1]
 
       # commissioned_fabrics updated
       assert {:ok, 1} = GenServer.call(name, {:read_attribute, :commissioned_fabrics})
+    end
+
+    test "add_noc stores root public key in fabric descriptor", %{name: name} do
+      alias MatterEx.CASE.Messages, as: CASEMessages
+      alias MatterEx.Commissioning
+      alias MatterEx.Crypto.Certificate
+
+      start_supervised!({Commissioning, name: Commissioning})
+
+      {:ok, csr_response} =
+        GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: <<0::256>>}})
+
+      {:bytes, nocsr_elements} = csr_response[0]
+      csr_der = MatterEx.TLV.decode(nocsr_elements)[1]
+      pub_key = Certificate.pubkey_from_csr(csr_der)
+
+      {root_pub, root_priv} = Certificate.generate_keypair()
+      root_cert = Certificate.self_signed_der(root_pub, root_priv, "Test Root")
+
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :add_trusted_root_cert, %{root_ca_cert: root_cert}}
+        )
+
+      noc = CASEMessages.encode_noc(42, 1, pub_key)
+
+      {:ok, noc_response} =
+        GenServer.call(
+          name,
+          {:invoke_command, :add_noc,
+           %{
+             noc_value: noc,
+             ipk_value: :crypto.strong_rand_bytes(16),
+             case_admin_subject: 112_233,
+             admin_vendor_id: 0xFFF1
+           }}
+        )
+
+      assert {:uint8, 0} = noc_response[0]
+      assert {:ok, [fabric]} = GenServer.call(name, {:read_attribute, :fabrics})
+      assert {:bytes, ^root_pub} = fabric[1]
+      assert {:uint16, 0xFFF1} = fabric[2]
+      assert {:uint64, 1} = fabric[3]
+      assert {:uint64, 42} = fabric[4]
+      assert {:uint8, 1} = fabric[254]
+    end
+
+    test "remove_fabric clears global commissioning credentials", %{name: name} do
+      alias MatterEx.CASE.Messages, as: CASEMessages
+      alias MatterEx.Commissioning
+      alias MatterEx.Crypto.Certificate
+
+      start_supervised!({Commissioning, name: Commissioning})
+
+      {:ok, csr_response} =
+        GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: <<0::256>>}})
+
+      {:bytes, nocsr_elements} = csr_response[0]
+      csr_der = MatterEx.TLV.decode(nocsr_elements)[1]
+      pub_key = Certificate.pubkey_from_csr(csr_der)
+
+      root_cert = :crypto.strong_rand_bytes(200)
+
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :add_trusted_root_cert, %{root_ca_cert: root_cert}}
+        )
+
+      noc = CASEMessages.encode_noc(42, 1, pub_key)
+
+      {:ok, _noc_response} =
+        GenServer.call(
+          name,
+          {:invoke_command, :add_noc,
+           %{
+             noc_value: noc,
+             ipk_value: :crypto.strong_rand_bytes(16),
+             case_admin_subject: 112_233,
+             admin_vendor_id: 0xFFF1
+           }}
+        )
+
+      assert Commissioning.commissioned?()
+
+      {:ok, remove_response} =
+        GenServer.call(name, {:invoke_command, :remove_fabric, %{fabric_index: 1}})
+
+      assert {:uint8, 0} = remove_response[0]
+      refute Commissioning.commissioned?()
+    end
+
+    test "remove_fabric falls back to CASE context fabric index", %{name: name} do
+      alias MatterEx.CASE.Messages, as: CASEMessages
+      alias MatterEx.Commissioning
+      alias MatterEx.Crypto.Certificate
+
+      start_supervised!({Commissioning, name: Commissioning})
+
+      {:ok, csr_response} =
+        GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: <<0::256>>}})
+
+      {:bytes, nocsr_elements} = csr_response[0]
+      csr_der = MatterEx.TLV.decode(nocsr_elements)[1]
+      pub_key = Certificate.pubkey_from_csr(csr_der)
+      noc = CASEMessages.encode_noc(42, 1, pub_key)
+
+      {:ok, _noc_response} =
+        GenServer.call(
+          name,
+          {:invoke_command, :add_noc,
+           %{
+             noc_value: noc,
+             ipk_value: :crypto.strong_rand_bytes(16),
+             case_admin_subject: 112_233,
+             admin_vendor_id: 0xFFF1
+           }}
+        )
+
+      {:ok, remove_response} =
+        GenServer.call(
+          name,
+          {:invoke_command, :remove_fabric, %{fabric_index: 0},
+           %{auth_mode: :case, fabric_index: 1}}
+        )
+
+      assert {:uint8, 0} = remove_response[0]
+      assert {:ok, []} = GenServer.call(name, {:read_attribute, :fabrics})
+      refute Commissioning.commissioned?()
     end
 
     test "add_noc with mismatched key fails", %{name: name} do
@@ -844,15 +1058,20 @@ defmodule MatterEx.ClusterTest do
       {different_pub, _priv} = Certificate.generate_keypair()
       noc = CASEMessages.encode_noc(42, 1, different_pub)
 
-      {:ok, noc_response} = GenServer.call(name, {:invoke_command, :add_noc, %{
-        noc_value: noc,
-        ipk_value: :crypto.strong_rand_bytes(16),
-        case_admin_subject: 112233,
-        admin_vendor_id: 0xFFF1
-      }})
+      {:ok, noc_response} =
+        GenServer.call(
+          name,
+          {:invoke_command, :add_noc,
+           %{
+             noc_value: noc,
+             ipk_value: :crypto.strong_rand_bytes(16),
+             case_admin_subject: 112_233,
+             admin_vendor_id: 0xFFF1
+           }}
+        )
 
       # StatusCode=InvalidPublicKey(1)
-      assert {:uint, 1} = noc_response[0]
+      assert {:uint8, 1} = noc_response[0]
     end
 
     test "supported_fabrics defaults to 5", %{name: name} do
@@ -864,32 +1083,54 @@ defmodule MatterEx.ClusterTest do
       alias MatterEx.Crypto.Certificate
 
       # First fabric
-      {:ok, _csr_resp} = GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: <<0::256>>}})
+      {:ok, _csr_resp} =
+        GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: <<0::256>>}})
+
       stored_keypair = Map.get(:sys.get_state(name), :_keypair)
       {pub1, _priv1} = stored_keypair
       noc1 = CASEMessages.encode_noc(42, 1, pub1)
 
-      {:ok, noc_resp1} = GenServer.call(name, {:invoke_command, :add_noc, %{
-        noc_value: noc1, ipk_value: :crypto.strong_rand_bytes(16),
-        case_admin_subject: 100, admin_vendor_id: 0xFFF1
-      }})
+      {:ok, noc_resp1} =
+        GenServer.call(
+          name,
+          {:invoke_command, :add_noc,
+           %{
+             noc_value: noc1,
+             ipk_value: :crypto.strong_rand_bytes(16),
+             case_admin_subject: 100,
+             admin_vendor_id: 0xFFF1
+           }}
+        )
 
-      assert {:uint, 0} = noc_resp1[0]   # Success
-      assert {:uint, 1} = noc_resp1[1]   # fabric_index = 1
+      # Success
+      assert {:uint8, 0} = noc_resp1[0]
+      # fabric_index = 1
+      assert {:uint8, 1} = noc_resp1[1]
 
       # Second fabric
-      {:ok, _csr_resp2} = GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: <<1::256>>}})
+      {:ok, _csr_resp2} =
+        GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: <<1::256>>}})
+
       stored_keypair2 = Map.get(:sys.get_state(name), :_keypair)
       {pub2, _priv2} = stored_keypair2
       noc2 = CASEMessages.encode_noc(99, 2, pub2)
 
-      {:ok, noc_resp2} = GenServer.call(name, {:invoke_command, :add_noc, %{
-        noc_value: noc2, ipk_value: :crypto.strong_rand_bytes(16),
-        case_admin_subject: 200, admin_vendor_id: 0xFFF2
-      }})
+      {:ok, noc_resp2} =
+        GenServer.call(
+          name,
+          {:invoke_command, :add_noc,
+           %{
+             noc_value: noc2,
+             ipk_value: :crypto.strong_rand_bytes(16),
+             case_admin_subject: 200,
+             admin_vendor_id: 0xFFF2
+           }}
+        )
 
-      assert {:uint, 0} = noc_resp2[0]   # Success
-      assert {:uint, 2} = noc_resp2[1]   # fabric_index = 2
+      # Success
+      assert {:uint8, 0} = noc_resp2[0]
+      # fabric_index = 2
+      assert {:uint8, 2} = noc_resp2[1]
 
       # commissioned_fabrics should be 2
       assert {:ok, 2} = GenServer.call(name, {:read_attribute, :commissioned_fabrics})
@@ -902,21 +1143,30 @@ defmodule MatterEx.ClusterTest do
       {:ok, _} = GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: <<0::256>>}})
       {pub, _} = Map.get(:sys.get_state(name), :_keypair)
       noc = CASEMessages.encode_noc(42, 1, pub)
-      {:ok, _} = GenServer.call(name, {:invoke_command, :add_noc, %{
-        noc_value: noc, ipk_value: :crypto.strong_rand_bytes(16),
-        case_admin_subject: 100, admin_vendor_id: 0xFFF1
-      }})
+
+      {:ok, _} =
+        GenServer.call(
+          name,
+          {:invoke_command, :add_noc,
+           %{
+             noc_value: noc,
+             ipk_value: :crypto.strong_rand_bytes(16),
+             case_admin_subject: 100,
+             admin_vendor_id: 0xFFF1
+           }}
+        )
+
       assert {:ok, 1} = GenServer.call(name, {:read_attribute, :commissioned_fabrics})
 
       # Remove it
       {:ok, resp} = GenServer.call(name, {:invoke_command, :remove_fabric, %{fabric_index: 1}})
-      assert {:uint, 0} = resp[0]
+      assert {:uint8, 0} = resp[0]
       assert {:ok, 0} = GenServer.call(name, {:read_attribute, :commissioned_fabrics})
     end
 
     test "remove_fabric with invalid index returns error", %{name: name} do
       {:ok, resp} = GenServer.call(name, {:invoke_command, :remove_fabric, %{fabric_index: 99}})
-      assert {:uint, 11} = resp[0]
+      assert {:uint8, 11} = resp[0]
     end
 
     test "update_fabric_label updates the last fabric's label", %{name: name} do
@@ -925,21 +1175,33 @@ defmodule MatterEx.ClusterTest do
       {:ok, _} = GenServer.call(name, {:invoke_command, :csr_request, %{csr_nonce: <<0::256>>}})
       {pub, _} = Map.get(:sys.get_state(name), :_keypair)
       noc = CASEMessages.encode_noc(42, 1, pub)
-      {:ok, _} = GenServer.call(name, {:invoke_command, :add_noc, %{
-        noc_value: noc, ipk_value: :crypto.strong_rand_bytes(16),
-        case_admin_subject: 100, admin_vendor_id: 0xFFF1
-      }})
 
-      {:ok, resp} = GenServer.call(name, {:invoke_command, :update_fabric_label, %{label: "My Home"}})
-      assert {:uint, 0} = resp[0]
+      {:ok, _} =
+        GenServer.call(
+          name,
+          {:invoke_command, :add_noc,
+           %{
+             noc_value: noc,
+             ipk_value: :crypto.strong_rand_bytes(16),
+             case_admin_subject: 100,
+             admin_vendor_id: 0xFFF1
+           }}
+        )
+
+      {:ok, resp} =
+        GenServer.call(name, {:invoke_command, :update_fabric_label, %{label: "My Home"}})
+
+      assert {:uint8, 0} = resp[0]
 
       {:ok, fabrics} = GenServer.call(name, {:read_attribute, :fabrics})
       assert hd(fabrics)[5] == {:string, "My Home"}
     end
 
     test "update_fabric_label with no fabrics returns error", %{name: name} do
-      {:ok, resp} = GenServer.call(name, {:invoke_command, :update_fabric_label, %{label: "Test"}})
-      assert {:uint, 11} = resp[0]
+      {:ok, resp} =
+        GenServer.call(name, {:invoke_command, :update_fabric_label, %{label: "Test"}})
+
+      assert {:uint8, 11} = resp[0]
     end
   end
 
@@ -958,22 +1220,22 @@ defmodule MatterEx.ClusterTest do
       assert Enum.find(defs, &(&1.name == :max_networks)).default == 1
       assert Enum.find(defs, &(&1.name == :interface_enabled)).default == true
       assert Enum.find(defs, &(&1.name == :interface_enabled)).writable == true
-      assert Enum.find(defs, &(&1.name == :feature_map)).default == 0x04
+      assert Enum.find(defs, &(&1.name == :feature_map)).default == 0x01
     end
 
     test "manually declared feature_map not duplicated" do
       defs = NetworkCommissioning.attribute_defs()
       feature_maps = Enum.filter(defs, &(&1.id == 0xFFFC))
       assert length(feature_maps) == 1
-      assert hd(feature_maps).default == 0x04
+      assert hd(feature_maps).default == 0x01
     end
 
     test "command_defs" do
       defs = NetworkCommissioning.command_defs()
       assert length(defs) == 6
       assert Enum.find(defs, &(&1.name == :scan_networks)).id == 0x00
-      assert Enum.find(defs, &(&1.name == :connect_network)).id == 0x08
-      assert Enum.find(defs, &(&1.name == :reorder_network)).id == 0x0A
+      assert Enum.find(defs, &(&1.name == :connect_network)).id == 0x06
+      assert Enum.find(defs, &(&1.name == :reorder_network)).id == 0x08
     end
   end
 
@@ -993,7 +1255,7 @@ defmodule MatterEx.ClusterTest do
       assert {:ok, true} = GenServer.call(name, {:read_attribute, :interface_enabled})
       assert {:ok, 0} = GenServer.call(name, {:read_attribute, :last_networking_status})
       assert {:ok, "ethernet"} = GenServer.call(name, {:read_attribute, :last_network_id})
-      assert {:ok, 0x04} = GenServer.call(name, {:read_attribute, :feature_map})
+      assert {:ok, 0x01} = GenServer.call(name, {:read_attribute, :feature_map})
     end
 
     test "interface_enabled is writable", %{name: name} do
@@ -1007,12 +1269,15 @@ defmodule MatterEx.ClusterTest do
 
       assert response[0] == {:uint, 0}
       assert response[1] == {:string, ""}
+      assert response[2] == {:array, []}
     end
 
     test "connect_network returns success", %{name: name} do
       assert {:ok, response} =
-               GenServer.call(name, {:invoke_command, :connect_network,
-                 %{network_id: "ethernet", breadcrumb: 0}})
+               GenServer.call(
+                 name,
+                 {:invoke_command, :connect_network, %{network_id: "ethernet", breadcrumb: 0}}
+               )
 
       assert response[0] == {:uint, 0}
       assert response[1] == {:string, ""}
@@ -1021,8 +1286,10 @@ defmodule MatterEx.ClusterTest do
 
     test "remove_network returns success", %{name: name} do
       assert {:ok, response} =
-               GenServer.call(name, {:invoke_command, :remove_network,
-                 %{network_id: "ethernet", breadcrumb: 0}})
+               GenServer.call(
+                 name,
+                 {:invoke_command, :remove_network, %{network_id: "ethernet", breadcrumb: 0}}
+               )
 
       assert response[0] == {:uint, 0}
     end
@@ -1081,9 +1348,14 @@ defmodule MatterEx.ClusterTest do
       :ok = GenServer.call(name, {:write_attribute, :group_key_map, [entry]})
 
       # Write a key set (triggers rebuild_group_table which reads the map)
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :key_set_write, %{
-        group_key_set: %{group_key_set_id: 1, epoch_key0: epoch_key, epoch_start_time0: 0}
-      }})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :key_set_write,
+           %{
+             group_key_set: %{group_key_set_id: 1, epoch_key0: epoch_key, epoch_start_time0: 0}
+           }}
+        )
 
       # group_table should now contain the mapping
       {:ok, table} = GenServer.call(name, {:read_attribute, :group_table})
@@ -1095,11 +1367,22 @@ defmodule MatterEx.ClusterTest do
     test "key_set_read returns stored key set", %{name: name} do
       epoch_key = :crypto.strong_rand_bytes(16)
 
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :key_set_write, %{
-        group_key_set: %{group_key_set_id: 42, epoch_key0: epoch_key, epoch_start_time0: 1000}
-      }})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :key_set_write,
+           %{
+             group_key_set: %{
+               group_key_set_id: 42,
+               epoch_key0: epoch_key,
+               epoch_start_time0: 1000
+             }
+           }}
+        )
 
-      {:ok, response} = GenServer.call(name, {:invoke_command, :key_set_read, %{group_key_set_id: 42}})
+      {:ok, response} =
+        GenServer.call(name, {:invoke_command, :key_set_read, %{group_key_set_id: 42}})
+
       {:struct, key_set} = response[0]
       assert key_set[0] == {:uint, 42}
       assert key_set[2] == {:uint, 1000}
@@ -1108,14 +1391,22 @@ defmodule MatterEx.ClusterTest do
     test "key_set_remove deletes key set", %{name: name} do
       epoch_key = :crypto.strong_rand_bytes(16)
 
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :key_set_write, %{
-        group_key_set: %{group_key_set_id: 5, epoch_key0: epoch_key}
-      }})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :key_set_write,
+           %{
+             group_key_set: %{group_key_set_id: 5, epoch_key0: epoch_key}
+           }}
+        )
 
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :key_set_remove, %{group_key_set_id: 5}})
+      {:ok, nil} =
+        GenServer.call(name, {:invoke_command, :key_set_remove, %{group_key_set_id: 5}})
 
       # Reading removed key set returns empty struct with just the ID
-      {:ok, response} = GenServer.call(name, {:invoke_command, :key_set_read, %{group_key_set_id: 5}})
+      {:ok, response} =
+        GenServer.call(name, {:invoke_command, :key_set_read, %{group_key_set_id: 5}})
+
       {:struct, key_set} = response[0]
       assert key_set[0] == {:uint, 5}
       refute Map.has_key?(key_set, 2)
@@ -1123,9 +1414,14 @@ defmodule MatterEx.ClusterTest do
 
     test "key_set_read_all_indices lists all key set IDs", %{name: name} do
       for id <- [1, 2, 3] do
-        {:ok, nil} = GenServer.call(name, {:invoke_command, :key_set_write, %{
-          group_key_set: %{group_key_set_id: id, epoch_key0: :crypto.strong_rand_bytes(16)}
-        }})
+        {:ok, nil} =
+          GenServer.call(
+            name,
+            {:invoke_command, :key_set_write,
+             %{
+               group_key_set: %{group_key_set_id: id, epoch_key0: :crypto.strong_rand_bytes(16)}
+             }}
+          )
       end
 
       {:ok, response} = GenServer.call(name, {:invoke_command, :key_set_read_all_indices, %{}})
@@ -1138,13 +1434,23 @@ defmodule MatterEx.ClusterTest do
       epoch_key = :crypto.strong_rand_bytes(16)
 
       # Write map first, then key_set_write rebuilds
-      :ok = GenServer.call(name, {:write_attribute, :group_key_map, [
-        %{group_id: 100, group_key_set_id: 1}
-      ]})
+      :ok =
+        GenServer.call(
+          name,
+          {:write_attribute, :group_key_map,
+           [
+             %{group_id: 100, group_key_set_id: 1}
+           ]}
+        )
 
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :key_set_write, %{
-        group_key_set: %{group_key_set_id: 1, epoch_key0: epoch_key}
-      }})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :key_set_write,
+           %{
+             group_key_set: %{group_key_set_id: 1, epoch_key0: epoch_key}
+           }}
+        )
 
       keys = GenServer.call(name, :get_group_keys)
       assert length(keys) == 1
@@ -1196,9 +1502,15 @@ defmodule MatterEx.ClusterTest do
     end
 
     test "trigger_effect returns success", %{name: name} do
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :trigger_effect, %{
-        effect_identifier: 0, effect_variant: 0
-      }})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :trigger_effect,
+           %{
+             effect_identifier: 0,
+             effect_variant: 0
+           }}
+        )
     end
 
     test "identify_time defaults to 0", %{name: name} do
@@ -1283,7 +1595,8 @@ defmodule MatterEx.ClusterTest do
       assert {:ok, 100} = GenServer.call(name, {:read_attribute, :current_level})
 
       # Over max (254)
-      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :current_level, 255})
+      assert {:error, :constraint_error} =
+               GenServer.call(name, {:write_attribute, :current_level, 255})
 
       # Under min (0 is valid for current_level)
       assert :ok = GenServer.call(name, {:write_attribute, :current_level, 0})
@@ -1297,10 +1610,12 @@ defmodule MatterEx.ClusterTest do
       assert :ok = GenServer.call(name, {:write_attribute, :occupied_heating_setpoint, 2500})
 
       # Below min (700)
-      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :occupied_heating_setpoint, 500})
+      assert {:error, :constraint_error} =
+               GenServer.call(name, {:write_attribute, :occupied_heating_setpoint, 500})
 
       # Above max (3000)
-      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :occupied_heating_setpoint, 3500})
+      assert {:error, :constraint_error} =
+               GenServer.call(name, {:write_attribute, :occupied_heating_setpoint, 3500})
     end
 
     test "Thermostat system_mode rejects invalid enum values" do
@@ -1312,10 +1627,12 @@ defmodule MatterEx.ClusterTest do
       assert :ok = GenServer.call(name, {:write_attribute, :system_mode, 4})
 
       # Invalid mode (2 is not defined)
-      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :system_mode, 2})
+      assert {:error, :constraint_error} =
+               GenServer.call(name, {:write_attribute, :system_mode, 2})
 
       # Invalid mode (6 is not defined)
-      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :system_mode, 6})
+      assert {:error, :constraint_error} =
+               GenServer.call(name, {:write_attribute, :system_mode, 6})
     end
 
     test "attributes without constraints accept any value" do
@@ -1354,15 +1671,25 @@ defmodule MatterEx.ClusterTest do
     end
 
     test "add_scene and view_scene", %{name: name} do
-      {:ok, resp} = GenServer.call(name, {:invoke_command, :add_scene, %{
-        group_id: 1, scene_id: 10, transition_time: 100, scene_name: "Morning"
-      }})
+      {:ok, resp} =
+        GenServer.call(
+          name,
+          {:invoke_command, :add_scene,
+           %{
+             group_id: 1,
+             scene_id: 10,
+             transition_time: 100,
+             scene_name: "Morning"
+           }}
+        )
 
       assert resp[0] == {:uint, 0}
       assert resp[1] == {:uint, 1}
       assert {:ok, 1} = GenServer.call(name, {:read_attribute, :scene_count})
 
-      {:ok, view} = GenServer.call(name, {:invoke_command, :view_scene, %{group_id: 1, scene_id: 10}})
+      {:ok, view} =
+        GenServer.call(name, {:invoke_command, :view_scene, %{group_id: 1, scene_id: 10}})
+
       assert view[0] == {:uint, 0}
       assert view[4] == {:string, "Morning"}
     end
@@ -1371,7 +1698,9 @@ defmodule MatterEx.ClusterTest do
       {:ok, _} = GenServer.call(name, {:invoke_command, :add_scene, %{group_id: 1, scene_id: 1}})
       {:ok, _} = GenServer.call(name, {:invoke_command, :add_scene, %{group_id: 1, scene_id: 2}})
 
-      {:ok, resp} = GenServer.call(name, {:invoke_command, :remove_scene, %{group_id: 1, scene_id: 1}})
+      {:ok, resp} =
+        GenServer.call(name, {:invoke_command, :remove_scene, %{group_id: 1, scene_id: 1}})
+
       assert resp[0] == {:uint, 0}
       assert {:ok, 1} = GenServer.call(name, {:read_attribute, :scene_count})
     end
@@ -1387,7 +1716,9 @@ defmodule MatterEx.ClusterTest do
 
     test "recall_scene sets current_scene", %{name: name} do
       {:ok, _} = GenServer.call(name, {:invoke_command, :add_scene, %{group_id: 1, scene_id: 5}})
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :recall_scene, %{group_id: 1, scene_id: 5}})
+
+      {:ok, nil} =
+        GenServer.call(name, {:invoke_command, :recall_scene, %{group_id: 1, scene_id: 5}})
 
       assert {:ok, 5} = GenServer.call(name, {:read_attribute, :current_scene})
       assert {:ok, 1} = GenServer.call(name, {:read_attribute, :current_group})
@@ -1419,7 +1750,12 @@ defmodule MatterEx.ClusterTest do
     end
 
     test "add_group and view_group", %{name: name} do
-      {:ok, resp} = GenServer.call(name, {:invoke_command, :add_group, %{group_id: 100, group_name: "Living Room"}})
+      {:ok, resp} =
+        GenServer.call(
+          name,
+          {:invoke_command, :add_group, %{group_id: 100, group_name: "Living Room"}}
+        )
+
       assert resp[0] == {:uint, 0}
 
       {:ok, view} = GenServer.call(name, {:invoke_command, :view_group, %{group_id: 100}})
@@ -1433,7 +1769,9 @@ defmodule MatterEx.ClusterTest do
     end
 
     test "remove_group", %{name: name} do
-      {:ok, _} = GenServer.call(name, {:invoke_command, :add_group, %{group_id: 1, group_name: "G1"}})
+      {:ok, _} =
+        GenServer.call(name, {:invoke_command, :add_group, %{group_id: 1, group_name: "G1"}})
+
       {:ok, resp} = GenServer.call(name, {:invoke_command, :remove_group, %{group_id: 1}})
       assert resp[0] == {:uint, 0}
 
@@ -1442,8 +1780,11 @@ defmodule MatterEx.ClusterTest do
     end
 
     test "remove_all_groups", %{name: name} do
-      {:ok, _} = GenServer.call(name, {:invoke_command, :add_group, %{group_id: 1, group_name: "G1"}})
-      {:ok, _} = GenServer.call(name, {:invoke_command, :add_group, %{group_id: 2, group_name: "G2"}})
+      {:ok, _} =
+        GenServer.call(name, {:invoke_command, :add_group, %{group_id: 1, group_name: "G1"}})
+
+      {:ok, _} =
+        GenServer.call(name, {:invoke_command, :add_group, %{group_id: 2, group_name: "G2"}})
 
       {:ok, nil} = GenServer.call(name, {:invoke_command, :remove_all_groups, %{}})
 
@@ -1452,10 +1793,15 @@ defmodule MatterEx.ClusterTest do
     end
 
     test "get_group_membership with empty list returns all", %{name: name} do
-      {:ok, _} = GenServer.call(name, {:invoke_command, :add_group, %{group_id: 1, group_name: "G1"}})
-      {:ok, _} = GenServer.call(name, {:invoke_command, :add_group, %{group_id: 2, group_name: "G2"}})
+      {:ok, _} =
+        GenServer.call(name, {:invoke_command, :add_group, %{group_id: 1, group_name: "G1"}})
 
-      {:ok, resp} = GenServer.call(name, {:invoke_command, :get_group_membership, %{group_list: []}})
+      {:ok, _} =
+        GenServer.call(name, {:invoke_command, :add_group, %{group_id: 2, group_name: "G2"}})
+
+      {:ok, resp} =
+        GenServer.call(name, {:invoke_command, :get_group_membership, %{group_list: []}})
+
       {:list, members} = resp[1]
       assert length(members) == 2
     end
@@ -1560,37 +1906,62 @@ defmodule MatterEx.ClusterTest do
     end
 
     test "default position is 0 (fully open)", %{name: name} do
-      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
+      assert {:ok, 0} =
+               GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
     end
 
     test "up_or_open sets position to 0", %{name: name} do
       # First close
       {:ok, nil} = GenServer.call(name, {:invoke_command, :down_or_close, %{}})
-      assert {:ok, 10000} = GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
+
+      assert {:ok, 10000} =
+               GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
 
       # Then open
       {:ok, nil} = GenServer.call(name, {:invoke_command, :up_or_open, %{}})
-      assert {:ok, 0} = GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
+
+      assert {:ok, 0} =
+               GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
     end
 
     test "down_or_close sets position to 10000", %{name: name} do
       {:ok, nil} = GenServer.call(name, {:invoke_command, :down_or_close, %{}})
-      assert {:ok, 10000} = GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
+
+      assert {:ok, 10000} =
+               GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
     end
 
     test "go_to_lift_percentage sets exact position", %{name: name} do
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :go_to_lift_percentage, %{lift_percent_100ths: 5000}})
-      assert {:ok, 5000} = GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :go_to_lift_percentage, %{lift_percent_100ths: 5000}}
+        )
+
+      assert {:ok, 5000} =
+               GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
     end
 
     test "go_to_lift_percentage clamps to valid range", %{name: name} do
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :go_to_lift_percentage, %{lift_percent_100ths: 99999}})
-      assert {:ok, 10000} = GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :go_to_lift_percentage, %{lift_percent_100ths: 99999}}
+        )
+
+      assert {:ok, 10000} =
+               GenServer.call(name, {:read_attribute, :current_position_lift_percent_100ths})
     end
 
     test "go_to_tilt_percentage sets tilt position", %{name: name} do
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :go_to_tilt_percentage, %{tilt_percent_100ths: 7500}})
-      assert {:ok, 7500} = GenServer.call(name, {:read_attribute, :current_position_tilt_percent_100ths})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :go_to_tilt_percentage, %{tilt_percent_100ths: 7500}}
+        )
+
+      assert {:ok, 7500} =
+               GenServer.call(name, {:read_attribute, :current_position_tilt_percent_100ths})
     end
 
     test "stop_motion returns success", %{name: name} do
@@ -1644,7 +2015,8 @@ defmodule MatterEx.ClusterTest do
       assert {:ok, 50} = GenServer.call(name, {:read_attribute, :percent_setting})
 
       # Over max (100)
-      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :percent_setting, 101})
+      assert {:error, :constraint_error} =
+               GenServer.call(name, {:write_attribute, :percent_setting, 101})
     end
 
     test "step command increases speed", %{name: name} do
@@ -1842,7 +2214,8 @@ defmodule MatterEx.ClusterTest do
       assert {:ok, 2} = GenServer.call(name, {:read_attribute, :operation_mode})
 
       # Invalid mode
-      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :operation_mode, 4})
+      assert {:error, :constraint_error} =
+               GenServer.call(name, {:write_attribute, :operation_mode, 4})
     end
   end
 
@@ -1965,13 +2338,19 @@ defmodule MatterEx.ClusterTest do
       name = :"admin_comm_open_#{System.unique_integer([:positive])}"
       {:ok, _pid} = AdminCommissioning.start_link(name: name)
 
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :open_commissioning_window, %{
-        commissioning_timeout: 300,
-        pake_passcode_verifier: <<0::256>>,
-        discriminator: 3840,
-        iterations: 1000,
-        salt: :crypto.strong_rand_bytes(32)
-      }})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :open_commissioning_window,
+           %{
+             commissioning_timeout: 300,
+             pake_passcode_verifier: <<0::256>>,
+             discriminator: 3840,
+             iterations: 1000,
+             salt: :crypto.strong_rand_bytes(32)
+           }}
+        )
+
       assert {:ok, 1} = GenServer.call(name, {:read_attribute, :window_status})
     end
 
@@ -1979,9 +2358,15 @@ defmodule MatterEx.ClusterTest do
       name = :"admin_comm_basic_#{System.unique_integer([:positive])}"
       {:ok, _pid} = AdminCommissioning.start_link(name: name)
 
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :open_basic_commissioning_window, %{
-        commissioning_timeout: 180
-      }})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :open_basic_commissioning_window,
+           %{
+             commissioning_timeout: 180
+           }}
+        )
+
       assert {:ok, 2} = GenServer.call(name, {:read_attribute, :window_status})
     end
 
@@ -1989,9 +2374,15 @@ defmodule MatterEx.ClusterTest do
       name = :"admin_comm_revoke_#{System.unique_integer([:positive])}"
       {:ok, _pid} = AdminCommissioning.start_link(name: name)
 
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :open_basic_commissioning_window, %{
-        commissioning_timeout: 180
-      }})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :open_basic_commissioning_window,
+           %{
+             commissioning_timeout: 180
+           }}
+        )
+
       assert {:ok, 2} = GenServer.call(name, {:read_attribute, :window_status})
 
       {:ok, nil} = GenServer.call(name, {:invoke_command, :revoke_commissioning, %{}})
@@ -2035,7 +2426,8 @@ defmodule MatterEx.ClusterTest do
       assert :ok = GenServer.call(name, {:write_attribute, :hour_format, 0})
       assert {:ok, 0} = GenServer.call(name, {:read_attribute, :hour_format})
 
-      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :hour_format, 2})
+      assert {:error, :constraint_error} =
+               GenServer.call(name, {:write_attribute, :hour_format, 2})
     end
   end
 
@@ -2055,7 +2447,8 @@ defmodule MatterEx.ClusterTest do
       assert :ok = GenServer.call(name, {:write_attribute, :temperature_unit, 0})
       assert {:ok, 0} = GenServer.call(name, {:read_attribute, :temperature_unit})
 
-      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :temperature_unit, 3})
+      assert {:error, :constraint_error} =
+               GenServer.call(name, {:write_attribute, :temperature_unit, 3})
     end
   end
 
@@ -2073,17 +2466,25 @@ defmodule MatterEx.ClusterTest do
 
       assert {:ok, 0} = GenServer.call(name, {:read_attribute, :utc_time})
       assert {:ok, 0} = GenServer.call(name, {:read_attribute, :granularity})
+
+      assert {:ok, [%{0 => {:int, 0}, 1 => {:uint, 0}, 2 => {:string, "UTC"}}]} =
+               GenServer.call(name, {:read_attribute, :time_zone})
     end
 
     test "set_utc_time updates time attributes" do
       name = :"time_sync_set_#{System.unique_integer([:positive])}"
       {:ok, _pid} = TimeSynchronization.start_link(name: name)
 
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :set_utc_time, %{
-        utc_time: 1_700_000_000_000_000,
-        granularity: 4,
-        time_source: 2
-      }})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :set_utc_time,
+           %{
+             utc_time: 1_700_000_000_000_000,
+             granularity: 4,
+             time_source: 2
+           }}
+        )
 
       assert {:ok, 1_700_000_000_000_000} = GenServer.call(name, {:read_attribute, :utc_time})
       assert {:ok, 4} = GenServer.call(name, {:read_attribute, :granularity})
@@ -2162,7 +2563,10 @@ defmodule MatterEx.ClusterTest do
       {:ok, _pid} = FixedLabel.start_link(name: name)
 
       assert {:error, :unsupported_write} =
-               GenServer.call(name, {:write_attribute, :label_list, [%{label: "room", value: "kitchen"}]})
+               GenServer.call(
+                 name,
+                 {:write_attribute, :label_list, [%{label: "room", value: "kitchen"}]}
+               )
     end
   end
 
@@ -2196,11 +2600,17 @@ defmodule MatterEx.ClusterTest do
       name = :"ota_prov_test_#{System.unique_integer([:positive])}"
       {:ok, _pid} = OTASoftwareUpdateProvider.start_link(name: name)
 
-      {:ok, resp} = GenServer.call(name, {:invoke_command, :query_image, %{
-        vendor_id: 0xFFF1,
-        product_id: 0x8001,
-        software_version: 1
-      }})
+      {:ok, resp} =
+        GenServer.call(
+          name,
+          {:invoke_command, :query_image,
+           %{
+             vendor_id: 0xFFF1,
+             product_id: 0x8001,
+             software_version: 1
+           }}
+        )
+
       # Status=NotAvailable(2)
       assert resp[0] == {:uint, 2}
     end
@@ -2209,10 +2619,16 @@ defmodule MatterEx.ClusterTest do
       name = :"ota_prov_apply_#{System.unique_integer([:positive])}"
       {:ok, _pid} = OTASoftwareUpdateProvider.start_link(name: name)
 
-      {:ok, resp} = GenServer.call(name, {:invoke_command, :apply_update_request, %{
-        update_token: :crypto.strong_rand_bytes(32),
-        new_version: 2
-      }})
+      {:ok, resp} =
+        GenServer.call(
+          name,
+          {:invoke_command, :apply_update_request,
+           %{
+             update_token: :crypto.strong_rand_bytes(32),
+             new_version: 2
+           }}
+        )
+
       assert resp[0] == {:uint, 0}
     end
 
@@ -2220,10 +2636,15 @@ defmodule MatterEx.ClusterTest do
       name = :"ota_prov_notify_#{System.unique_integer([:positive])}"
       {:ok, _pid} = OTASoftwareUpdateProvider.start_link(name: name)
 
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :notify_update_applied, %{
-        update_token: :crypto.strong_rand_bytes(32),
-        software_version: 2
-      }})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :notify_update_applied,
+           %{
+             update_token: :crypto.strong_rand_bytes(32),
+             software_version: 2
+           }}
+        )
     end
   end
 
@@ -2249,12 +2670,17 @@ defmodule MatterEx.ClusterTest do
       name = :"ota_req_announce_#{System.unique_integer([:positive])}"
       {:ok, _pid} = OTASoftwareUpdateRequestor.start_link(name: name)
 
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :announce_ota_provider, %{
-        provider_node_id: 1,
-        vendor_id: 0xFFF1,
-        announcement_reason: 0,
-        endpoint: 0
-      }})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :announce_ota_provider,
+           %{
+             provider_node_id: 1,
+             vendor_id: 0xFFF1,
+             announcement_reason: 0,
+             endpoint: 0
+           }}
+        )
     end
 
     test "default_ota_providers is writable" do
@@ -2328,7 +2754,9 @@ defmodule MatterEx.ClusterTest do
 
     test "CO2 metadata" do
       assert CarbonDioxideConcentrationMeasurement.cluster_id() == 0x040D
-      assert CarbonDioxideConcentrationMeasurement.cluster_name() == :carbon_dioxide_concentration_measurement
+
+      assert CarbonDioxideConcentrationMeasurement.cluster_name() ==
+               :carbon_dioxide_concentration_measurement
     end
 
     test "PM2.5 default values" do
@@ -2374,11 +2802,18 @@ defmodule MatterEx.ClusterTest do
 
     test "register_client adds client entry", %{name: name} do
       key = :crypto.strong_rand_bytes(16)
-      {:ok, resp} = GenServer.call(name, {:invoke_command, :register_client, %{
-        check_in_node_id: 42,
-        monitored_subject: 100,
-        key: key
-      }})
+
+      {:ok, resp} =
+        GenServer.call(
+          name,
+          {:invoke_command, :register_client,
+           %{
+             check_in_node_id: 42,
+             monitored_subject: 100,
+             key: key
+           }}
+        )
+
       # Returns ICDCounter
       assert resp[0] == {:uint, 0}
 
@@ -2391,12 +2826,27 @@ defmodule MatterEx.ClusterTest do
       key1 = :crypto.strong_rand_bytes(16)
       key2 = :crypto.strong_rand_bytes(16)
 
-      {:ok, _} = GenServer.call(name, {:invoke_command, :register_client, %{
-        check_in_node_id: 42, monitored_subject: 100, key: key1
-      }})
-      {:ok, _} = GenServer.call(name, {:invoke_command, :register_client, %{
-        check_in_node_id: 42, monitored_subject: 200, key: key2
-      }})
+      {:ok, _} =
+        GenServer.call(
+          name,
+          {:invoke_command, :register_client,
+           %{
+             check_in_node_id: 42,
+             monitored_subject: 100,
+             key: key1
+           }}
+        )
+
+      {:ok, _} =
+        GenServer.call(
+          name,
+          {:invoke_command, :register_client,
+           %{
+             check_in_node_id: 42,
+             monitored_subject: 200,
+             key: key2
+           }}
+        )
 
       {:ok, clients} = GenServer.call(name, {:read_attribute, :registered_clients})
       assert length(clients) == 1
@@ -2404,29 +2854,53 @@ defmodule MatterEx.ClusterTest do
     end
 
     test "unregister_client removes client", %{name: name} do
-      {:ok, _} = GenServer.call(name, {:invoke_command, :register_client, %{
-        check_in_node_id: 42, monitored_subject: 100, key: :crypto.strong_rand_bytes(16)
-      }})
+      {:ok, _} =
+        GenServer.call(
+          name,
+          {:invoke_command, :register_client,
+           %{
+             check_in_node_id: 42,
+             monitored_subject: 100,
+             key: :crypto.strong_rand_bytes(16)
+           }}
+        )
 
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :unregister_client, %{
-        check_in_node_id: 42
-      }})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :unregister_client,
+           %{
+             check_in_node_id: 42
+           }}
+        )
 
       {:ok, clients} = GenServer.call(name, {:read_attribute, :registered_clients})
       assert clients == []
     end
 
     test "stay_active_request returns promised duration", %{name: name} do
-      {:ok, resp} = GenServer.call(name, {:invoke_command, :stay_active_request, %{
-        stay_active_duration: 10_000
-      }})
+      {:ok, resp} =
+        GenServer.call(
+          name,
+          {:invoke_command, :stay_active_request,
+           %{
+             stay_active_duration: 10_000
+           }}
+        )
+
       assert resp[0] == {:uint, 10_000}
     end
 
     test "stay_active_request caps at 30 seconds", %{name: name} do
-      {:ok, resp} = GenServer.call(name, {:invoke_command, :stay_active_request, %{
-        stay_active_duration: 60_000
-      }})
+      {:ok, resp} =
+        GenServer.call(
+          name,
+          {:invoke_command, :stay_active_request,
+           %{
+             stay_active_duration: 60_000
+           }}
+        )
+
       assert resp[0] == {:uint, 30_000}
     end
   end
@@ -2450,22 +2924,40 @@ defmodule MatterEx.ClusterTest do
     end
 
     test "power_adjust_request sets PowerAdjustActive state", %{name: name} do
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :power_adjust_request, %{
-        power: 5000, duration: 3600, cause: 0
-      }})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :power_adjust_request,
+           %{
+             power: 5000,
+             duration: 3600,
+             cause: 0
+           }}
+        )
+
       assert {:ok, 3} = GenServer.call(name, {:read_attribute, :esa_state})
     end
 
     test "cancel_power_adjust restores Online state", %{name: name} do
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :power_adjust_request, %{
-        power: 5000, duration: 3600, cause: 0
-      }})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :power_adjust_request,
+           %{
+             power: 5000,
+             duration: 3600,
+             cause: 0
+           }}
+        )
+
       {:ok, nil} = GenServer.call(name, {:invoke_command, :cancel_power_adjust_request, %{}})
       assert {:ok, 1} = GenServer.call(name, {:read_attribute, :esa_state})
     end
 
     test "pause and resume", %{name: name} do
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :pause_request, %{duration: 300, cause: 0}})
+      {:ok, nil} =
+        GenServer.call(name, {:invoke_command, :pause_request, %{duration: 300, cause: 0}})
+
       assert {:ok, 4} = GenServer.call(name, {:read_attribute, :esa_state})
 
       {:ok, nil} = GenServer.call(name, {:invoke_command, :resume_request, %{}})
@@ -2549,10 +3041,16 @@ defmodule MatterEx.ClusterTest do
       name = :"cl_test_#{System.unique_integer([:positive])}"
       {:ok, _pid} = ContentLauncher.start_link(name: name)
 
-      {:ok, resp} = GenServer.call(name, {:invoke_command, :launch_url, %{
-        content_url: "https://example.com/video.mp4",
-        display_string: "Test Video"
-      }})
+      {:ok, resp} =
+        GenServer.call(
+          name,
+          {:invoke_command, :launch_url,
+           %{
+             content_url: "https://example.com/video.mp4",
+             display_string: "Test Video"
+           }}
+        )
+
       assert resp[0] == {:uint, 0}
     end
 
@@ -2595,9 +3093,16 @@ defmodule MatterEx.ClusterTest do
     end
 
     test "rename_output updates name", %{name: name} do
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :rename_output, %{
-        index: 0, name: "Soundbar"
-      }})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :rename_output,
+           %{
+             index: 0,
+             name: "Soundbar"
+           }}
+        )
+
       {:ok, outputs} = GenServer.call(name, {:read_attribute, :output_list})
       hdmi1 = Enum.find(outputs, &(&1.index == 0))
       assert hdmi1.name == "Soundbar"
@@ -2625,7 +3130,9 @@ defmodule MatterEx.ClusterTest do
       assert {:ok, 3} = GenServer.call(name, {:read_attribute, :spin_speed_current})
 
       assert :ok = GenServer.call(name, {:write_attribute, :number_of_rinses, 2})
-      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :number_of_rinses, 3})
+
+      assert {:error, :constraint_error} =
+               GenServer.call(name, {:write_attribute, :number_of_rinses, 3})
     end
   end
 
@@ -2712,7 +3219,9 @@ defmodule MatterEx.ClusterTest do
     test "smoke_sensitivity_level is writable with constraint", %{name: name} do
       assert {:ok, 1} = GenServer.call(name, {:read_attribute, :smoke_sensitivity_level})
       assert :ok = GenServer.call(name, {:write_attribute, :smoke_sensitivity_level, 0})
-      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :smoke_sensitivity_level, 3})
+
+      assert {:error, :constraint_error} =
+               GenServer.call(name, {:write_attribute, :smoke_sensitivity_level, 3})
     end
   end
 
@@ -2737,18 +3246,27 @@ defmodule MatterEx.ClusterTest do
     end
 
     test "suppress_alarm adds to suppressed bitmap", %{name: name} do
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :suppress_alarm, %{alarms_to_suppress: 0x01}})
+      {:ok, nil} =
+        GenServer.call(name, {:invoke_command, :suppress_alarm, %{alarms_to_suppress: 0x01}})
+
       assert {:ok, 0x01} = GenServer.call(name, {:read_attribute, :alarms_suppressed})
     end
 
     test "suppress_alarm only suppresses supported alarms", %{name: name} do
       # Supported is 0x03, so 0xFF should only set 0x03
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :suppress_alarm, %{alarms_to_suppress: 0xFF}})
+      {:ok, nil} =
+        GenServer.call(name, {:invoke_command, :suppress_alarm, %{alarms_to_suppress: 0xFF}})
+
       assert {:ok, 0x03} = GenServer.call(name, {:read_attribute, :alarms_suppressed})
     end
 
     test "enable_disable_alarm updates enabled bitmap", %{name: name} do
-      {:ok, nil} = GenServer.call(name, {:invoke_command, :enable_disable_alarm, %{alarms_to_enable_disable: 0x01}})
+      {:ok, nil} =
+        GenServer.call(
+          name,
+          {:invoke_command, :enable_disable_alarm, %{alarms_to_enable_disable: 0x01}}
+        )
+
       assert {:ok, 0x01} = GenServer.call(name, {:read_attribute, :alarms_enabled})
     end
 
@@ -2799,7 +3317,9 @@ defmodule MatterEx.ClusterTest do
 
     test "target_level has range constraint", %{name: name} do
       assert :ok = GenServer.call(name, {:write_attribute, :target_level, 50})
-      assert {:error, :constraint_error} = GenServer.call(name, {:write_attribute, :target_level, 101})
+
+      assert {:error, :constraint_error} =
+               GenServer.call(name, {:write_attribute, :target_level, 101})
     end
   end
 end

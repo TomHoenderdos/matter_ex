@@ -1,5 +1,9 @@
 # MatterEx
 
+[![CI](https://github.com/TomHoenderdos/matter_ex/actions/workflows/ci.yml/badge.svg)](https://github.com/TomHoenderdos/matter_ex/actions/workflows/ci.yml)
+[![Hex.pm](https://img.shields.io/hexpm/v/matter_ex.svg)](https://hex.pm/packages/matter_ex)
+[![Docs](https://img.shields.io/badge/docs-hexdocs-blue.svg)](https://hexdocs.pm/matter_ex)
+
 A [Matter](https://csa-iot.org/all-solutions/matter/) smart home protocol stack written in pure Elixir.
 
 MatterEx implements the Matter application protocol from the ground up — TLV encoding,
@@ -55,6 +59,24 @@ The node will advertise via mDNS and accept commissioning from any Matter contro
 
 Endpoint 0 is auto-generated with Descriptor, BasicInformation, GeneralCommissioning,
 OperationalCredentials, AccessControl, NetworkCommissioning, and GroupKeyManagement.
+
+## Automated Smoke Testing
+
+Use `scripts/matter_smoke.exs` for a fast chip-tool based check that commissioning,
+CASE, OnOff commands, and BasicInformation reads still work.
+
+```sh
+# Start an in-process MatterEx device and test it with chip-tool
+mix run scripts/matter_smoke.exs
+
+# Test an already-running device, for example examples/net_test on a Raspberry Pi
+mix run scripts/matter_smoke.exs -- --mode remote --host 192.168.1.42
+```
+
+The remote mode uses `chip-tool pairing already-discovered`, so it does not depend
+on mDNS discovery working from the test machine. Override defaults with flags such
+as `--port 5540`, `--node-id 111`, `--passcode 20202021`, or
+`--storage-directory /tmp/matter_ex_pi4_kvs`.
 
 ## Handling Incoming Commands
 

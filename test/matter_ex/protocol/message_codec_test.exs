@@ -335,7 +335,13 @@ defmodule MatterEx.Protocol.MessageCodecTest do
         payload: <<"test payload">>
       }
 
-      nonce = MessageCodec.build_nonce(header.security_flags, header.message_counter, header.source_node_id)
+      nonce =
+        MessageCodec.build_nonce(
+          header.security_flags,
+          header.message_counter,
+          header.source_node_id
+        )
+
       frame = IO.iodata_to_binary(MessageCodec.encode_encrypted(header, proto, key, nonce))
 
       {:ok, decoded} = MessageCodec.decode_encrypted(frame, key, nonce)
@@ -357,7 +363,8 @@ defmodule MatterEx.Protocol.MessageCodecTest do
       <<hdr::binary-size(header_size), ct_byte, rest::binary>> = frame
       tampered = <<hdr::binary, ct_byte + 1, rest::binary>>
 
-      assert {:error, :authentication_failed} = MessageCodec.decode_encrypted(tampered, key, nonce)
+      assert {:error, :authentication_failed} =
+               MessageCodec.decode_encrypted(tampered, key, nonce)
     end
 
     test "tampered header (AAD) returns :authentication_failed", %{key: key} do
@@ -371,7 +378,8 @@ defmodule MatterEx.Protocol.MessageCodecTest do
       <<flags, session_lo, rest::binary>> = frame
       tampered = <<flags, session_lo + 1, rest::binary>>
 
-      assert {:error, :authentication_failed} = MessageCodec.decode_encrypted(tampered, key, nonce)
+      assert {:error, :authentication_failed} =
+               MessageCodec.decode_encrypted(tampered, key, nonce)
     end
 
     test "tampered MIC returns :authentication_failed", %{key: key} do
@@ -386,7 +394,8 @@ defmodule MatterEx.Protocol.MessageCodecTest do
       <<prefix::binary-size(size - 1), last_byte>> = frame
       tampered = <<prefix::binary, last_byte + 1>>
 
-      assert {:error, :authentication_failed} = MessageCodec.decode_encrypted(tampered, key, nonce)
+      assert {:error, :authentication_failed} =
+               MessageCodec.decode_encrypted(tampered, key, nonce)
     end
 
     test "truncated MIC returns error", %{key: key} do
@@ -407,7 +416,9 @@ defmodule MatterEx.Protocol.MessageCodecTest do
       frame = IO.iodata_to_binary(MessageCodec.encode_encrypted(header, proto, key, nonce))
 
       wrong_key = :crypto.strong_rand_bytes(16)
-      assert {:error, :authentication_failed} = MessageCodec.decode_encrypted(frame, wrong_key, nonce)
+
+      assert {:error, :authentication_failed} =
+               MessageCodec.decode_encrypted(frame, wrong_key, nonce)
     end
   end
 
@@ -422,8 +433,8 @@ defmodule MatterEx.Protocol.MessageCodecTest do
     test "structure: flags || counter LE || node_id LE" do
       nonce = MessageCodec.build_nonce(0xAB, 0x04030201, 0x0807060504030201)
 
-      assert <<0xAB, 0x01, 0x02, 0x03, 0x04, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-               0x08>> = nonce
+      assert <<0xAB, 0x01, 0x02, 0x03, 0x04, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08>> =
+               nonce
     end
 
     test "PASE nonce (node_id defaults to 0)" do

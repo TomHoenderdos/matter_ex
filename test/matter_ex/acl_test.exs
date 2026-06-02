@@ -50,6 +50,55 @@ defmodule MatterEx.ACLTest do
       assert :deny == ACL.check(wrong_subject, [@admin_entry], :view, {1, 0x0006})
     end
 
+    test "any authenticated context subject may match" do
+      context = Map.merge(@case_context, %{subject: 999, subjects: [999, 42]})
+      assert :allow == ACL.check(context, [@admin_entry], :view, {1, 0x0006})
+    end
+
+    test "CASE Authenticated Tag subject matches same identifier and sufficient version" do
+      acl_cat_subject = 0xFFFFFFFD5C240001
+      same_cat_subject = 0xFFFFFFFD5C240001
+      newer_cat_subject = 0xFFFFFFFD5C240002
+
+      entry = %{@admin_entry | subjects: [acl_cat_subject]}
+
+      assert :allow ==
+               ACL.check(
+                 Map.put(@case_context, :subjects, [same_cat_subject]),
+                 [entry],
+                 :view,
+                 {1, 0x0006}
+               )
+
+      assert :allow ==
+               ACL.check(
+                 Map.put(@case_context, :subjects, [newer_cat_subject]),
+                 [entry],
+                 :view,
+                 {1, 0x0006}
+               )
+    end
+
+    test "CASE Authenticated Tag subject rejects older versions and different identifiers" do
+      entry = %{@admin_entry | subjects: [0xFFFFFFFD5C240002]}
+
+      assert :deny ==
+               ACL.check(
+                 Map.put(@case_context, :subjects, [0xFFFFFFFD5C240001]),
+                 [entry],
+                 :view,
+                 {1, 0x0006}
+               )
+
+      assert :deny ==
+               ACL.check(
+                 Map.put(@case_context, :subjects, [0xFFFFFFFD5C250002]),
+                 [entry],
+                 :view,
+                 {1, 0x0006}
+               )
+    end
+
     test "nil subjects (wildcard) allows any node_id" do
       wildcard_entry = %{@admin_entry | subjects: nil}
       other_subject = %{@case_context | subject: 999}

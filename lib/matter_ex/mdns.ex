@@ -39,6 +39,12 @@ defmodule MatterEx.MDNS do
 
   @mdns_port 5353
   @mdns_multicast {224, 0, 0, 251}
+  @mdns_multicast6 {0xFF02, 0, 0, 0, 0, 0, 0, 0x00FB}
+  @ipproto_ipv6 41
+  @sol_socket 1
+  @so_bindtodevice 25
+  @ipv6_multicast_if 17
+  @ipv6_join_group 20
   @default_ttl 120
   @ptr_ttl 4500
 
@@ -46,8 +52,11 @@ defmodule MatterEx.MDNS do
     @moduledoc false
     defstruct [
       :socket,
+      :socket6,
       :port,
       :hostname,
+      :dynamic_addresses,
+      :interface,
       services: %{},
       addresses: []
     ]
@@ -62,6 +71,7 @@ defmodule MatterEx.MDNS do
   - `:hostname` — local hostname without `.local` suffix (default: auto-generated)
   - `:port` — mDNS port (default: 5353, use 0 for OS-assigned in tests)
   - `:addresses` — list of IP tuples to advertise (default: auto-detect)
+  - `:interface` — optional interface name to auto-detect and advertise from, e.g. `"wlan0"`
   - `:name` — GenServer name
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -151,6 +161,7 @@ defmodule MatterEx.MDNS do
 
     # Build subtypes for discriminator-based discovery
     short_discriminator = discriminator >>> 8
+
     subtypes = [
       "_S#{short_discriminator}._sub._matterc._udp.local",
       "_L#{discriminator}._sub._matterc._udp.local"
@@ -194,11 +205,16 @@ defmodule MatterEx.MDNS do
       "T=1"
     ]
 
+    subtypes = [
+      "_I#{cfid_hex}._sub._matter._tcp.local"
+    ]
+
     [
       service: "_matter._tcp.local",
       instance: instance,
       port: port,
-      txt: txt
+      txt: txt,
+      subtypes: subtypes
     ]
   end
 
@@ -214,11 +230,12 @@ defmodule MatterEx.MDNS do
     alias MatterEx.Crypto.KDF
 
     # Strip the 0x04 uncompressed point prefix if present
-    ikm = case root_public_key do
-      <<0x04, xy::binary-size(64)>> -> xy
-      <<xy::binary-size(64)>> -> xy
-      other -> other
-    end
+    ikm =
+      case root_public_key do
+        <<0x04, xy::binary-size(64)>> -> xy
+        <<xy::binary-size(64)>> -> xy
+        other -> other
+      end
 
     KDF.hkdf(<<fabric_id::unsigned-big-64>>, ikm, "CompressedFabric", 8)
   end
@@ -229,43 +246,58 @@ defmodule MatterEx.MDNS do
   def init(opts) do
     mdns_port = Keyword.get(opts, :port, @mdns_port)
     hostname = Keyword.get(opts, :hostname) || generate_hostname()
-    addresses = Keyword.get(opts, :addresses) || detect_addresses()
+    interface = Keyword.get(opts, :interface)
+
+    {addresses, dynamic_addresses} =
+      case Keyword.fetch(opts, :addresses) do
+        {:ok, addresses} -> {addresses, false}
+        :error -> {detect_addresses(interface), true}
+      end
 
     reuseport =
       case :os.type() do
         {:unix, :darwin} -> [{:raw, 0xFFFF, 0x0200, <<1::native-32>>}]
-        {:unix, _linux}  -> [{:raw, 1, 15, <<1::native-32>>}]
-        _other           -> []
+        {:unix, _linux} -> [{:raw, 1, 15, <<1::native-32>>}]
+        _other -> []
       end
 
-    socket_opts = [
-      :binary,
-      {:active, true},
-      {:reuseaddr, true}
-    ] ++ reuseport
+    socket_opts =
+      [
+        :binary,
+        {:active, true},
+        {:reuseaddr, true}
+      ] ++ reuseport
 
     # Add multicast options only for the standard mDNS port
-    socket_opts = if mdns_port == @mdns_port do
-      socket_opts ++ [
-        {:multicast_ttl, 255},
-        {:multicast_loop, true},
-        {:add_membership, {@mdns_multicast, {0, 0, 0, 0}}}
-      ]
-    else
-      socket_opts
-    end
+    socket_opts =
+      if mdns_port == @mdns_port do
+        socket_opts ++
+          [
+            {:multicast_ttl, 255},
+            {:multicast_loop, true},
+            {:add_membership, {@mdns_multicast, {0, 0, 0, 0}}}
+          ]
+      else
+        socket_opts
+      end
 
     case :gen_udp.open(mdns_port, socket_opts) do
       {:ok, socket} ->
         {:ok, assigned_port} = :inet.port(socket)
+        socket6 = open_ipv6_socket(assigned_port, reuseport)
+        join_multicast_interfaces(socket, socket6, assigned_port, addresses)
         Logger.info("mDNS responder listening on port #{assigned_port}")
 
-        {:ok, %State{
-          socket: socket,
-          port: assigned_port,
-          hostname: hostname,
-          addresses: addresses
-        }}
+        {:ok,
+         %State{
+           socket: socket,
+           socket6: socket6,
+           port: assigned_port,
+           hostname: hostname,
+           dynamic_addresses: dynamic_addresses,
+           interface: interface,
+           addresses: addresses
+         }}
 
       {:error, reason} ->
         Logger.error("Failed to open mDNS port #{mdns_port}: #{inspect(reason)}")
@@ -279,6 +311,8 @@ defmodule MatterEx.MDNS do
   end
 
   def handle_call({:advertise, opts}, _from, state) do
+    state = refresh_network_state(state)
+
     service_config = %{
       service: Keyword.fetch!(opts, :service),
       instance: Keyword.fetch!(opts, :instance),
@@ -289,6 +323,18 @@ defmodule MatterEx.MDNS do
 
     instance = service_config.instance
     state = %{state | services: Map.put(state.services, instance, service_config)}
+
+    MatterEx.DebugTrace.record(%{
+      type: :mdns_advertise,
+      instance: instance,
+      service: service_config.service,
+      subtypes: service_config.subtypes,
+      txt: service_config.txt,
+      port: service_config.port,
+      hostname: state.hostname,
+      addresses: state.addresses,
+      socket6: state.socket6 != nil
+    })
 
     # Send gratuitous announcement
     send_announcement(state, service_config, @default_ttl)
@@ -306,6 +352,7 @@ defmodule MatterEx.MDNS do
         # Send goodbye announcement (TTL=0)
         send_announcement(state, service_config, 0)
         state = %{state | services: Map.delete(state.services, instance)}
+        MatterEx.DebugTrace.record(%{type: :mdns_withdraw, instance: instance})
         Logger.info("mDNS: withdrawn #{instance}")
         {:reply, :ok, state}
     end
@@ -326,10 +373,12 @@ defmodule MatterEx.MDNS do
   end
 
   @impl true
-  def handle_info({:udp, _socket, ip, port, data}, state) do
+  def handle_info({:udp, socket, ip, port, data}, state) do
+    state = refresh_network_state(state)
+
     case DNS.decode_message(data) do
       {:ok, %{qr: :query} = msg} ->
-        handle_query(state, msg, ip, port)
+        handle_query(state, socket, msg, ip, port)
 
       {:ok, _response} ->
         # Ignore responses from other responders
@@ -357,15 +406,32 @@ defmodule MatterEx.MDNS do
       :gen_udp.close(state.socket)
     end
 
+    if state.socket6 do
+      :gen_udp.close(state.socket6)
+    end
+
     :ok
   end
 
   # ── Private: Query Handling ─────────────────────────────────────
 
-  defp handle_query(state, msg, ip, port) do
-    answers = Enum.flat_map(msg.questions, fn question ->
-      match_question(state, question)
-    end)
+  defp handle_query(state, socket, msg, ip, port) do
+    answers =
+      Enum.flat_map(msg.questions, fn question ->
+        match_question(state, question)
+      end)
+
+    MatterEx.DebugTrace.record(%{
+      type: :mdns_query,
+      from: format_ip(ip),
+      port: port,
+      questions: Enum.map(msg.questions, &Map.take(&1, [:name, :type, :class])),
+      answer_count: length(answers),
+      services:
+        Enum.map(state.services, fn {_inst, config} ->
+          config.instance <> "." <> config.service
+        end)
+    })
 
     if answers != [] do
       response = %{
@@ -376,9 +442,21 @@ defmodule MatterEx.MDNS do
         answers: answers
       }
 
-      send_dns(state, response, ip, port)
+      {response_ip, response_port} = response_endpoint(ip, port)
+      send_dns(state, socket, response, response_ip, response_port)
     end
   end
+
+  defp format_ip(ip) do
+    ip
+    |> :inet.ntoa()
+    |> to_string()
+  rescue
+    _ -> inspect(ip)
+  end
+
+  defp response_endpoint(ip, _port) when tuple_size(ip) == 8, do: {@mdns_multicast6, @mdns_port}
+  defp response_endpoint(ip, port), do: {ip, port}
 
   defp match_question(state, %{type: type, name: name}) do
     hostname_local = state.hostname <> ".local"
@@ -392,17 +470,32 @@ defmodule MatterEx.MDNS do
       type in [:ptr, :any] && is_subtype_query?(state, name) ->
         build_subtype_records(state, name)
 
+      # PTR query for service subtype suffix. Operational DNS-SD lookups query
+      # `_I<compressed-fabric-id>._sub._matter._tcp.local`; answer if the
+      # subtype belongs to a service we advertise even when exact subtype
+      # matching is not available.
+      type in [:ptr, :any] && is_subtype_suffix_query?(state, name) ->
+        build_subtype_suffix_records(state, name)
+
+      # ANY query for specific instance
+      type == :any && is_instance_query?(state, name) ->
+        build_srv_records(state, name) ++ build_txt_records(state, name)
+
       # SRV query for specific instance
-      type in [:srv, :any] && is_instance_query?(state, name) ->
+      type == :srv && is_instance_query?(state, name) ->
         build_srv_records(state, name)
 
       # TXT query for specific instance
-      type in [:txt, :any] && is_instance_query?(state, name) ->
+      type == :txt && is_instance_query?(state, name) ->
         build_txt_records(state, name)
 
       # A query for hostname
       type in [:a, :any] && String.downcase(name) == String.downcase(hostname_local) ->
-        build_a_records(state)
+        build_address_records(state)
+
+      # AAAA query for hostname
+      type == :aaaa && String.downcase(name) == String.downcase(hostname_local) ->
+        build_address_records(state)
 
       true ->
         []
@@ -423,6 +516,14 @@ defmodule MatterEx.MDNS do
     end)
   end
 
+  defp is_subtype_suffix_query?(state, name) do
+    downcased_name = String.downcase(name)
+
+    Enum.any?(state.services, fn {_inst, config} ->
+      String.ends_with?(downcased_name, "._sub." <> String.downcase(config.service))
+    end)
+  end
+
   defp is_instance_query?(state, name) do
     Enum.any?(state.services, fn {_inst, config} ->
       fqn = config.instance <> "." <> config.service
@@ -438,11 +539,16 @@ defmodule MatterEx.MDNS do
 
         [
           %{name: service_name, type: :ptr, class: :in, ttl: @ptr_ttl, data: fqn},
-          %{name: fqn, type: :srv, class: :in, cache_flush: true, ttl: @default_ttl,
-            data: {0, 0, config.port, hostname_local}},
-          %{name: fqn, type: :txt, class: :in, cache_flush: true, ttl: @ptr_ttl,
-            data: config.txt}
-        ] ++ build_a_records(state)
+          %{
+            name: fqn,
+            type: :srv,
+            class: :in,
+            cache_flush: true,
+            ttl: @default_ttl,
+            data: {0, 0, config.port, hostname_local}
+          },
+          %{name: fqn, type: :txt, class: :in, cache_flush: true, ttl: @ptr_ttl, data: config.txt}
+        ] ++ build_address_records(state)
       else
         []
       end
@@ -452,32 +558,60 @@ defmodule MatterEx.MDNS do
   defp build_subtype_records(state, subtype_name) do
     Enum.flat_map(state.services, fn {_inst, config} ->
       if Enum.any?(config.subtypes, &(String.downcase(&1) == String.downcase(subtype_name))) do
-        fqn = config.instance <> "." <> config.service
-        hostname_local = state.hostname <> ".local"
-
-        [
-          %{name: subtype_name, type: :ptr, class: :in, ttl: @ptr_ttl, data: fqn},
-          %{name: fqn, type: :srv, class: :in, cache_flush: true, ttl: @default_ttl,
-            data: {0, 0, config.port, hostname_local}},
-          %{name: fqn, type: :txt, class: :in, cache_flush: true, ttl: @ptr_ttl,
-            data: config.txt}
-        ] ++ build_a_records(state)
+        build_subtype_answer(state, config, subtype_name)
       else
         []
       end
     end)
   end
 
+  defp build_subtype_suffix_records(state, subtype_name) do
+    downcased_name = String.downcase(subtype_name)
+
+    Enum.flat_map(state.services, fn {_inst, config} ->
+      if String.ends_with?(downcased_name, "._sub." <> String.downcase(config.service)) do
+        build_subtype_answer(state, config, subtype_name)
+      else
+        []
+      end
+    end)
+  end
+
+  defp build_subtype_answer(state, config, subtype_name) do
+    fqn = config.instance <> "." <> config.service
+    hostname_local = state.hostname <> ".local"
+
+    [
+      %{name: subtype_name, type: :ptr, class: :in, ttl: @ptr_ttl, data: fqn},
+      %{
+        name: fqn,
+        type: :srv,
+        class: :in,
+        cache_flush: true,
+        ttl: @default_ttl,
+        data: {0, 0, config.port, hostname_local}
+      },
+      %{name: fqn, type: :txt, class: :in, cache_flush: true, ttl: @ptr_ttl, data: config.txt}
+    ] ++ build_address_records(state)
+  end
+
   defp build_srv_records(state, name) do
     Enum.flat_map(state.services, fn {_inst, config} ->
       fqn = config.instance <> "." <> config.service
+
       if String.downcase(fqn) == String.downcase(name) do
         hostname_local = state.hostname <> ".local"
 
         [
-          %{name: fqn, type: :srv, class: :in, cache_flush: true, ttl: @default_ttl,
-            data: {0, 0, config.port, hostname_local}}
-        ] ++ build_a_records(state)
+          %{
+            name: fqn,
+            type: :srv,
+            class: :in,
+            cache_flush: true,
+            ttl: @default_ttl,
+            data: {0, 0, config.port, hostname_local}
+          }
+        ] ++ build_address_records(state)
       else
         []
       end
@@ -487,10 +621,10 @@ defmodule MatterEx.MDNS do
   defp build_txt_records(state, name) do
     Enum.flat_map(state.services, fn {_inst, config} ->
       fqn = config.instance <> "." <> config.service
+
       if String.downcase(fqn) == String.downcase(name) do
         [
-          %{name: fqn, type: :txt, class: :in, cache_flush: true, ttl: @ptr_ttl,
-            data: config.txt}
+          %{name: fqn, type: :txt, class: :in, cache_flush: true, ttl: @ptr_ttl, data: config.txt}
         ]
       else
         []
@@ -498,13 +632,26 @@ defmodule MatterEx.MDNS do
     end)
   end
 
-  defp build_a_records(state) do
+  defp build_address_records(state) do
     hostname_local = state.hostname <> ".local"
 
-    Enum.map(state.addresses, fn addr ->
-      %{name: hostname_local, type: :a, class: :in, cache_flush: true,
-        ttl: @default_ttl, data: addr}
+    state.addresses
+    |> Enum.flat_map(fn
+      {_, _, _, _} = addr -> [address_record(hostname_local, :a, addr)]
+      {_, _, _, _, _, _, _, _} = addr -> [address_record(hostname_local, :aaaa, addr)]
+      _other -> []
     end)
+  end
+
+  defp address_record(hostname, type, addr) do
+    %{
+      name: hostname,
+      type: type,
+      class: :in,
+      cache_flush: true,
+      ttl: @default_ttl,
+      data: addr
+    }
   end
 
   # ── Private: Announcement ───────────────────────────────────────
@@ -513,20 +660,33 @@ defmodule MatterEx.MDNS do
     fqn = service_config.instance <> "." <> service_config.service
     hostname_local = state.hostname <> ".local"
 
-    records = [
-      %{name: service_config.service, type: :ptr, class: :in, ttl: ttl, data: fqn},
-      %{name: fqn, type: :srv, class: :in, cache_flush: true, ttl: ttl,
-        data: {0, 0, service_config.port, hostname_local}},
-      %{name: fqn, type: :txt, class: :in, cache_flush: true, ttl: ttl,
-        data: service_config.txt}
-    ] ++ Enum.map(state.addresses, fn addr ->
-      %{name: hostname_local, type: :a, class: :in, cache_flush: true, ttl: ttl, data: addr}
-    end)
+    records =
+      [
+        %{name: service_config.service, type: :ptr, class: :in, ttl: ttl, data: fqn},
+        %{
+          name: fqn,
+          type: :srv,
+          class: :in,
+          cache_flush: true,
+          ttl: ttl,
+          data: {0, 0, service_config.port, hostname_local}
+        },
+        %{
+          name: fqn,
+          type: :txt,
+          class: :in,
+          cache_flush: true,
+          ttl: ttl,
+          data: service_config.txt
+        }
+      ] ++
+        Enum.map(build_address_records(state), fn record -> %{record | ttl: ttl} end)
 
     # Add subtype PTR records
-    subtype_records = Enum.map(service_config.subtypes, fn sub ->
-      %{name: sub, type: :ptr, class: :in, ttl: ttl, data: fqn}
-    end)
+    subtype_records =
+      Enum.map(service_config.subtypes, fn sub ->
+        %{name: sub, type: :ptr, class: :in, ttl: ttl, data: fqn}
+      end)
 
     response = %{
       id: 0,
@@ -538,32 +698,171 @@ defmodule MatterEx.MDNS do
 
     # Send to multicast if on standard port, otherwise unicast not needed
     if state.port == @mdns_port do
-      send_dns(state, response, @mdns_multicast, @mdns_port)
+      send_dns(state, state.socket, response, @mdns_multicast, @mdns_port)
+
+      if state.socket6 do
+        send_dns(state, state.socket6, response, @mdns_multicast6, @mdns_port)
+      end
     end
   end
 
   # ── Private: Helpers ────────────────────────────────────────────
 
-  defp send_dns(state, message, ip, port) do
+  defp send_dns(_state, socket, message, ip, port) do
     binary = DNS.encode_message(message)
-    :gen_udp.send(state.socket, ip, port, binary)
+    :gen_udp.send(socket, ip, port, binary)
   end
+
+  defp refresh_network_state(%State{dynamic_addresses: false} = state), do: state
+
+  defp refresh_network_state(%State{} = state) do
+    addresses = detect_addresses(state.interface)
+
+    if addresses != state.addresses do
+      join_multicast_interfaces(
+        state.socket,
+        state.socket6,
+        state.port,
+        addresses -- state.addresses
+      )
+
+      %{state | addresses: addresses}
+    else
+      state
+    end
+  end
+
+  defp open_ipv6_socket(port, reuseport) do
+    bind_device = preferred_ipv6_device()
+
+    socket_opts =
+      [
+        :binary,
+        {:active, true},
+        {:reuseaddr, true},
+        :inet6,
+        {:ipv6_v6only, true}
+      ] ++ bind_to_device_opts(bind_device) ++ reuseport
+
+    case :gen_udp.open(port, socket_opts) do
+      {:ok, socket} ->
+        socket
+
+      {:error, reason} ->
+        Logger.warning("mDNS: failed to open IPv6 socket on port #{port}: #{inspect(reason)}")
+        nil
+    end
+  end
+
+  defp join_multicast_interfaces(_socket, _socket6, port, _addresses) when port != @mdns_port,
+    do: :ok
+
+  defp join_multicast_interfaces(socket, socket6, _port, addresses) do
+    Enum.each(addresses, fn address ->
+      case address do
+        {_, _, _, _} ->
+          case :inet.setopts(socket, add_membership: {@mdns_multicast, address}) do
+            :ok ->
+              :ok
+
+            {:error, reason} ->
+              Logger.debug(
+                "mDNS: could not join multicast group on #{:inet.ntoa(address)}: #{inspect(reason)}"
+              )
+          end
+
+        {_, _, _, _, _, _, _, _} ->
+          join_ipv6_multicast(socket6, address)
+
+        _other ->
+          :ok
+      end
+    end)
+  end
+
+  defp join_ipv6_multicast(nil, _address), do: :ok
+
+  defp join_ipv6_multicast(socket, address) do
+    case interface_for_address(address) do
+      nil ->
+        Logger.debug("mDNS: could not find interface index for #{:inet.ntoa(address)}")
+
+      {name, ifindex} ->
+        preferred = preferred_ipv6_device()
+
+        if preferred && name != preferred do
+          :ok
+        else
+          join_ipv6_multicast(socket, address, ifindex)
+        end
+    end
+  end
+
+  defp join_ipv6_multicast(socket, address, ifindex) do
+    multicast_if = {:raw, @ipproto_ipv6, @ipv6_multicast_if, <<ifindex::native-32>>}
+    join_group = {:raw, @ipproto_ipv6, @ipv6_join_group, ipv6_mreq(@mdns_multicast6, ifindex)}
+
+    case :inet.setopts(socket, [multicast_if, join_group]) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.debug(
+          "mDNS: could not join IPv6 multicast group on #{:inet.ntoa(address)} ifindex=#{ifindex}: #{inspect(reason)}"
+        )
+    end
+  end
+
+  defp ipv6_mreq({a, b, c, d, e, f, g, h}, ifindex) do
+    <<a::big-16, b::big-16, c::big-16, d::big-16, e::big-16, f::big-16, g::big-16, h::big-16,
+      ifindex::native-32>>
+  end
+
+  defp interface_for_address(address) do
+    with {:ok, ifaddrs} <- :inet.getifaddrs(),
+         {name, _opts} <-
+           Enum.find(ifaddrs, fn {_name, opts} ->
+             address in Keyword.get_values(opts, :addr)
+           end),
+         {:ok, contents} <- File.read("/sys/class/net/#{name}/ifindex"),
+         {ifindex, _} <- Integer.parse(String.trim(contents)) do
+      {to_string(name), ifindex}
+    else
+      _ -> nil
+    end
+  end
+
+  defp preferred_ipv6_device do
+    cond do
+      File.exists?("/sys/class/net/wlan0/ifindex") -> "wlan0"
+      true -> nil
+    end
+  end
+
+  defp bind_to_device_opts(nil), do: []
+  defp bind_to_device_opts(device), do: [{:raw, @sol_socket, @so_bindtodevice, device <> <<0>>}]
 
   defp generate_hostname do
     suffix = :crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)
     "matter_ex-#{suffix}"
   end
 
-  defp detect_addresses do
+  defp detect_addresses(interface) do
     case :inet.getifaddrs() do
       {:ok, ifaddrs} ->
         ifaddrs
+        |> Enum.filter(fn {name, _opts} ->
+          interface in [nil, to_string(name)]
+        end)
         |> Enum.flat_map(fn {_name, opts} ->
           Keyword.get_values(opts, :addr)
         end)
         |> Enum.filter(fn
           {127, _, _, _} -> false
           {a, _, _, _} when a >= 1 and a <= 255 -> true
+          {0, 0, 0, 0, 0, 0, 0, 1} -> false
+          {0, 0, 0, 0, 0, 0, 0, 0} -> false
+          {_, _, _, _, _, _, _, _} -> true
           _ -> false
         end)
 

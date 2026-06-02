@@ -11,18 +11,21 @@ defmodule MatterEx.Cluster.AudioOutput do
   use MatterEx.Cluster, id: 0x050B, name: :audio_output
 
   # OutputList: list of output structs
-  attribute 0x0000, :output_list, :list, default: [
-    %{index: 0, output_type: 0, name: "HDMI 1"},
-    %{index: 1, output_type: 0, name: "HDMI 2"},
-    %{index: 2, output_type: 4, name: "Built-in Speaker"}
-  ]
-  # CurrentOutput: index of active output
-  attribute 0x0001, :current_output, :uint8, default: 0
-  attribute 0xFFFC, :feature_map, :uint32, default: 0x01
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 1
+  attribute(0x0000, :output_list, :list,
+    default: [
+      %{index: 0, output_type: 0, name: "HDMI 1"},
+      %{index: 1, output_type: 0, name: "HDMI 2"},
+      %{index: 2, output_type: 4, name: "Built-in Speaker"}
+    ]
+  )
 
-  command 0x00, :select_output, [index: :uint8]
-  command 0x01, :rename_output, [index: :uint8, name: :string]
+  # CurrentOutput: index of active output
+  attribute(0x0001, :current_output, :uint8, default: 0)
+  attribute(0xFFFC, :feature_map, :uint32, default: 0x01)
+  attribute(0xFFFD, :cluster_revision, :uint16, default: 1)
+
+  command(0x00, :select_output, index: :uint8)
+  command(0x01, :rename_output, index: :uint8, name: :string)
 
   @impl MatterEx.Cluster
   def handle_command(:select_output, params, state) do
@@ -43,9 +46,10 @@ defmodule MatterEx.Cluster.AudioOutput do
     new_name = params[:name] || ""
     outputs = get_attribute(state, :output_list) || []
 
-    updated = Enum.map(outputs, fn out ->
-      if out.index == index, do: %{out | name: new_name}, else: out
-    end)
+    updated =
+      Enum.map(outputs, fn out ->
+        if out.index == index, do: %{out | name: new_name}, else: out
+      end)
 
     state = set_attribute(state, :output_list, updated)
     {:ok, nil, state}

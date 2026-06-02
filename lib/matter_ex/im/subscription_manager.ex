@@ -23,19 +23,19 @@ defmodule MatterEx.IM.SubscriptionManager do
   """
 
   @type subscription :: %{
-    id: non_neg_integer(),
-    paths: [map()],
-    min_interval: non_neg_integer(),
-    max_interval: non_neg_integer(),
-    last_report_at: integer(),
-    last_sent_at: integer() | nil,
-    last_values: map()
-  }
+          id: non_neg_integer(),
+          paths: [map()],
+          min_interval: non_neg_integer(),
+          max_interval: non_neg_integer(),
+          last_report_at: integer(),
+          last_sent_at: integer() | nil,
+          last_values: map()
+        }
 
   @type t :: %__MODULE__{
-    subscriptions: %{non_neg_integer() => subscription()},
-    next_id: non_neg_integer()
-  }
+          subscriptions: %{non_neg_integer() => subscription()},
+          next_id: non_neg_integer()
+        }
 
   defstruct subscriptions: %{},
             next_id: 1
@@ -52,7 +52,7 @@ defmodule MatterEx.IM.SubscriptionManager do
   Returns `{subscription_id, updated_state}`.
   """
   @spec subscribe(t(), [map()], non_neg_integer(), non_neg_integer()) ::
-    {non_neg_integer(), t()}
+          {non_neg_integer(), t()}
   def subscribe(%__MODULE__{} = state, paths, min_interval, max_interval) do
     sub_id = state.next_id
     now = System.monotonic_time(:second)
@@ -89,17 +89,19 @@ defmodule MatterEx.IM.SubscriptionManager do
   end
 
   @doc """
-  Check which subscriptions are due for a periodic report.
+  Check which subscriptions are due for a report check.
 
-  Returns a list of `{sub_id, paths}` tuples for subscriptions whose
-  `max_interval` has elapsed since the last report.
+  Returns a list of `{sub_id, paths}` tuples when either the minimum
+  reporting interval allows change detection or the maximum interval has
+  elapsed. The caller decides whether to send a report after comparing values.
   """
   @spec due_reports(t(), integer()) :: [{non_neg_integer(), [map()]}]
   def due_reports(%__MODULE__{} = state, now) do
     Enum.flat_map(state.subscriptions, fn {sub_id, sub} ->
       elapsed = now - sub.last_report_at
+      check_interval = max(sub.min_interval, 1)
 
-      if elapsed >= sub.max_interval do
+      if elapsed >= check_interval or elapsed >= sub.max_interval do
         [{sub_id, sub.paths}]
       else
         []

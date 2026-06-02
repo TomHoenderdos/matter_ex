@@ -18,15 +18,15 @@ defmodule MatterEx.Protocol.MessageCodec.ProtoHeader do
   @flag_v 0x10
 
   @type t :: %__MODULE__{
-    initiator: boolean(),
-    needs_ack: boolean(),
-    ack_counter: non_neg_integer() | nil,
-    vendor_id: non_neg_integer() | nil,
-    opcode: byte(),
-    exchange_id: non_neg_integer(),
-    protocol_id: non_neg_integer(),
-    payload: binary()
-  }
+          initiator: boolean(),
+          needs_ack: boolean(),
+          ack_counter: non_neg_integer() | nil,
+          vendor_id: non_neg_integer() | nil,
+          opcode: byte(),
+          exchange_id: non_neg_integer(),
+          protocol_id: non_neg_integer(),
+          payload: binary()
+        }
 
   defstruct initiator: false,
             needs_ack: false,
@@ -40,10 +40,10 @@ defmodule MatterEx.Protocol.MessageCodec.ProtoHeader do
   @spec encode(t()) :: iodata()
   def encode(%__MODULE__{} = ph) do
     flags =
-      (if ph.initiator, do: @flag_i, else: 0) |||
-        (if ph.ack_counter != nil, do: @flag_a, else: 0) |||
-        (if ph.needs_ack, do: @flag_r, else: 0) |||
-        (if ph.vendor_id != nil, do: @flag_v, else: 0)
+      if(ph.initiator, do: @flag_i, else: 0) |||
+        if(ph.ack_counter != nil, do: @flag_a, else: 0) |||
+        if(ph.needs_ack, do: @flag_r, else: 0) |||
+        if ph.vendor_id != nil, do: @flag_v, else: 0
 
     vendor_part = if ph.vendor_id != nil, do: <<ph.vendor_id::little-16>>, else: []
     ack_part = if ph.ack_counter != nil, do: <<ph.ack_counter::little-32>>, else: []

@@ -11,25 +11,28 @@ defmodule MatterEx.Cluster.ModeSelect do
   use MatterEx.Cluster, id: 0x0050, name: :mode_select
 
   # Description: human-readable cluster description
-  attribute 0x0000, :description, :string, default: "Mode"
+  attribute(0x0000, :description, :string, default: "Mode")
   # StandardNamespace: null or enum namespace
-  attribute 0x0001, :standard_namespace, :uint16, default: 0
+  attribute(0x0001, :standard_namespace, :uint16, default: 0)
   # SupportedModes: list of mode option structs
-  attribute 0x0002, :supported_modes, :list, default: [
-    %{label: "Normal", mode: 0, semantic_tags: []},
-    %{label: "Eco", mode: 1, semantic_tags: []},
-    %{label: "Quick", mode: 2, semantic_tags: []}
-  ]
-  # CurrentMode
-  attribute 0x0003, :current_mode, :uint8, default: 0
-  # StartUpMode (null = no change on startup)
-  attribute 0x0004, :start_up_mode, :uint8, default: 0, writable: true
-  # OnMode (null = no override)
-  attribute 0x0005, :on_mode, :uint8, default: 0, writable: true
-  attribute 0xFFFC, :feature_map, :uint32, default: 0
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 2
+  attribute(0x0002, :supported_modes, :list,
+    default: [
+      %{label: "Normal", mode: 0, semantic_tags: []},
+      %{label: "Eco", mode: 1, semantic_tags: []},
+      %{label: "Quick", mode: 2, semantic_tags: []}
+    ]
+  )
 
-  command 0x00, :change_to_mode, [new_mode: :uint8]
+  # CurrentMode
+  attribute(0x0003, :current_mode, :uint8, default: 0)
+  # StartUpMode (null = no change on startup)
+  attribute(0x0004, :start_up_mode, :uint8, default: 0, writable: true)
+  # OnMode (null = no override)
+  attribute(0x0005, :on_mode, :uint8, default: 0, writable: true)
+  attribute(0xFFFC, :feature_map, :uint32, default: 0)
+  attribute(0xFFFD, :cluster_revision, :uint16, default: 2)
+
+  command(0x00, :change_to_mode, new_mode: :uint8)
 
   @impl MatterEx.Cluster
   def handle_command(:change_to_mode, params, state) do

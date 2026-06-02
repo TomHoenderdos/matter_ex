@@ -17,29 +17,29 @@ defmodule MatterEx.ExchangeManager do
   """
 
   alias MatterEx.IM
-  alias MatterEx.Protocol.{MRP, ProtocolID}
   alias MatterEx.Protocol.MessageCodec.ProtoHeader
+  alias MatterEx.Protocol.{MRP, ProtocolID}
 
   @type action ::
-    {:reply, ProtoHeader.t()}
-    | {:schedule_mrp, non_neg_integer(), non_neg_integer(), non_neg_integer()}
-    | {:ack, non_neg_integer()}
+          {:reply, ProtoHeader.t()}
+          | {:schedule_mrp, non_neg_integer(), non_neg_integer(), non_neg_integer()}
+          | {:ack, non_neg_integer()}
 
   require Logger
 
   @type exchange :: %{
-    role: :initiator | :responder,
-    protocol: atom()
-  }
+          role: :initiator | :responder,
+          protocol: atom()
+        }
 
   @type t :: %__MODULE__{
-    handler: (atom(), struct() -> struct()) | nil,
-    exchanges: %{non_neg_integer() => exchange()},
-    mrp: MRP.t(),
-    next_exchange_id: non_neg_integer(),
-    pending_acks: [non_neg_integer()],
-    timed_exchanges: %{non_neg_integer() => integer()}
-  }
+          handler: (atom(), struct() -> struct()) | nil,
+          exchanges: %{non_neg_integer() => exchange()},
+          mrp: MRP.t(),
+          next_exchange_id: non_neg_integer(),
+          pending_acks: [non_neg_integer()],
+          timed_exchanges: %{non_neg_integer() => integer()}
+        }
 
   defstruct handler: nil,
             exchanges: %{},
@@ -99,18 +99,27 @@ defmodule MatterEx.ExchangeManager do
 
   Returns:
   - `{:retransmit, proto, state}` — resend this ProtoHeader
+  - `{:retransmit_frame, frame, exchange_id, state}` — resend the original sealed frame
   - `{:give_up, exchange_id, state}` — max retransmissions reached
   - `{:already_acked, state}` — exchange was already acknowledged
   """
   @spec handle_timeout(t(), non_neg_integer(), non_neg_integer()) ::
-    {:retransmit, ProtoHeader.t(), t()}
-    | {:give_up, non_neg_integer(), t()}
-    | {:already_acked, t()}
-  def handle_timeout(%__MODULE__{} = state, exchange_id, attempt) do
-    case MRP.on_timeout(state.mrp, exchange_id, attempt) do
-      {:retransmit, proto_binary, mrp} ->
-        proto = :erlang.binary_to_term(proto_binary)
-        {:retransmit, proto, %{state | mrp: mrp}}
+          {:retransmit, ProtoHeader.t(), t()}
+          | {:retransmit_frame, binary(), non_neg_integer(), t()}
+          | {:give_up, non_neg_integer(), t()}
+          | {:already_acked, t()}
+  def handle_timeout(%__MODULE__{} = state, message_counter, attempt) do
+    exchange_id = MRP.exchange_id(state.mrp, message_counter) || message_counter
+
+    case MRP.on_timeout(state.mrp, message_counter, attempt) do
+      {:retransmit, pending_binary, mrp} ->
+        case :erlang.binary_to_term(pending_binary) do
+          {:sealed_frame, frame, _exchange_id} ->
+            {:retransmit_frame, frame, exchange_id, %{state | mrp: mrp}}
+
+          proto ->
+            {:retransmit, proto, %{state | mrp: mrp}}
+        end
 
       {:give_up, mrp} ->
         exchanges = Map.delete(state.exchanges, exchange_id)
@@ -130,15 +139,16 @@ defmodule MatterEx.ExchangeManager do
   Returns `{proto, actions, updated_state}`.
   """
   @spec initiate(t(), non_neg_integer(), atom(), binary(), keyword()) ::
-    {ProtoHeader.t(), [action()], t()}
+          {ProtoHeader.t(), [action()], t()}
   def initiate(%__MODULE__{} = state, protocol_id, opcode_name, payload, opts \\ []) do
     exchange_id = state.next_exchange_id
     reliable = Keyword.get(opts, :reliable, true)
 
-    opcode_num = ProtocolID.opcode(
-      ProtocolID.protocol_name(protocol_id),
-      opcode_name
-    )
+    opcode_num =
+      ProtocolID.opcode(
+        ProtocolID.protocol_name(protocol_id),
+        opcode_name
+      )
 
     proto = %ProtoHeader{
       initiator: true,
@@ -150,21 +160,19 @@ defmodule MatterEx.ExchangeManager do
     }
 
     protocol = ProtocolID.protocol_name(protocol_id)
-    exchanges = Map.put(state.exchanges, exchange_id, %{
-      role: :initiator,
-      protocol: protocol
-    })
 
-    state = %{state |
-      exchanges: exchanges,
-      next_exchange_id: exchange_id + 1
-    }
+    exchanges =
+      Map.put(state.exchanges, exchange_id, %{
+        role: :initiator,
+        protocol: protocol
+      })
+
+    state = %{state | exchanges: exchanges, next_exchange_id: exchange_id + 1}
 
     {state, actions} =
       if reliable do
-        mrp = MRP.record_send(state.mrp, exchange_id, :erlang.term_to_binary(proto))
         timeout = MRP.backoff_ms(state.mrp, 0)
-        {%{state | mrp: mrp}, [{:schedule_mrp, exchange_id, 0, timeout}]}
+        {state, [{:schedule_mrp, exchange_id, 0, timeout}]}
       else
         {state, []}
       end
@@ -175,38 +183,100 @@ defmodule MatterEx.ExchangeManager do
   # ── Private: IM handling ──────────────────────────────────────────
 
   defp handle_im_message(state, proto, opcode, message_counter) do
-    # Handle piggybacked ACK if present (clears MRP retransmit for our previous message)
-    state = if proto.ack_counter do
-      case MRP.on_ack(state.mrp, proto.exchange_id) do
-        {:ok, mrp} -> %{state | mrp: mrp}
-        {:error, :not_found} -> state
-      end
-    else
-      state
+    if opcode == :status_response do
+      MatterEx.DebugTrace.record(%{
+        type: :status_response_received,
+        exchange_id: proto.exchange_id,
+        message_counter: message_counter,
+        ack_counter: proto.ack_counter,
+        status: decode_status_response_status(proto.payload)
+      })
     end
+
+    # Handle piggybacked ACK if present (clears MRP retransmit for our previous message)
+    state =
+      if proto.ack_counter do
+        case MRP.on_ack(state.mrp, proto.ack_counter) do
+          {:ok, mrp} ->
+            MatterEx.DebugTrace.record(%{
+              type: :mrp_ack,
+              source: :piggyback,
+              exchange_id: proto.exchange_id,
+              ack_counter: proto.ack_counter,
+              opcode: opcode
+            })
+
+            %{state | mrp: mrp}
+
+          {:error, :not_found} ->
+            MatterEx.DebugTrace.record(%{
+              type: :mrp_ack_not_found,
+              source: :piggyback,
+              exchange_id: proto.exchange_id,
+              ack_counter: proto.ack_counter,
+              opcode: opcode,
+              pending: Map.keys(state.mrp.pending)
+            })
+
+            state
+        end
+      else
+        state
+      end
 
     # Handle piggybacked status_response for pending chunked reports or subscribe completion
     cond do
       opcode == :status_response and Map.get(state.pending_chunks, proto.exchange_id) == :done ->
-        # Final StatusResponse after last chunk — ACK and close
+        # Final StatusResponse after last chunk. For SubscribeRequest priming reports,
+        # this is the point where the client has ACKed the complete priming ReportData
+        # sequence and is ready for SubscribeResponse.
         state = ack_and_clear_mrp(state, proto)
         state = %{state | pending_chunks: Map.delete(state.pending_chunks, proto.exchange_id)}
-        state = close_exchange(state, proto.exchange_id)
-        actions = if proto.needs_ack, do: [{:ack, build_standalone_ack(proto, message_counter)}], else: []
-        {actions, state}
+
+        if Map.has_key?(state.pending_subscribe_responses, proto.exchange_id) do
+          complete_subscribe(
+            state,
+            proto,
+            Map.fetch!(state.pending_subscribe_responses, proto.exchange_id),
+            message_counter
+          )
+        else
+          state = close_exchange(state, proto.exchange_id)
+
+          actions =
+            if proto.needs_ack, do: [{:ack, build_standalone_ack(proto, message_counter)}], else: []
+
+          {actions, state}
+        end
 
       opcode == :status_response and Map.has_key?(state.pending_chunks, proto.exchange_id) ->
         send_next_chunk(state, proto, message_counter)
 
-      opcode == :status_response and Map.has_key?(state.pending_subscribe_responses, proto.exchange_id) ->
-        complete_subscribe(state, proto, Map.fetch!(state.pending_subscribe_responses, proto.exchange_id), message_counter)
+      opcode == :status_response and
+          Map.has_key?(state.pending_subscribe_responses, proto.exchange_id) ->
+        MatterEx.DebugTrace.record(%{
+          type: :subscribe_status_received,
+          exchange_id: proto.exchange_id,
+          message_counter: message_counter,
+          ack_counter: proto.ack_counter,
+          needs_ack: proto.needs_ack
+        })
+
+        complete_subscribe(
+          state,
+          proto,
+          Map.fetch!(state.pending_subscribe_responses, proto.exchange_id),
+          message_counter
+        )
 
       true ->
         # Register exchange
-        exchanges = Map.put(state.exchanges, proto.exchange_id, %{
-          role: :responder,
-          protocol: :interaction_model
-        })
+        exchanges =
+          Map.put(state.exchanges, proto.exchange_id, %{
+            role: :responder,
+            protocol: :interaction_model
+          })
+
         state = %{state | exchanges: exchanges}
 
         handle_im_message_normal(state, proto, opcode, message_counter)
@@ -224,7 +294,12 @@ defmodule MatterEx.ExchangeManager do
             Logger.debug("suppress_response: executing #{inspect(opcode)} without IM reply")
             state.handler.(opcode, request)
             state = close_exchange(state, proto.exchange_id)
-            actions = if proto.needs_ack, do: [{:ack, build_standalone_ack(proto, message_counter)}], else: []
+
+            actions =
+              if proto.needs_ack,
+                do: [{:ack, build_standalone_ack(proto, message_counter)}],
+                else: []
+
             {actions, state}
 
           {:ok, resp_opcode_name} ->
@@ -233,14 +308,25 @@ defmodule MatterEx.ExchangeManager do
           :no_response ->
             # No response expected, just ACK if needed
             state = close_exchange(state, proto.exchange_id)
-            actions = if proto.needs_ack, do: [{:ack, build_standalone_ack(proto, message_counter)}], else: []
+
+            actions =
+              if proto.needs_ack,
+                do: [{:ack, build_standalone_ack(proto, message_counter)}],
+                else: []
+
             {actions, state}
         end
 
       {:error, reason} ->
-        Logger.debug("IM.decode failed for opcode #{inspect(opcode)}: #{inspect(reason)}, payload: #{Base.encode16(proto.payload)}")
+        Logger.debug(
+          "IM.decode failed for opcode #{inspect(opcode)}: #{inspect(reason)}, payload: #{Base.encode16(proto.payload)}"
+        )
+
         state = close_exchange(state, proto.exchange_id)
-        actions = if proto.needs_ack, do: [{:ack, build_standalone_ack(proto, message_counter)}], else: []
+
+        actions =
+          if proto.needs_ack, do: [{:ack, build_standalone_ack(proto, message_counter)}], else: []
+
         {[{:error, :decode_failed} | actions], state}
     end
   end
@@ -254,15 +340,33 @@ defmodule MatterEx.ExchangeManager do
     # Chunk ReportData if it exceeds the UDP payload limit
     case maybe_chunk_report(response, resp_opcode_name) do
       [first_chunk | remaining] when remaining != [] ->
-        dispatch_chunked(state, proto, opcode, request, resp_opcode_name, message_counter, first_chunk, remaining)
+        dispatch_chunked(
+          state,
+          proto,
+          opcode,
+          request,
+          resp_opcode_name,
+          message_counter,
+          first_chunk,
+          remaining
+        )
 
       _ ->
-        dispatch_single(state, proto, opcode, request, resp_opcode_name, message_counter, response)
+        dispatch_single(
+          state,
+          proto,
+          opcode,
+          request,
+          resp_opcode_name,
+          message_counter,
+          response
+        )
     end
   end
 
   defp maybe_chunk_report(%IM.ReportData{} = report, :report_data) do
     payload = IM.encode(report)
+
     if byte_size(payload) > @max_im_payload do
       IM.chunk_report_data(report, 4)
     else
@@ -272,11 +376,21 @@ defmodule MatterEx.ExchangeManager do
 
   defp maybe_chunk_report(response, _opcode), do: [response]
 
+  defp decode_status_response_status(payload) do
+    case IM.decode(:status_response, payload) do
+      {:ok, %IM.StatusResponse{status: status}} -> status
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp dispatch_single(state, proto, opcode, request, resp_opcode_name, message_counter, response) do
     response_payload = IM.encode(response)
 
     Logger.debug("IM response #{inspect(resp_opcode_name)}: #{inspect(response)}")
-    Logger.debug("IM response TLV (#{byte_size(response_payload)}B): #{Base.encode16(response_payload)}")
+
+    Logger.debug(
+      "IM response TLV (#{byte_size(response_payload)}B): #{Base.encode16(response_payload)}"
+    )
 
     resp_opcode_num = ProtocolID.opcode(:interaction_model, resp_opcode_name)
 
@@ -290,10 +404,18 @@ defmodule MatterEx.ExchangeManager do
       payload: response_payload
     }
 
-    # Record in MRP for reliability
-    mrp = MRP.record_send(state.mrp, proto.exchange_id, :erlang.term_to_binary(reply_proto))
     timeout = MRP.backoff_ms(state.mrp, 0, deterministic: true)
-    state = %{state | mrp: mrp}
+
+    if opcode == :subscribe_request do
+      MatterEx.DebugTrace.record(%{
+        type: :subscribe_priming_sent,
+        exchange_id: proto.exchange_id,
+        ack_counter: message_counter,
+        response_opcode: resp_opcode_name,
+        payload_size: byte_size(response_payload),
+        needs_ack: true
+      })
+    end
 
     # For timed requests / subscribe, keep exchange open
     state =
@@ -313,10 +435,21 @@ defmodule MatterEx.ExchangeManager do
     {[{:reply, reply_proto}, {:schedule_mrp, proto.exchange_id, 0, timeout}], state}
   end
 
-  defp dispatch_chunked(state, proto, _opcode, _request, resp_opcode_name, message_counter, first_chunk, remaining) do
+  defp dispatch_chunked(
+         state,
+         proto,
+         _opcode,
+         _request,
+         resp_opcode_name,
+         message_counter,
+         first_chunk,
+         remaining
+       ) do
     response_payload = IM.encode(first_chunk)
 
-    Logger.debug("IM chunked response (chunk 1/#{1 + length(remaining)}): #{byte_size(response_payload)}B")
+    Logger.debug(
+      "IM chunked response (chunk 1/#{1 + length(remaining)}): #{byte_size(response_payload)}B"
+    )
 
     resp_opcode_num = ProtocolID.opcode(:interaction_model, resp_opcode_name)
 
@@ -330,9 +463,7 @@ defmodule MatterEx.ExchangeManager do
       payload: response_payload
     }
 
-    mrp = MRP.record_send(state.mrp, proto.exchange_id, :erlang.term_to_binary(reply_proto))
     timeout = MRP.backoff_ms(state.mrp, 0, deterministic: true)
-    state = %{state | mrp: mrp}
 
     # Store remaining chunks — exchange stays open until all chunks are sent
     state = %{state | pending_chunks: Map.put(state.pending_chunks, proto.exchange_id, remaining)}
@@ -341,14 +472,15 @@ defmodule MatterEx.ExchangeManager do
   end
 
   defp send_next_chunk(state, proto, message_counter) do
-    state = if proto.ack_counter do
-      case MRP.on_ack(state.mrp, proto.exchange_id) do
-        {:ok, mrp} -> %{state | mrp: mrp}
-        {:error, :not_found} -> state
+    state =
+      if proto.ack_counter do
+        case MRP.on_ack(state.mrp, proto.ack_counter) do
+          {:ok, mrp} -> %{state | mrp: mrp}
+          {:error, :not_found} -> state
+        end
+      else
+        state
       end
-    else
-      state
-    end
 
     [next_chunk | remaining] = Map.fetch!(state.pending_chunks, proto.exchange_id)
     chunk_num = if remaining == [], do: "last", else: "#{length(remaining)} remaining"
@@ -368,17 +500,16 @@ defmodule MatterEx.ExchangeManager do
       payload: response_payload
     }
 
-    mrp = MRP.record_send(state.mrp, proto.exchange_id, :erlang.term_to_binary(reply_proto))
     timeout = MRP.backoff_ms(state.mrp, 0, deterministic: true)
-    state = %{state | mrp: mrp}
 
     # When remaining is empty, keep a :done marker so the final StatusResponse
     # from the client gets properly ACKed before closing the exchange
-    state = if remaining == [] do
-      %{state | pending_chunks: Map.put(state.pending_chunks, proto.exchange_id, :done)}
-    else
-      %{state | pending_chunks: Map.put(state.pending_chunks, proto.exchange_id, remaining)}
-    end
+    state =
+      if remaining == [] do
+        %{state | pending_chunks: Map.put(state.pending_chunks, proto.exchange_id, :done)}
+      else
+        %{state | pending_chunks: Map.put(state.pending_chunks, proto.exchange_id, remaining)}
+      end
 
     {[{:reply, reply_proto}, {:schedule_mrp, proto.exchange_id, 0, timeout}], state}
   end
@@ -386,7 +517,18 @@ defmodule MatterEx.ExchangeManager do
   # ── Private: Subscribe completion (phase 2) ────────────────────────
 
   defp complete_subscribe(state, proto, sub_payload, message_counter) do
-    Logger.debug("IM subscribe: sending SubscribeResponse (completing subscribe on exchange #{proto.exchange_id})")
+    Logger.debug(
+      "IM subscribe: sending SubscribeResponse (completing subscribe on exchange #{proto.exchange_id})"
+    )
+
+    MatterEx.DebugTrace.record(%{
+      type: :subscribe_response_sent,
+      exchange_id: proto.exchange_id,
+      ack_counter: message_counter,
+      request_ack_counter: proto.ack_counter,
+      payload_size: byte_size(sub_payload),
+      needs_ack: true
+    })
 
     resp_opcode_num = ProtocolID.opcode(:interaction_model, :subscribe_response)
 
@@ -400,13 +542,14 @@ defmodule MatterEx.ExchangeManager do
       payload: sub_payload
     }
 
-    mrp = MRP.record_send(state.mrp, proto.exchange_id, :erlang.term_to_binary(reply_proto))
     timeout = MRP.backoff_ms(state.mrp, 0, deterministic: true)
 
-    state = %{state |
-      mrp: mrp,
-      pending_subscribe_responses: Map.delete(state.pending_subscribe_responses, proto.exchange_id)
+    state = %{
+      state
+      | pending_subscribe_responses:
+          Map.delete(state.pending_subscribe_responses, proto.exchange_id)
     }
+
     state = close_exchange(state, proto.exchange_id)
 
     {[{:reply, reply_proto}, {:schedule_mrp, proto.exchange_id, 0, timeout}], state}
@@ -415,19 +558,37 @@ defmodule MatterEx.ExchangeManager do
   # ── Private: Standalone ACK ───────────────────────────────────────
 
   defp handle_standalone_ack(state, proto) do
-    case MRP.on_ack(state.mrp, proto.exchange_id) do
+    ack_counter = proto.ack_counter || proto.exchange_id
+    exchange_id = MRP.exchange_id(state.mrp, ack_counter) || proto.exchange_id
+
+    case MRP.on_ack(state.mrp, ack_counter) do
       {:ok, mrp} ->
-        exchanges = Map.delete(state.exchanges, proto.exchange_id)
+        MatterEx.DebugTrace.record(%{
+          type: :mrp_ack,
+          source: :standalone,
+          exchange_id: exchange_id,
+          ack_counter: ack_counter
+        })
+
+        exchanges = Map.delete(state.exchanges, exchange_id)
         {[], %{state | mrp: mrp, exchanges: exchanges}}
 
       {:error, :not_found} ->
+        MatterEx.DebugTrace.record(%{
+          type: :mrp_ack_not_found,
+          source: :standalone,
+          exchange_id: exchange_id,
+          ack_counter: ack_counter,
+          pending: Map.keys(state.mrp.pending)
+        })
+
         {[], state}
     end
   end
 
   defp ack_and_clear_mrp(state, proto) do
     if proto.ack_counter do
-      case MRP.on_ack(state.mrp, proto.exchange_id) do
+      case MRP.on_ack(state.mrp, proto.ack_counter) do
         {:ok, mrp} -> %{state | mrp: mrp}
         {:error, :not_found} -> state
       end
@@ -439,9 +600,10 @@ defmodule MatterEx.ExchangeManager do
   # ── Private: Exchange lifecycle ───────────────────────────────────
 
   defp close_exchange(state, exchange_id) do
-    %{state |
-      exchanges: Map.delete(state.exchanges, exchange_id),
-      timed_exchanges: Map.delete(state.timed_exchanges, exchange_id)
+    %{
+      state
+      | exchanges: Map.delete(state.exchanges, exchange_id),
+        timed_exchanges: Map.delete(state.timed_exchanges, exchange_id)
     }
   end
 

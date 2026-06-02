@@ -13,10 +13,10 @@ defmodule MatterEx.Protocol.StatusReport do
   defstruct general_code: 0, protocol_id: 0, protocol_code: 0
 
   @type t :: %__MODULE__{
-    general_code: non_neg_integer(),
-    protocol_id: non_neg_integer(),
-    protocol_code: non_neg_integer()
-  }
+          general_code: non_neg_integer(),
+          protocol_id: non_neg_integer(),
+          protocol_code: non_neg_integer()
+        }
 
   # General status codes
   @success 0
@@ -41,8 +41,7 @@ defmodule MatterEx.Protocol.StatusReport do
   """
   @spec encode(t()) :: binary()
   def encode(%__MODULE__{} = sr) do
-    <<sr.general_code::unsigned-little-16,
-      sr.protocol_id::unsigned-little-32,
+    <<sr.general_code::unsigned-little-16, sr.protocol_id::unsigned-little-32,
       sr.protocol_code::unsigned-little-16>>
   end
 
@@ -50,12 +49,16 @@ defmodule MatterEx.Protocol.StatusReport do
   Decode a StatusReport from binary.
   """
   @spec decode(binary()) :: {:ok, t()} | {:error, :invalid_status_report}
-  def decode(<<general::unsigned-little-16, protocol_id::unsigned-little-32, protocol_code::unsigned-little-16, _rest::binary>>) do
-    {:ok, %__MODULE__{
-      general_code: general,
-      protocol_id: protocol_id,
-      protocol_code: protocol_code
-    }}
+  def decode(
+        <<general::unsigned-little-16, protocol_id::unsigned-little-32,
+          protocol_code::unsigned-little-16, _rest::binary>>
+      ) do
+    {:ok,
+     %__MODULE__{
+       general_code: general,
+       protocol_id: protocol_id,
+       protocol_code: protocol_code
+     }}
   end
 
   def decode(_), do: {:error, :invalid_status_report}
