@@ -3,7 +3,8 @@ defmodule MatterEx.Cluster.TemperatureMeasurement do
   Matter Temperature Measurement cluster (0x0402).
 
   Read-only sensor cluster. Values in 0.01°C units (e.g. 2000 = 20.00°C).
-  Update measured_value externally via GenServer.call(pid, {:write_attribute, ...}).
+  Firmware can update measured_value with `Device.update_attribute/4`; Matter
+  controllers still see it as read-only.
   """
 
   use MatterEx.Cluster, id: 0x0402, name: :temperature_measurement

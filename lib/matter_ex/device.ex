@@ -174,6 +174,13 @@ defmodule MatterEx.Device do
         end
       end
 
+      def update_attribute(endpoint_id, cluster_name, attr_name, value) do
+        case __process_name__(endpoint_id, cluster_name) do
+          nil -> {:error, :unsupported_cluster}
+          name -> GenServer.call(name, {:update_attribute, attr_name, value})
+        end
+      end
+
       def invoke_command(endpoint_id, cluster_name, cmd_name, params \\ %{}) do
         case __process_name__(endpoint_id, cluster_name) do
           nil -> {:error, :unsupported_cluster}

@@ -120,7 +120,7 @@ defmodule NetTest.BLEAdapter do
         BlueHeron.HCI.Command.LEController.SetRandomAddress.new(random_address: random_address)
       )
       |> case do
-        {:ok, %BlueHeron.HCI.Event.CommandComplete{return_parameters: %{status: 0}}} -> :ok
+        {:ok, %{return_parameters: %{status: 0}}} -> :ok
         other -> other
       end
 

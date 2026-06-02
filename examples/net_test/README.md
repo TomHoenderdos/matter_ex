@@ -1,12 +1,18 @@
 # MatterEx Net Test
 
-Nerves example app for running a MatterEx dimmable light on a Raspberry Pi 4.
-It is intended for commissioning and controller interop testing with chip-tool
-and Apple Home.
+Nerves example app for running a MatterEx dimmable light and several fake
+sensors on a Raspberry Pi 4. It is intended for commissioning and controller
+interop testing with chip-tool and Apple Home.
 
 ## What It Runs
 
 - A Matter light device with OnOff and LevelControl clusters on endpoint 1.
+- A fake TemperatureMeasurement sensor on endpoint 2, updated every 5 seconds.
+- A fake RelativeHumidityMeasurement sensor on endpoint 3, updated every 5 seconds.
+- A fake IlluminanceMeasurement sensor on endpoint 4.
+- A fake OccupancySensing sensor on endpoint 5.
+- A fake BooleanState contact sensor on endpoint 6.
+- A fake AirQuality sensor on endpoint 7.
 - BLE commissioning advertisements for phone/controller setup.
 - IP operational discovery over mDNS after commissioning.
 - Broadcom Bluetooth firmware loading for Raspberry Pi boards.
@@ -39,6 +45,22 @@ ssh root@192.168.0.40 'IO.inspect(MatterEx.Commissioning.commissioned?())'
 ssh root@192.168.0.40 'MatterEx.DebugTrace.dump() |> Enum.each(&IO.inspect/1)'
 ssh root@192.168.0.40 'MatterEx.DebugTrace.clear(); IO.puts(:cleared)'
 ```
+
+Read the fake sensor from chip-tool after commissioning:
+
+```sh
+chip-tool temperaturemeasurement read measured-value 124 2
+chip-tool temperaturemeasurement subscribe measured-value 1 10 124 2
+chip-tool relativehumiditymeasurement read measured-value 124 3
+chip-tool relativehumiditymeasurement subscribe measured-value 1 10 124 3
+chip-tool illuminancemeasurement read measured-value 124 4
+chip-tool occupancysensing read occupancy 124 5
+chip-tool booleanstate read state-value 124 6
+chip-tool airquality read air-quality 124 7
+```
+
+Temperature is centidegrees Celsius, so `2125` means 21.25 C. Humidity is
+hundredths of a percent, so `4650` means 46.50% RH.
 
 ## Notes
 

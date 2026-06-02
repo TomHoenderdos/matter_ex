@@ -29,6 +29,7 @@ defmodule NetTest.Application do
     children =
       [
         NetTest.Device,
+        NetTest.FakeSensor,
         {MatterEx.MDNS, [name: MatterEx.MDNS] ++ mdns_interface_opts()},
         {MatterEx.Node,
          name: MatterEx.Node,
@@ -73,6 +74,13 @@ defmodule NetTest.Application do
     ========================================
      NetTest - Matter Smart Light
     ========================================
+     Endpoint 1: dimmable light
+     Endpoint 2: fake temperature sensor
+     Endpoint 3: fake humidity sensor
+     Endpoint 4: fake illuminance sensor
+     Endpoint 5: fake occupancy sensor
+     Endpoint 6: fake contact sensor
+     Endpoint 7: fake air quality sensor
      QR Code Payload: #{qr_payload}
      Manual Code:     #{manual_code}
     ========================================

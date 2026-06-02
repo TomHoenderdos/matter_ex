@@ -26,6 +26,7 @@ defmodule MatterEx.DeviceTypes do
   @on_off 0x0006
   @level_control 0x0008
   @color_control 0x0300
+  @illuminance_measurement 0x0400
   @thermostat 0x0201
   @fan_control 0x0202
   @door_lock 0x0101
@@ -155,6 +156,13 @@ defmodule MatterEx.DeviceTypes do
       name: :contact_sensor,
       revision: 1,
       required_clusters: [@descriptor, @identify, @boolean_state],
+      optional_clusters: []
+    },
+    # Light Sensor
+    0x0106 => %{
+      name: :light_sensor,
+      revision: 2,
+      required_clusters: [@descriptor, @identify, @illuminance_measurement],
       optional_clusters: []
     },
     # Door Lock

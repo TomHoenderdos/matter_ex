@@ -163,6 +163,25 @@ defmodule MatterEx.Cluster do
         end
       end
 
+      def handle_call({:update_attribute, name, value}, _from, state) do
+        attr = Enum.find(attribute_defs(), &(&1.name == name))
+
+        cond do
+          attr == nil ->
+            {:reply, {:error, :unsupported_attribute}, state}
+
+          true ->
+            case MatterEx.Cluster.validate_constraint(attr, value) do
+              :ok ->
+                state = state |> Map.put(name, value) |> bump_data_version()
+                {:reply, :ok, state}
+
+              {:error, reason} ->
+                {:reply, {:error, reason}, state}
+            end
+        end
+      end
+
       def handle_call({:invoke_command, name, params, context}, from, state) do
         # Merge session context into params so clusters can access it
         params = Map.put(params, :_context, context)

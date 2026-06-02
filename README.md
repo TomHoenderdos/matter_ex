@@ -33,7 +33,7 @@ Add MatterEx to your dependencies:
 ```elixir
 def deps do
   [
-    {:matter_ex, "~> 0.3.0"}
+    {:matter_ex, "~> 0.3.1"}
   ]
 end
 ```
@@ -169,8 +169,8 @@ defmodule MyApp.ButtonWatcher do
     pressed = MyApp.GPIO.read_pin(4) == :high
 
     if pressed != state.last_state do
-      # Update OnOff on endpoint 1 — any subscribed controller gets notified
-      MyApp.Light.write_attribute(1, :on_off, :on_off, pressed)
+      # Update OnOff on endpoint 1; subscribed controllers get notified.
+      MyApp.Light.update_attribute(1, :on_off, :on_off, pressed)
     end
 
     {:noreply, %{state | last_state: pressed}}
@@ -210,7 +210,7 @@ defmodule MyApp.TempPoller do
   def handle_info(:read_sensor, state) do
     # Matter temperatures are in 0.01 C units (e.g., 2350 = 23.50 C)
     temp = MyApp.I2C.read_temperature() |> round()
-    MyApp.Sensor.write_attribute(1, :temperature_measurement, :measured_value, temp)
+    MyApp.Sensor.update_attribute(1, :temperature_measurement, :measured_value, temp)
     {:noreply, state}
   end
 end
@@ -221,8 +221,14 @@ The Device API for reading and writing from Elixir:
 ```elixir
 MyApp.Light.read_attribute(1, :on_off, :on_off)        # {:ok, true}
 MyApp.Light.write_attribute(1, :on_off, :on_off, false) # :ok
+MyApp.Light.update_attribute(1, :on_off, :on_off, true) # :ok
 MyApp.Light.invoke_command(1, :on_off, :toggle)         # {:ok, nil}
 ```
+
+Use `update_attribute/4` for local device state changes, including read-only Matter
+attributes such as sensor measurements. Use `write_attribute/4` when you want to
+apply the same writable-attribute rules that a Matter controller write request
+would use.
 
 ## Architecture
 

@@ -10,10 +10,24 @@ defmodule MatterEx.DeviceTest.TestLight do
   end
 end
 
+defmodule MatterEx.DeviceTest.TestSensor do
+  use MatterEx.Device,
+    vendor_name: "TestCo",
+    product_name: "TestSensor",
+    vendor_id: 0xFFF1,
+    product_id: 0x8002
+
+  endpoint 1, device_type: 0x0302 do
+    cluster(MatterEx.Cluster.Identify)
+    cluster(MatterEx.Cluster.TemperatureMeasurement)
+  end
+end
+
 defmodule MatterEx.DeviceTest do
   use ExUnit.Case
 
   alias MatterEx.DeviceTest.TestLight
+  alias MatterEx.DeviceTest.TestSensor
   alias MatterEx.IM
   alias MatterEx.IM.Router
   alias MatterEx.IM.Status
@@ -67,6 +81,29 @@ defmodule MatterEx.DeviceTest do
     test "read from unknown cluster" do
       assert {:error, :unsupported_cluster} =
                TestLight.read_attribute(1, :bogus_cluster, :something)
+    end
+  end
+
+  describe "internal sensor updates" do
+    setup do
+      start_supervised!(TestSensor)
+      :ok
+    end
+
+    test "update_attribute changes read-only sensor values" do
+      assert {:ok, 2000} =
+               TestSensor.read_attribute(1, :temperature_measurement, :measured_value)
+
+      assert :ok =
+               TestSensor.update_attribute(1, :temperature_measurement, :measured_value, 2150)
+
+      assert {:ok, 2150} =
+               TestSensor.read_attribute(1, :temperature_measurement, :measured_value)
+    end
+
+    test "write_attribute still rejects controller writes to read-only sensor values" do
+      assert {:error, :unsupported_write} =
+               TestSensor.write_attribute(1, :temperature_measurement, :measured_value, 2200)
     end
   end
 
