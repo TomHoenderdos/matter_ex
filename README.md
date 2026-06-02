@@ -10,22 +10,33 @@ MatterEx implements the Matter application protocol from the ground up — TLV e
 secure sessions (PASE and CASE), the Interaction Model, mDNS discovery, and 60 clusters —
 with zero external dependencies beyond OTP. It interoperates with
 [chip-tool](https://github.com/project-chip/connectedhomeip/tree/master/examples/chip-tool),
-the Matter reference controller, across 28 end-to-end integration tests covering
-commissioning, read/write/invoke, subscriptions, and wildcard reads.
+the Matter reference controller, and Apple Home on iOS/macOS developer mode. The
+test suite covers commissioning, read/write/invoke, subscriptions, wildcard reads,
+and Apple-style chunked wildcard subscriptions.
 
-> **Status**: Experimental. The protocol core works and passes chip-tool interop, but
-> this is not yet production-ready. APIs may change.
+> **Status**: Experimental. The protocol core works with chip-tool and Apple Home
+> interop flows, but this is not yet production-ready. APIs may change.
 
 ## Features
 
 - **Pure Elixir** — no C/C++ dependencies; all protocol logic in Elixir
 - **Zero external deps** — only OTP's `:crypto` and `:public_key`
-- **chip-tool interop** — commission, establish CASE sessions, read/write attributes, invoke commands, subscribe
+- **Controller interop** — commission with chip-tool and Apple Home, establish CASE sessions, read/write attributes, invoke commands, subscribe
 - **Pure functional core** — PASE, CASE, and MessageHandler are stateless; GenServers are thin wrappers
 - **1000+ unit tests** and 28 chip-tool integration tests
 - **60 cluster implementations** covering lighting, HVAC, sensors, locks, media, and more
 
 ## Quick Start
+
+Add MatterEx to your dependencies:
+
+```elixir
+def deps do
+  [
+    {:matter_ex, "~> 0.3.0"}
+  ]
+end
+```
 
 ```elixir
 # Define a device
@@ -59,6 +70,23 @@ The node will advertise via mDNS and accept commissioning from any Matter contro
 
 Endpoint 0 is auto-generated with Descriptor, BasicInformation, GeneralCommissioning,
 OperationalCredentials, AccessControl, NetworkCommissioning, and GroupKeyManagement.
+
+## Hardware Example
+
+`examples/net_test/` is a Nerves Raspberry Pi 4 example that exposes a dimmable
+Matter light over IP, with BLE commissioning support. It includes Broadcom HCD
+firmware loading, mDNS operational discovery, and the QR payload used for phone
+commissioning tests.
+
+```sh
+cd examples/net_test
+MIX_TARGET=rpi4 mix deps.get
+MIX_TARGET=rpi4 mix firmware
+MIX_TARGET=rpi4 mix upload 192.168.0.40
+```
+
+After boot, scan the generated setup QR with Apple Home or use chip-tool. The
+example is intended for development and interop testing, not production devices.
 
 ## Automated Smoke Testing
 
@@ -280,6 +308,10 @@ mix run test_chip_tool.exs
 The integration test commissions a device, then runs 28 steps: OnOff toggle/on/off,
 BasicInformation reads, Descriptor validation, ACL reads, Identify invoke, Groups,
 Scenes, timed interactions, wildcard reads, error paths, and subscriptions.
+
+Apple Home compatibility is covered by regression tests for wildcard subscriptions,
+chunked ReportData, SubscribeResponse completion, operational mDNS transition, ACL
+writes, and fabric cleanup.
 
 Re-run only previously failed tests:
 
