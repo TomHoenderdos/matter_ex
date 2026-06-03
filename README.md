@@ -250,7 +250,7 @@ The Device API for reading and writing from Elixir:
 MyApp.Light.read_attribute(:light, :on_off)        # {:ok, true}
 MyApp.Light.write_attribute(:light, :on_off, false) # :ok
 MyApp.Light.update_attribute(:light, :on_off, true) # :ok
-MyApp.Light.invoke(:light, :toggle)                 # {:ok, nil}
+MyApp.Light.invoke(:light, :toggle)                 # {:ok, false}
 ```
 
 Use `update_attribute/3` or `update_attribute/4` for local device state changes,

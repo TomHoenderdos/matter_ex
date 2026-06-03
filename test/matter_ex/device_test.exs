@@ -101,7 +101,7 @@ defmodule MatterEx.DeviceTest do
     end
 
     test "invoke_command" do
-      assert {:ok, nil} = TestLight.invoke_command(1, :on_off, :on, %{})
+      assert {:ok, true} = TestLight.invoke_command(1, :on_off, :on, %{})
       assert {:ok, true} = TestLight.read_attribute(1, :on_off, :on_off)
     end
 
@@ -148,7 +148,7 @@ defmodule MatterEx.DeviceTest do
       assert {:ok, false} = FriendlyDevice.read_attribute(:light, :on_off, :on_off)
       assert :ok = FriendlyDevice.write_attribute(:light, :on_off, :on_off, true)
       assert {:ok, true} = FriendlyDevice.read_attribute(:light, :on_off, :on_off)
-      assert {:ok, nil} = FriendlyDevice.invoke_command(:light, :on_off, :toggle)
+      assert {:ok, false} = FriendlyDevice.invoke_command(:light, :on_off, :toggle)
       assert {:ok, false} = FriendlyDevice.read_attribute(:light, :on_off, :on_off)
     end
 
@@ -164,7 +164,7 @@ defmodule MatterEx.DeviceTest do
     end
 
     test "shortcut command calls resolve unambiguous commands" do
-      assert {:ok, nil} = FriendlyDevice.invoke(:light, :on)
+      assert {:ok, true} = FriendlyDevice.invoke(:light, :on)
       assert {:ok, true} = FriendlyDevice.read_attribute(:light, :on_off)
     end
 
@@ -233,7 +233,7 @@ defmodule MatterEx.DeviceTest do
 
     test "auto-composed endpoint works with shortcut calls" do
       assert {:ok, false} = PresetDevice.read_attribute(:light, :on_off)
-      assert {:ok, nil} = PresetDevice.invoke(:light, :on)
+      assert {:ok, true} = PresetDevice.invoke(:light, :on)
       assert {:ok, true} = PresetDevice.read_attribute(:light, :on_off)
     end
   end

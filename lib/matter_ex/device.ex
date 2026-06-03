@@ -259,7 +259,9 @@ defmodule MatterEx.Device do
       def invoke_command(endpoint_id, cluster_name, cmd_name, params \\ %{}) do
         with {:ok, endpoint_id} <- resolve_endpoint(endpoint_id),
              {:ok, name} <- resolve_process(endpoint_id, cluster_name) do
-          GenServer.call(name, {:invoke_command, cmd_name, params})
+          name
+          |> GenServer.call({:invoke_command, cmd_name, params})
+          |> command_result_with_status(name, cluster_name)
         end
       end
 
@@ -267,9 +269,21 @@ defmodule MatterEx.Device do
         with {:ok, endpoint_id} <- resolve_endpoint(endpoint_id),
              {:ok, cluster_name} <- resolve_command_cluster(endpoint_id, cmd_name),
              {:ok, name} <- resolve_process(endpoint_id, cluster_name) do
-          GenServer.call(name, {:invoke_command, cmd_name, params})
+          name
+          |> GenServer.call({:invoke_command, cmd_name, params})
+          |> command_result_with_status(name, cluster_name)
         end
       end
+
+      defp command_result_with_status({:ok, nil}, process_name, cluster_name) do
+        case GenServer.call(process_name, {:read_attribute, cluster_name}) do
+          {:ok, value} -> {:ok, value}
+          {:error, :unsupported_attribute} -> {:ok, nil}
+          {:error, _reason} -> {:ok, nil}
+        end
+      end
+
+      defp command_result_with_status(result, _process_name, _cluster_name), do: result
 
       def endpoints do
         unquote(Macro.escape(endpoint_alias_lookup))
