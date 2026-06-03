@@ -244,7 +244,9 @@ defmodule MatterEx.ExchangeManager do
           state = close_exchange(state, proto.exchange_id)
 
           actions =
-            if proto.needs_ack, do: [{:ack, build_standalone_ack(proto, message_counter)}], else: []
+            if proto.needs_ack,
+              do: [{:ack, build_standalone_ack(proto, message_counter)}],
+              else: []
 
           {actions, state}
         end

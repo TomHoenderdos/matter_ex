@@ -56,6 +56,30 @@ defmodule MatterEx.DeviceTypesTest do
     end
   end
 
+  describe "known_device_types/0" do
+    test "returns sorted device type names and IDs" do
+      device_types = DeviceTypes.known_device_types()
+
+      assert Keyword.keyword?(device_types)
+      assert device_types == Enum.sort_by(device_types, &elem(&1, 0))
+      assert device_types[:on_off_light] == 0x0100
+      assert device_types[:root_node] == 0x0016
+      assert length(device_types) == length(DeviceTypes.list())
+    end
+  end
+
+  describe "id_for_name/1" do
+    test "returns ID for known device type name" do
+      assert DeviceTypes.id_for_name(:on_off_light) == 0x0100
+      assert DeviceTypes.id_for_name(:door_lock) == 0x000A
+      assert DeviceTypes.id_for_name(:thermostat) == 0x0301
+    end
+
+    test "returns nil for unknown device type name" do
+      assert DeviceTypes.id_for_name(:unknown_device_type) == nil
+    end
+  end
+
   describe "name/1" do
     test "returns name for known device type" do
       assert DeviceTypes.name(0x0100) == :on_off_light

@@ -1,7 +1,7 @@
-defmodule NetTest.MixProject do
+defmodule MatterExample.MixProject do
   use Mix.Project
 
-  @app :net_test
+  @app :matter_example
   @version "0.1.0"
   @all_targets [
     :bbb,
@@ -36,7 +36,7 @@ defmodule NetTest.MixProject do
   def application do
     [
       extra_applications: [:logger, :runtime_tools],
-      mod: {NetTest.Application, []}
+      mod: {MatterExample.Application, []}
     ]
   end
 
@@ -68,7 +68,10 @@ defmodule NetTest.MixProject do
 
       # BLE (UART transport for onboard Bluetooth)
       {:blue_heron,
-       path: "/Users/tomhoenderdos/Projects/blue_heron", targets: @all_targets, runtime: false},
+       git: "https://github.com/TomHoenderdos/blue_heron.git",
+       branch: "rpi-zero-2w-bluetooth-support",
+       targets: @all_targets,
+       runtime: false},
 
       # Dependencies for specific targets
       # NOTE: It's generally low risk and recommended to follow minor version

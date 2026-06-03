@@ -272,6 +272,8 @@ defmodule MatterEx.DeviceTypes do
     }
   }
 
+  @device_type_ids_by_name for {id, dt} <- @device_types, into: %{}, do: {dt.name, id}
+
   @doc "Get device type definition by ID."
   @spec get(non_neg_integer()) :: device_type() | nil
   def get(device_type_id) do
@@ -284,6 +286,23 @@ defmodule MatterEx.DeviceTypes do
   @doc "List all known device type IDs."
   @spec list() :: [non_neg_integer()]
   def list, do: Map.keys(@device_types)
+
+  @doc """
+  Returns the built-in device type names accepted by the Device DSL.
+
+  The returned keyword list is sorted by device type name and maps each friendly
+  DSL name to its Matter device type ID.
+  """
+  @spec known_device_types() :: [{atom(), non_neg_integer()}]
+  def known_device_types do
+    @device_type_ids_by_name
+    |> Map.to_list()
+    |> Enum.sort_by(&elem(&1, 0))
+  end
+
+  @doc "Get device type ID by name."
+  @spec id_for_name(atom()) :: non_neg_integer() | nil
+  def id_for_name(device_type_name), do: Map.get(@device_type_ids_by_name, device_type_name)
 
   @doc "Get device type name by ID."
   @spec name(non_neg_integer()) :: atom() | nil

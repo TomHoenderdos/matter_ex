@@ -249,6 +249,18 @@ defmodule MatterEx.MDNSTest do
       assert "_L3840._sub._matterc._udp.local" in subtypes
     end
 
+    test "commissioning_service accepts known vendor and product aliases" do
+      config =
+        MDNS.commissioning_service(
+          port: 5540,
+          discriminator: 3840,
+          vendor: :test,
+          product: :matter_example
+        )
+
+      assert "VP=65521+32768" in config[:txt]
+    end
+
     test "subtype PTR query matches service", %{mdns: mdns, client: client, port: port} do
       advertise_test_service(mdns,
         subtypes: ["_S15._sub._matterc._udp.local", "_L3840._sub._matterc._udp.local"]
@@ -466,7 +478,11 @@ defmodule MatterEx.MDNSTest do
         ])
 
       assert Enum.any?(response.answers, &(&1.type == :a and &1.data == @test_address))
-      assert Enum.any?(response.answers, &(&1.type == :aaaa and &1.data == DNS.encode_rdata(:aaaa, ipv6)))
+
+      assert Enum.any?(
+               response.answers,
+               &(&1.type == :aaaa and &1.data == DNS.encode_rdata(:aaaa, ipv6))
+             )
 
       :gen_udp.close(client)
     end

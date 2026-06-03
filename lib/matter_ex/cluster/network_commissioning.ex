@@ -22,20 +22,23 @@ defmodule MatterEx.Cluster.NetworkCommissioning do
 
   command(0x00, :scan_networks, [ssid: :bytes, breadcrumb: :uint64], response_id: 0x01)
 
-  command(0x02, :add_or_update_wifi_network,
+  command(
+    0x02,
+    :add_or_update_wifi_network,
     [ssid: :bytes, credentials: :bytes, breadcrumb: :uint64],
     response_id: 0x05
   )
 
-  command(0x03, :add_or_update_thread_network,
-    [operational_dataset: :bytes, breadcrumb: :uint64],
+  command(0x03, :add_or_update_thread_network, [operational_dataset: :bytes, breadcrumb: :uint64],
     response_id: 0x05
   )
 
   command(0x04, :remove_network, [network_id: :bytes, breadcrumb: :uint64], response_id: 0x05)
   command(0x06, :connect_network, [network_id: :bytes, breadcrumb: :uint64], response_id: 0x07)
 
-  command(0x08, :reorder_network,
+  command(
+    0x08,
+    :reorder_network,
     [network_id: :bytes, network_index: :uint8, breadcrumb: :uint64],
     response_id: 0x05
   )

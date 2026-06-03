@@ -462,8 +462,7 @@ defmodule MatterEx.CASE do
       |> Enum.map(&Bitwise.bor(0xFFFFFFFD00000000, &1))
 
     [peer_node_id | cat_subjects]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.reject(&(&1 == 0))
+    |> Enum.reject(&(is_nil(&1) or &1 == 0))
     |> Enum.uniq()
   end
 end

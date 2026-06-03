@@ -33,7 +33,7 @@ Add MatterEx to your dependencies:
 ```elixir
 def deps do
   [
-    {:matter_ex, "~> 0.3.1"}
+    {:matter_ex, "~> 0.4.0"}
   ]
 end
 ```
@@ -42,15 +42,10 @@ end
 # Define a device
 defmodule MyApp.Light do
   use MatterEx.Device,
-    vendor_name: "Acme",
-    product_name: "Smart Light",
-    vendor_id: 0xFFF1,
-    product_id: 0x8001
+    vendor: :test,
+    product: :smart_light
 
-  endpoint 1, device_type: 0x0100 do
-    cluster MatterEx.Cluster.OnOff
-    cluster MatterEx.Cluster.LevelControl
-  end
+  endpoint :light, :dimmable_light
 end
 ```
 
@@ -82,7 +77,7 @@ commissioning tests.
 cd examples/net_test
 MIX_TARGET=rpi4 mix deps.get
 MIX_TARGET=rpi4 mix firmware
-MIX_TARGET=rpi4 mix upload 192.168.0.40
+MIX_TARGET=rpi4 mix upload
 ```
 
 After boot, scan the generated setup QR with Apple Home or use chip-tool. The
@@ -114,14 +109,11 @@ bridge Matter to your actual hardware or application logic:
 
 ```elixir
 defmodule MyApp.Cluster.OnOff do
-  use MatterEx.Cluster, id: 0x0006, name: :on_off
+  use MatterEx.Cluster, :on_off
 
-  attribute 0x0000, :on_off, :boolean, default: false, writable: true
-  attribute 0xFFFD, :cluster_revision, :uint16, default: 4
-
-  command 0x00, :off, []
-  command 0x01, :on, []
-  command 0x02, :toggle, []
+  command :on
+  command :off
+  command :toggle
 
   @impl MatterEx.Cluster
   def handle_command(:on, _params, state) do
@@ -146,6 +138,46 @@ end
 Writable attributes (like `node_label`) can also be changed directly by controllers
 via Matter write requests — the cluster GenServer handles this automatically.
 
+Known cluster names can be listed from IEx:
+
+```elixir
+MatterEx.Cluster.known_clusters()
+```
+
+For example, `:on_off`, `:basic_information`, `:temperature_measurement`, and
+`:door_lock` can be used directly with `use MatterEx.Cluster, name`.
+Named built-in clusters infer their standard attributes automatically. Declare an
+attribute only when you need to override defaults, writability, constraints, or
+add a custom attribute.
+Declare commands that your custom cluster module implements. Named commands like
+`command :on` resolve the Matter command ID automatically, so raw IDs are only
+needed for custom or vendor-specific commands.
+
+Known endpoint device types can be listed the same way:
+
+```elixir
+MatterEx.DeviceTypes.known_device_types()
+```
+
+Named endpoint device types automatically add their required server clusters. Add
+extra optional clusters only when your device needs them:
+
+```elixir
+endpoint :light, :on_off_light do
+  cluster :level_control
+end
+```
+
+Development vendor and product aliases are discoverable from IEx:
+
+```elixir
+MatterEx.Device.known_vendors()
+MatterEx.Device.known_products()
+```
+
+Use raw Matter IDs only for custom or unsupported definitions. See
+[`docs/advanced-matter-ids.md`](docs/advanced-matter-ids.md).
+
 ## Updating State from Your Application
 
 When something changes on your device (a button press, a sensor reading), update the
@@ -169,8 +201,8 @@ defmodule MyApp.ButtonWatcher do
     pressed = MyApp.GPIO.read_pin(4) == :high
 
     if pressed != state.last_state do
-      # Update OnOff on endpoint 1; subscribed controllers get notified.
-      MyApp.Light.update_attribute(1, :on_off, :on_off, pressed)
+      # Update OnOff; subscribed controllers get notified.
+      MyApp.Light.update_attribute(:light, :on_off, pressed)
     end
 
     {:noreply, %{state | last_state: pressed}}
@@ -183,14 +215,10 @@ For a temperature sensor, first define the device:
 ```elixir
 defmodule MyApp.Sensor do
   use MatterEx.Device,
-    vendor_name: "Acme",
-    product_name: "Temp Sensor",
-    vendor_id: 0xFFF1,
-    product_id: 0x8002
+    vendor: :test,
+    product: :temperature_sensor
 
-  endpoint 1, device_type: 0x0302 do
-    cluster MatterEx.Cluster.TemperatureMeasurement
-  end
+  endpoint :temperature, :temperature_sensor
 end
 ```
 
@@ -210,7 +238,7 @@ defmodule MyApp.TempPoller do
   def handle_info(:read_sensor, state) do
     # Matter temperatures are in 0.01 C units (e.g., 2350 = 23.50 C)
     temp = MyApp.I2C.read_temperature() |> round()
-    MyApp.Sensor.update_attribute(1, :temperature_measurement, :measured_value, temp)
+    MyApp.Sensor.update_attribute(:temperature, :measured_value, temp)
     {:noreply, state}
   end
 end
@@ -219,16 +247,16 @@ end
 The Device API for reading and writing from Elixir:
 
 ```elixir
-MyApp.Light.read_attribute(1, :on_off, :on_off)        # {:ok, true}
-MyApp.Light.write_attribute(1, :on_off, :on_off, false) # :ok
-MyApp.Light.update_attribute(1, :on_off, :on_off, true) # :ok
-MyApp.Light.invoke_command(1, :on_off, :toggle)         # {:ok, nil}
+MyApp.Light.read_attribute(:light, :on_off)        # {:ok, true}
+MyApp.Light.write_attribute(:light, :on_off, false) # :ok
+MyApp.Light.update_attribute(:light, :on_off, true) # :ok
+MyApp.Light.invoke(:light, :toggle)                 # {:ok, nil}
 ```
 
-Use `update_attribute/4` for local device state changes, including read-only Matter
-attributes such as sensor measurements. Use `write_attribute/4` when you want to
-apply the same writable-attribute rules that a Matter controller write request
-would use.
+Use `update_attribute/3` or `update_attribute/4` for local device state changes,
+including read-only Matter attributes such as sensor measurements. Use
+`write_attribute/3` or `write_attribute/4` when you want to apply the same
+writable-attribute rules that a Matter controller write request would use.
 
 ## Architecture
 

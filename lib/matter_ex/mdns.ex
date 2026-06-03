@@ -21,8 +21,8 @@ defmodule MatterEx.MDNS do
       service = MatterEx.MDNS.commissioning_service(
         port: 5540,
         discriminator: 3840,
-        vendor_id: 0xFFF1,
-        product_id: 0x8001,
+        vendor: :test,
+        product: :smart_light,
         device_name: "Test Light"
       )
 
@@ -129,8 +129,8 @@ defmodule MatterEx.MDNS do
   Options:
   - `:port` — UDP port the Matter node listens on (required)
   - `:discriminator` — 12-bit commissioning discriminator (required)
-  - `:vendor_id` — 16-bit vendor ID (required)
-  - `:product_id` — 16-bit product ID (required)
+  - `:vendor` — known vendor alias, or `:vendor_id` with a 16-bit ID (required)
+  - `:product` — known product alias, or `:product_id` with a 16-bit ID (required)
   - `:device_name` — human-readable device name (optional)
   - `:device_type` — device type ID (optional)
   - `:commissioning_mode` — 1 (basic) or 2 (enhanced), default 1
@@ -139,8 +139,8 @@ defmodule MatterEx.MDNS do
   def commissioning_service(opts) do
     port = Keyword.fetch!(opts, :port)
     discriminator = Keyword.fetch!(opts, :discriminator)
-    vendor_id = Keyword.fetch!(opts, :vendor_id)
-    product_id = Keyword.fetch!(opts, :product_id)
+    vendor_id = resolve_vendor_id!(opts)
+    product_id = resolve_product_id!(opts)
     device_name = Keyword.get(opts, :device_name)
     device_type = Keyword.get(opts, :device_type)
     cm = Keyword.get(opts, :commissioning_mode, 1)
@@ -174,6 +174,27 @@ defmodule MatterEx.MDNS do
       txt: txt,
       subtypes: subtypes
     ]
+  end
+
+  defp resolve_vendor_id!(opts) do
+    cond do
+      Keyword.has_key?(opts, :vendor_id) -> Keyword.fetch!(opts, :vendor_id)
+      Keyword.has_key?(opts, :vendor) -> MatterEx.Device.vendor_id!(Keyword.fetch!(opts, :vendor))
+      true -> Keyword.fetch!(opts, :vendor_id)
+    end
+  end
+
+  defp resolve_product_id!(opts) do
+    cond do
+      Keyword.has_key?(opts, :product_id) ->
+        Keyword.fetch!(opts, :product_id)
+
+      Keyword.has_key?(opts, :product) ->
+        MatterEx.Device.product_id!(Keyword.fetch!(opts, :product))
+
+      true ->
+        Keyword.fetch!(opts, :product_id)
+    end
   end
 
   @doc """
@@ -833,10 +854,7 @@ defmodule MatterEx.MDNS do
   end
 
   defp preferred_ipv6_device do
-    cond do
-      File.exists?("/sys/class/net/wlan0/ifindex") -> "wlan0"
-      true -> nil
-    end
+    if File.exists?("/sys/class/net/wlan0/ifindex"), do: "wlan0"
   end
 
   defp bind_to_device_opts(nil), do: []

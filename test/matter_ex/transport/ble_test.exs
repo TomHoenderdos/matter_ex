@@ -62,6 +62,23 @@ defmodule MatterEx.Transport.BLETest do
       GenServer.stop(pid)
     end
 
+    test "known vendor and product aliases resolve before adapter start" do
+      {:ok, pid} =
+        BLE.start_link(
+          owner: self(),
+          discriminator: 3840,
+          vendor: :test,
+          product: :matter_example,
+          adapter: MockAdapter
+        )
+
+      handle = :sys.get_state(pid).adapter_handle
+      opts = MockAdapter.start_opts(handle)
+      assert opts[:vendor_id] == 0xFFF1
+      assert opts[:product_id] == 0x8000
+      GenServer.stop(pid)
+    end
+
     test "starts advertising on init" do
       {pid, handle} = start_ble()
       assert MockAdapter.advertising?(handle) == true

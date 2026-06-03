@@ -1,4 +1,4 @@
-defmodule NetTest.Application do
+defmodule MatterExample.Application do
   # See https://hexdocs.pm/elixir/Application.html
   # for more information on OTP Applications
   @moduledoc false
@@ -21,19 +21,19 @@ defmodule NetTest.Application do
       MatterEx.MDNS.commissioning_service(
         port: 5540,
         discriminator: 3840,
-        vendor_id: 0xFFF1,
-        product_id: 0x8000,
-        device_name: "NetTest"
+        vendor: :test,
+        product: :matter_example,
+        device_name: "MatterExample"
       )
 
     children =
       [
-        NetTest.Device,
-        NetTest.FakeSensor,
+        MatterExample.Device,
+        MatterExample.FakeSensor,
         {MatterEx.MDNS, [name: MatterEx.MDNS] ++ mdns_interface_opts()},
         {MatterEx.Node,
          name: MatterEx.Node,
-         device: NetTest.Device,
+         device: MatterExample.Device,
          passcode: 20_202_021,
          salt: :crypto.strong_rand_bytes(32),
          iterations: 1000,
@@ -45,7 +45,7 @@ defmodule NetTest.Application do
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
-    opts = [strategy: :one_for_one, name: NetTest.Supervisor]
+    opts = [strategy: :one_for_one, name: MatterExample.Supervisor]
     result = Supervisor.start_link(children, opts)
 
     # Post-startup: advertise commissioning service via mDNS
@@ -58,8 +58,8 @@ defmodule NetTest.Application do
 
     qr_payload =
       MatterEx.SetupPayload.qr_code_payload(
-        vendor_id: 0xFFF1,
-        product_id: 0x8000,
+        vendor: :test,
+        product: :matter_example,
         discriminator: 3840,
         passcode: 20_202_021
       )
@@ -72,7 +72,7 @@ defmodule NetTest.Application do
 
     Logger.info("""
     ========================================
-     NetTest - Matter Smart Light
+     MatterExample - Matter Smart Light
     ========================================
      Endpoint 1: dimmable light
      Endpoint 2: fake temperature sensor
@@ -95,16 +95,16 @@ defmodule NetTest.Application do
         {MatterEx.Transport.BLE,
          owner: MatterEx.Node,
          discriminator: 3840,
-         vendor_id: 0xFFF1,
-         product_id: 0x8000,
-         adapter: NetTest.BLEAdapter}
+         vendor: :test,
+         product: :matter_example,
+         adapter: MatterExample.BLEAdapter}
       ]
     else
       []
     end
   end
 
-  defp ble_enabled?, do: Application.get_env(:net_test, :ble_enabled, false)
+  defp ble_enabled?, do: Application.get_env(:matter_example, :ble_enabled, false)
 
   if Mix.target() == :host do
     defp mdns_interface_opts, do: []
@@ -112,51 +112,55 @@ defmodule NetTest.Application do
     defp mdns_interface_opts, do: [interface: "wlan0"]
   end
 
-  # Power on the Broadcom Bluetooth chip and restart BlueHeron.
-  # BlueHeron auto-starts as a dependency app BEFORE this Application, so its
-  # initial HCI setup fails (chip not powered). We stop it, power-cycle the chip,
-  # then restart it — BlueHeron's BroadcomInit handles firmware download natively.
-  defp power_on_bluetooth do
-    if Code.ensure_loaded?(Circuits.GPIO) do
-      require Logger
+  if Mix.target() == :host do
+    defp power_on_bluetooth, do: :ok
+  else
+    # Power on the Broadcom Bluetooth chip and restart BlueHeron.
+    # BlueHeron auto-starts as a dependency app BEFORE this Application, so its
+    # initial HCI setup fails (chip not powered). We stop it, power-cycle the chip,
+    # then restart it — BlueHeron's BroadcomInit handles firmware download natively.
+    defp power_on_bluetooth do
+      if Code.ensure_loaded?(Circuits.GPIO) do
+        require Logger
 
-      # Stop BlueHeron so it releases the UART during chip power-cycle
-      Logger.info("Stopping BlueHeron for BT chip power-on...")
-      Application.stop(:blue_heron)
-      Process.sleep(100)
+        # Stop BlueHeron so it releases the UART during chip power-cycle
+        Logger.info("Stopping BlueHeron for BT chip power-on...")
+        Application.stop(:blue_heron)
+        Process.sleep(100)
 
-      # gpiochip1 is the RPi firmware GPIO expander where BT_REG_ON lives.
-      # Try it first; gpiochip0 is the main SoC GPIO (fallback for other boards).
-      result =
-        Enum.find_value(["gpiochip1", "gpiochip0"], fn chip ->
-          case Circuits.GPIO.open({chip, 0}, :output, initial_value: 0) do
-            {:ok, gpio} ->
-              # Toggle BT_REG_ON: low → wait → high to ensure clean chip reset
-              # (on warm reboot the chip may retain state from previous session)
-              Logger.info("BT_REG_ON: resetting on #{chip} line 0")
-              Process.sleep(50)
-              Circuits.GPIO.write(gpio, 1)
-              Logger.info("BT_REG_ON: asserted on #{chip} line 0")
-              # Keep the GPIO reference alive so it doesn't get GC'd and released
-              Process.put(:bt_reg_on_gpio, gpio)
-              true
+        # gpiochip1 is the RPi firmware GPIO expander where BT_REG_ON lives.
+        # Try it first; gpiochip0 is the main SoC GPIO (fallback for other boards).
+        result =
+          Enum.find_value(["gpiochip1", "gpiochip0"], fn chip ->
+            case Circuits.GPIO.open({chip, 0}, :output, initial_value: 0) do
+              {:ok, gpio} ->
+                # Toggle BT_REG_ON: low → wait → high to ensure clean chip reset
+                # (on warm reboot the chip may retain state from previous session)
+                Logger.info("BT_REG_ON: resetting on #{chip} line 0")
+                Process.sleep(50)
+                Circuits.GPIO.write(gpio, 1)
+                Logger.info("BT_REG_ON: asserted on #{chip} line 0")
+                # Keep the GPIO reference alive so it doesn't get GC'd and released
+                Process.put(:bt_reg_on_gpio, gpio)
+                true
 
-            {:error, _} ->
-              nil
-          end
-        end)
+              {:error, _} ->
+                nil
+            end
+          end)
 
-      unless result do
-        Logger.warning("BT_REG_ON: could not assert on any gpiochip")
+        unless result do
+          Logger.warning("BT_REG_ON: could not assert on any gpiochip")
+        end
+
+        # Give the chip time to power on and initialize
+        Process.sleep(250)
+
+        # Restart BlueHeron — it will now detect BCM4345C5 and download
+        # patchram firmware automatically via BroadcomInit
+        Logger.info("Restarting BlueHeron (will auto-download firmware)...")
+        Application.ensure_all_started(:blue_heron)
       end
-
-      # Give the chip time to power on and initialize
-      Process.sleep(250)
-
-      # Restart BlueHeron — it will now detect BCM4345C5 and download
-      # patchram firmware automatically via BroadcomInit
-      Logger.info("Restarting BlueHeron (will auto-download firmware)...")
-      Application.ensure_all_started(:blue_heron)
     end
   end
 

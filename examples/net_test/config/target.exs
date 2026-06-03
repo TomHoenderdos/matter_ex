@@ -17,8 +17,7 @@ config :shoehorn, init: [:nerves_runtime, :nerves_pack]
 # configuring erlinit.
 
 # Advance the system clock on devices without real-time clocks.
-config :nerves, :erlinit,
-  update_clock: true
+config :nerves, :erlinit, update_clock: true
 
 # Use custom fwup.conf for RPi 4 to enable Bluetooth.
 if Mix.target() == :rpi4 do
@@ -111,7 +110,7 @@ config :mdns_lite,
 # of this file so it overrides the configuration defined above.
 # Uncomment to use target specific configurations
 
-config :net_test, ble_enabled: true
+config :matter_example, ble_enabled: true
 
 # BlueHeron UART transport for onboard Broadcom Bluetooth.
 # With dtoverlay=miniuart-bt, the onboard Bluetooth chip is on /dev/ttyS0.

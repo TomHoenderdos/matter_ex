@@ -599,7 +599,7 @@ defmodule MatterEx.MessageHandlerTest do
       {:ok, priming_report} = IM.decode(:report_data, priming_msg.proto.payload)
 
       assert priming_report.subscription_id == 1
-      assert length(priming_report.attribute_reports) > 0
+      assert priming_report.attribute_reports != []
 
       entry = handler.sessions[1]
       [subscription] = MatterEx.IM.SubscriptionManager.subscriptions(entry.subscription_mgr)

@@ -62,9 +62,163 @@ defmodule MatterEx.ClusterTest do
   alias MatterEx.Cluster.WindowCovering
   alias MatterEx.Commissioning
 
+  defmodule Friendly.OnOff do
+    use MatterEx.Cluster, :on_off
+  end
+
+  defmodule Friendly.OnOffOverride do
+    use MatterEx.Cluster, :on_off
+
+    attribute(:on_off, :boolean, default: false, writable: true)
+    attribute(:defaulted, :boolean, id: 0x4000)
+  end
+
+  defmodule Friendly.LevelControl do
+    use MatterEx.Cluster, :level_control
+
+    attribute(:current_level, :uint8)
+
+    command(:move_to_level,
+      params: [
+        level: :uint8,
+        transition_time: :uint16
+      ]
+    )
+  end
+
+  defmodule Friendly.BasicInformation do
+    use MatterEx.Cluster, :basic_information
+  end
+
+  defmodule Friendly.TemperatureMeasurement do
+    use MatterEx.Cluster, :temperature_measurement
+  end
+
+  defmodule Friendly.DoorLock do
+    use MatterEx.Cluster, :door_lock
+  end
+
+  defmodule Friendly.PM25ConcentrationMeasurement do
+    use MatterEx.Cluster, :pm25_concentration_measurement
+  end
+
+  defmodule Friendly.CustomCluster do
+    use MatterEx.Cluster, id: 0xFC00, name: :custom_cluster
+
+    attribute(:enabled, :boolean, id: 0x0000)
+  end
+
   # ── Cluster macro metadata ────────────────────────────────────
 
   describe "cluster metadata" do
+    test "known_clusters lists friendly use DSL names" do
+      known_clusters = MatterEx.Cluster.known_clusters()
+
+      assert {:on_off, 0x0006} in known_clusters
+      assert {:basic_information, 0x0028} in known_clusters
+      assert {:temperature_measurement, 0x0402} in known_clusters
+      assert {:pm25_concentration_measurement, 0x042A} in known_clusters
+      assert known_clusters == Enum.sort_by(known_clusters, &elem(&1, 0))
+    end
+
+    test "friendly use DSL resolves built-in cluster IDs" do
+      assert Friendly.OnOff.cluster_id() == 0x0006
+      assert Friendly.BasicInformation.cluster_id() == 0x0028
+      assert Friendly.TemperatureMeasurement.cluster_id() == 0x0402
+      assert Friendly.DoorLock.cluster_id() == 0x0101
+      assert Friendly.PM25ConcentrationMeasurement.cluster_id() == 0x042A
+    end
+
+    test "friendly cluster DSL infers built-in OnOff attributes" do
+      attrs = Friendly.OnOff.attribute_defs()
+      commands = Friendly.OnOff.command_defs()
+
+      assert Enum.find(attrs, &(&1.name == :on_off)) == %{
+               id: 0x0000,
+               name: :on_off,
+               type: :boolean,
+               default: false,
+               writable: true,
+               fabric_scoped: false,
+               min: nil,
+               max: nil,
+               enum_values: nil
+             }
+
+      assert Enum.find(attrs, &(&1.name == :cluster_revision)).default == 4
+      assert commands == []
+    end
+
+    test "explicit attributes override inferred built-in attributes" do
+      attrs = Friendly.OnOffOverride.attribute_defs()
+
+      assert Enum.find(attrs, &(&1.name == :defaulted)) == %{
+               id: 0x4000,
+               name: :defaulted,
+               type: :boolean,
+               default: false,
+               writable: false,
+               fabric_scoped: false,
+               min: nil,
+               max: nil,
+               enum_values: nil
+             }
+
+      assert Enum.find(attrs, &(&1.name == :on_off)).writable == true
+    end
+
+    test "friendly cluster DSL does not advertise undeclared custom commands" do
+      assert Friendly.OnOff.command_defs() == []
+
+      assert Enum.find(Friendly.OnOff.attribute_defs(), &(&1.name == :accepted_command_list)).default ==
+               []
+    end
+
+    test "friendly cluster DSL resolves built-in non-OnOff member IDs" do
+      attrs = Friendly.LevelControl.attribute_defs()
+      commands = Friendly.LevelControl.command_defs()
+
+      assert Enum.find(attrs, &(&1.name == :current_level)) == %{
+               id: 0x0000,
+               name: :current_level,
+               type: :uint8,
+               default: nil,
+               writable: false,
+               fabric_scoped: false,
+               min: nil,
+               max: nil,
+               enum_values: nil
+             }
+
+      assert Enum.find(commands, &(&1.name == :move_to_level)) == %{
+               id: 0x00,
+               name: :move_to_level,
+               params: [
+                 level: :uint8,
+                 transition_time: :uint16
+               ],
+               response_id: nil
+             }
+
+      assert Enum.find(attrs, &(&1.name == :cluster_revision)).default == 5
+    end
+
+    test "custom clusters default cluster_revision to 1" do
+      attrs = Friendly.CustomCluster.attribute_defs()
+
+      assert Enum.find(attrs, &(&1.name == :cluster_revision)) == %{
+               id: 0xFFFD,
+               name: :cluster_revision,
+               type: :uint16,
+               default: 1,
+               writable: false,
+               fabric_scoped: false,
+               min: nil,
+               max: nil,
+               enum_values: nil
+             }
+    end
+
     test "OnOff cluster_id and name" do
       assert OnOff.cluster_id() == 0x0006
       assert OnOff.cluster_name() == :on_off

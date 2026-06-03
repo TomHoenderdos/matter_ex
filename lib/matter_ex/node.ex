@@ -357,10 +357,7 @@ defmodule MatterEx.Node do
   end
 
   defp preferred_ipv6_device do
-    cond do
-      File.exists?("/sys/class/net/wlan0/ifindex") -> "wlan0"
-      true -> nil
-    end
+    if File.exists?("/sys/class/net/wlan0/ifindex"), do: "wlan0"
   end
 
   defp bind_to_device_opts(nil), do: []

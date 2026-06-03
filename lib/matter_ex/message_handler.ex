@@ -1038,139 +1038,152 @@ defmodule MatterEx.MessageHandler do
       due = SubscriptionManager.due_reports(entry.subscription_mgr, now)
 
       Enum.flat_map_reduce(due, state, fn {sub_id, paths}, state ->
-        entry = state.sessions[session_id]
-        sub = SubscriptionManager.get(entry.subscription_mgr, sub_id)
-
-        case build_subscription_report(state.device, sub_id, paths, entry.session) do
-          nil ->
-            # No device, skip
-            sub_mgr = SubscriptionManager.record_report(entry.subscription_mgr, sub_id, %{}, now)
-            entry = %{entry | subscription_mgr: sub_mgr}
-            sessions = Map.put(state.sessions, session_id, entry)
-            {[], %{state | sessions: sessions}}
-
-          {report_data, current_values} ->
-            changed_reports =
-              Enum.filter(report_data.attribute_reports, fn
-                {:data, data} ->
-                  key = {data.path[:endpoint], data.path[:cluster], data.path[:attribute]}
-                  Map.get(sub.last_values, key) != data.value
-
-                _ ->
-                  false
-              end)
-
-            # Check if values changed and min_interval allows sending
-            cond do
-              current_values == sub.last_values ->
-                # No change — just update timer
-                sub_mgr =
-                  SubscriptionManager.record_report(
-                    entry.subscription_mgr,
-                    sub_id,
-                    current_values,
-                    now
-                  )
-
-                entry = %{entry | subscription_mgr: sub_mgr}
-                sessions = Map.put(state.sessions, session_id, entry)
-                {[], %{state | sessions: sessions}}
-
-              SubscriptionManager.throttled?(entry.subscription_mgr, sub_id, now) ->
-                # Values changed but min_interval not elapsed — suppress
-                Logger.debug("Subscription #{sub_id}: suppressed report (min_interval throttle)")
-
-                sub_mgr =
-                  SubscriptionManager.record_report(
-                    entry.subscription_mgr,
-                    sub_id,
-                    sub.last_values,
-                    now
-                  )
-
-                entry = %{entry | subscription_mgr: sub_mgr}
-                sessions = Map.put(state.sessions, session_id, entry)
-                {[], %{state | sessions: sessions}}
-
-              true ->
-                # Values changed and min_interval allows — send report
-                report_data = %{report_data | attribute_reports: changed_reports}
-                payload = IM.encode(report_data)
-                im_protocol_id = ProtocolID.protocol_id(:interaction_model)
-
-                {proto, mrp_actions, mgr} =
-                  ExchangeManager.initiate(
-                    entry.exchange_mgr,
-                    im_protocol_id,
-                    :report_data,
-                    payload
-                  )
-
-                {frame, session, message_counter} =
-                  SecureChannel.seal_with_counter(entry.session, proto)
-
-                MatterEx.DebugTrace.record(%{
-                  type: :subscription_report_sent,
-                  session_id: session_id,
-                  subscription_id: sub_id,
-                  exchange_id: proto.exchange_id,
-                  message_counter: message_counter,
-                  attribute_count: length(changed_reports),
-                  payload_size: byte_size(payload),
-                  paths: summarize_report_paths(changed_reports),
-                  needs_ack: proto.needs_ack
-                })
-
-                mgr =
-                  if proto.needs_ack do
-                    mrp =
-                      MRP.record_send(
-                        mgr.mrp,
-                        message_counter,
-                        :erlang.term_to_binary({:sealed_frame, frame, proto.exchange_id}),
-                        proto.exchange_id
-                      )
-
-                    %{mgr | mrp: mrp}
-                  else
-                    mgr
-                  end
-
-                # Track exchange→subscription mapping for give_up cleanup
-                exchange_to_sub = Map.get(entry, :exchange_to_sub, %{})
-                exchange_to_sub = Map.put(exchange_to_sub, message_counter, sub_id)
-
-                sub_mgr =
-                  SubscriptionManager.record_sent(
-                    entry.subscription_mgr,
-                    sub_id,
-                    current_values,
-                    now
-                  )
-
-                entry = %{
-                  entry
-                  | session: session,
-                    exchange_mgr: mgr,
-                    subscription_mgr: sub_mgr,
-                    exchange_to_sub: exchange_to_sub
-                }
-
-                sessions = Map.put(state.sessions, session_id, entry)
-
-                send_actions = [{:send, session_id, frame}]
-
-                schedule_actions =
-                  Enum.map(mrp_actions, fn {:schedule_mrp, eid, attempt, timeout} ->
-                    pending_id = if eid == proto.exchange_id, do: message_counter, else: eid
-                    {:schedule_mrp, session_id, pending_id, attempt, timeout}
-                  end)
-
-                {send_actions ++ schedule_actions, %{state | sessions: sessions}}
-            end
-        end
+        process_due_subscription(state, session_id, sub_id, paths, now)
       end)
     end)
+  end
+
+  defp process_due_subscription(state, session_id, sub_id, paths, now) do
+    entry = state.sessions[session_id]
+    sub = SubscriptionManager.get(entry.subscription_mgr, sub_id)
+
+    case build_subscription_report(state.device, sub_id, paths, entry.session) do
+      nil ->
+        update_subscription_report_time(state, session_id, entry, sub_id, %{}, now)
+
+      {report_data, current_values} ->
+        changed_reports = changed_subscription_reports(report_data.attribute_reports, sub)
+
+        process_subscription_report(
+          state,
+          session_id,
+          entry,
+          sub,
+          report_data,
+          current_values,
+          changed_reports,
+          now
+        )
+    end
+  end
+
+  defp process_subscription_report(
+         state,
+         session_id,
+         entry,
+         sub,
+         report_data,
+         current_values,
+         changed_reports,
+         now
+       ) do
+    cond do
+      current_values == sub.last_values ->
+        update_subscription_report_time(state, session_id, entry, sub.id, current_values, now)
+
+      SubscriptionManager.throttled?(entry.subscription_mgr, sub.id, now) ->
+        Logger.debug("Subscription #{sub.id}: suppressed report (min_interval throttle)")
+        update_subscription_report_time(state, session_id, entry, sub.id, sub.last_values, now)
+
+      true ->
+        send_subscription_report(
+          state,
+          session_id,
+          entry,
+          sub.id,
+          report_data,
+          current_values,
+          changed_reports,
+          now
+        )
+    end
+  end
+
+  defp changed_subscription_reports(attribute_reports, sub) do
+    Enum.filter(attribute_reports, fn
+      {:data, data} ->
+        key = {data.path[:endpoint], data.path[:cluster], data.path[:attribute]}
+        Map.get(sub.last_values, key) != data.value
+
+      _ ->
+        false
+    end)
+  end
+
+  defp update_subscription_report_time(state, session_id, entry, sub_id, values, now) do
+    sub_mgr = SubscriptionManager.record_report(entry.subscription_mgr, sub_id, values, now)
+    entry = %{entry | subscription_mgr: sub_mgr}
+    sessions = Map.put(state.sessions, session_id, entry)
+    {[], %{state | sessions: sessions}}
+  end
+
+  defp send_subscription_report(
+         state,
+         session_id,
+         entry,
+         sub_id,
+         report_data,
+         current_values,
+         changed_reports,
+         now
+       ) do
+    report_data = %{report_data | attribute_reports: changed_reports}
+    payload = IM.encode(report_data)
+    im_protocol_id = ProtocolID.protocol_id(:interaction_model)
+
+    {proto, mrp_actions, mgr} =
+      ExchangeManager.initiate(entry.exchange_mgr, im_protocol_id, :report_data, payload)
+
+    {frame, session, message_counter} = SecureChannel.seal_with_counter(entry.session, proto)
+
+    MatterEx.DebugTrace.record(%{
+      type: :subscription_report_sent,
+      session_id: session_id,
+      subscription_id: sub_id,
+      exchange_id: proto.exchange_id,
+      message_counter: message_counter,
+      attribute_count: length(changed_reports),
+      payload_size: byte_size(payload),
+      paths: summarize_report_paths(changed_reports),
+      needs_ack: proto.needs_ack
+    })
+
+    mgr = maybe_record_mrp_send(mgr, proto, frame, message_counter)
+    exchange_to_sub = entry |> Map.get(:exchange_to_sub, %{}) |> Map.put(message_counter, sub_id)
+    sub_mgr = SubscriptionManager.record_sent(entry.subscription_mgr, sub_id, current_values, now)
+
+    entry = %{
+      entry
+      | session: session,
+        exchange_mgr: mgr,
+        subscription_mgr: sub_mgr,
+        exchange_to_sub: exchange_to_sub
+    }
+
+    sessions = Map.put(state.sessions, session_id, entry)
+    send_actions = [{:send, session_id, frame}]
+
+    schedule_actions =
+      Enum.map(mrp_actions, fn {:schedule_mrp, eid, attempt, timeout} ->
+        pending_id = if eid == proto.exchange_id, do: message_counter, else: eid
+        {:schedule_mrp, session_id, pending_id, attempt, timeout}
+      end)
+
+    {send_actions ++ schedule_actions, %{state | sessions: sessions}}
+  end
+
+  defp maybe_record_mrp_send(mgr, %{needs_ack: false}, _frame, _message_counter), do: mgr
+
+  defp maybe_record_mrp_send(mgr, proto, frame, message_counter) do
+    mrp =
+      MRP.record_send(
+        mgr.mrp,
+        message_counter,
+        :erlang.term_to_binary({:sealed_frame, frame, proto.exchange_id}),
+        proto.exchange_id
+      )
+
+    %{mgr | mrp: mrp}
   end
 
   defp build_subscription_report(nil, _sub_id, _paths, _session), do: nil
@@ -1209,8 +1222,7 @@ defmodule MatterEx.MessageHandler do
     subjects =
       [session.peer_node_id, session_peer_subjects(session), case_admin_subject(session)]
       |> List.flatten()
-      |> Enum.reject(&is_nil/1)
-      |> Enum.reject(&(&1 == 0))
+      |> Enum.reject(&(is_nil(&1) or &1 == 0))
       |> Enum.uniq()
 
     %{

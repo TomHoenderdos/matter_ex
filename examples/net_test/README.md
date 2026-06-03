@@ -1,4 +1,4 @@
-# MatterEx Net Test
+# MatterExample
 
 Nerves example app for running a MatterEx dimmable light and several fake
 sensors on a Raspberry Pi 4. It is intended for commissioning and controller
@@ -25,12 +25,15 @@ From this directory:
 ```sh
 MIX_TARGET=rpi4 mix deps.get
 MIX_TARGET=rpi4 mix firmware
-MIX_TARGET=rpi4 mix upload 192.168.0.40
+MIX_TARGET=rpi4 mix upload
 ```
 
-Replace `192.168.0.40` with the Pi address on your network. The app uses the
-Nerves target config in `config/target.exs`; set Wi-Fi credentials there or via
-your normal Nerves configuration flow before building.
+By default, `mix upload` targets `nerves.local`. If mDNS is unavailable or you
+have multiple Nerves devices on the network, pass the Pi hostname or IP address
+as the final argument.
+
+The app uses the Nerves target config in `config/target.exs`; set Wi-Fi
+credentials there or via your normal Nerves configuration flow before building.
 
 ## Commissioning
 
@@ -41,9 +44,9 @@ production devices.
 Useful runtime checks over SSH:
 
 ```sh
-ssh root@192.168.0.40 'IO.inspect(MatterEx.Commissioning.commissioned?())'
-ssh root@192.168.0.40 'MatterEx.DebugTrace.dump() |> Enum.each(&IO.inspect/1)'
-ssh root@192.168.0.40 'MatterEx.DebugTrace.clear(); IO.puts(:cleared)'
+ssh root@nerves.local 'IO.inspect(MatterEx.Commissioning.commissioned?())'
+ssh root@nerves.local 'MatterEx.DebugTrace.dump() |> Enum.each(&IO.inspect/1)'
+ssh root@nerves.local 'MatterEx.DebugTrace.clear(); IO.puts(:cleared)'
 ```
 
 Read the fake sensor from chip-tool after commissioning:

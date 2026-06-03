@@ -20,6 +20,20 @@ defmodule MatterEx.SetupPayloadTest do
       assert payload == "MT:Y.K9042C00KA0648G00"
     end
 
+    test "known vendor and product aliases produce the same payload" do
+      payload =
+        SetupPayload.qr_code_payload(
+          vendor: :test,
+          product: :matter_example,
+          discriminator: 3840,
+          passcode: 20_202_021,
+          flow: 0,
+          discovery: 2
+        )
+
+      assert payload == "MT:Y.K9042C00KA0648G00"
+    end
+
     test "lighting-app test vector (vendor=0xFFF1, product=0x8001)" do
       payload =
         SetupPayload.qr_code_payload(

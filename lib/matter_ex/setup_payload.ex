@@ -7,8 +7,8 @@ defmodule MatterEx.SetupPayload do
   Packs device info into 88 bits, base-38 encodes with prefix `"MT:"`.
 
       MatterEx.SetupPayload.qr_code_payload(
-        vendor_id: 0xFFF1,
-        product_id: 0x8000,
+        vendor: :test,
+        product: :matter_example,
         discriminator: 3840,
         passcode: 20202021
       )
@@ -54,8 +54,8 @@ defmodule MatterEx.SetupPayload do
 
   ## Options
 
-    * `:vendor_id` — 16-bit vendor ID (required)
-    * `:product_id` — 16-bit product ID (required)
+    * `:vendor` — known vendor alias, or `:vendor_id` with a 16-bit ID (required)
+    * `:product` — known product alias, or `:product_id` with a 16-bit ID (required)
     * `:discriminator` — 12-bit discriminator 0..4095 (required)
     * `:passcode` — 27-bit setup passcode (required)
     * `:flow` — commissioning flow, 0..3 (default 0 = standard)
@@ -66,8 +66,8 @@ defmodule MatterEx.SetupPayload do
   on the Matter spec invalid list.
   """
   def qr_code_payload(opts) do
-    vendor_id = validate!(:vendor_id, Keyword.fetch!(opts, :vendor_id), 0..0xFFFF)
-    product_id = validate!(:product_id, Keyword.fetch!(opts, :product_id), 0..0xFFFF)
+    vendor_id = validate!(:vendor_id, resolve_vendor_id!(opts), 0..0xFFFF)
+    product_id = validate!(:product_id, resolve_product_id!(opts), 0..0xFFFF)
     discriminator = validate!(:discriminator, Keyword.fetch!(opts, :discriminator), 0..0xFFF)
     passcode = validate_passcode!(Keyword.fetch!(opts, :passcode))
     version = validate!(:version, Keyword.get(opts, :version, 0), 0..7)
@@ -171,6 +171,27 @@ defmodule MatterEx.SetupPayload do
   defp do_base38(value, remaining, acc) do
     char = elem(@base38_alphabet, rem(value, 38))
     do_base38(div(value, 38), remaining - 1, [acc, char])
+  end
+
+  defp resolve_vendor_id!(opts) do
+    cond do
+      Keyword.has_key?(opts, :vendor_id) -> Keyword.fetch!(opts, :vendor_id)
+      Keyword.has_key?(opts, :vendor) -> MatterEx.Device.vendor_id!(Keyword.fetch!(opts, :vendor))
+      true -> Keyword.fetch!(opts, :vendor_id)
+    end
+  end
+
+  defp resolve_product_id!(opts) do
+    cond do
+      Keyword.has_key?(opts, :product_id) ->
+        Keyword.fetch!(opts, :product_id)
+
+      Keyword.has_key?(opts, :product) ->
+        MatterEx.Device.product_id!(Keyword.fetch!(opts, :product))
+
+      true ->
+        Keyword.fetch!(opts, :product_id)
+    end
   end
 
   # ── Verhoeff Algorithm ───────────────────────────────────────────────

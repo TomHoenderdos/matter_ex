@@ -1,4 +1,4 @@
-defmodule NetTest.FakeSensor do
+defmodule MatterExample.FakeSensor do
   @moduledoc """
   Periodically updates the fake temperature sensor endpoint.
   """
@@ -7,12 +7,12 @@ defmodule NetTest.FakeSensor do
   require Logger
 
   @interval_ms 5_000
-  @temperature_endpoint 2
-  @humidity_endpoint 3
-  @illuminance_endpoint 4
-  @occupancy_endpoint 5
-  @contact_endpoint 6
-  @air_quality_endpoint 7
+  @temperature_endpoint :temperature
+  @humidity_endpoint :humidity
+  @illuminance_endpoint :illuminance
+  @occupancy_endpoint :occupancy
+  @contact_endpoint :contact
+  @air_quality_endpoint :air_quality
   @attribute :measured_value
 
   def start_link(opts \\ []) do
@@ -36,12 +36,12 @@ defmodule NetTest.FakeSensor do
     contact_open = fake_contact_open(state.step)
     air_quality = fake_air_quality(state.step)
 
-    update(@temperature_endpoint, :temperature_measurement, @attribute, temperature)
-    update(@humidity_endpoint, :relative_humidity_measurement, @attribute, humidity)
-    update(@illuminance_endpoint, :illuminance_measurement, @attribute, illuminance)
-    update(@occupancy_endpoint, :occupancy_sensing, :occupancy, occupied)
-    update(@contact_endpoint, :boolean_state, :state_value, contact_open)
-    update(@air_quality_endpoint, :air_quality, :air_quality, air_quality)
+    update(@temperature_endpoint, @attribute, temperature)
+    update(@humidity_endpoint, @attribute, humidity)
+    update(@illuminance_endpoint, @attribute, illuminance)
+    update(@occupancy_endpoint, :occupancy, occupied)
+    update(@contact_endpoint, :state_value, contact_open)
+    update(@air_quality_endpoint, :air_quality, air_quality)
 
     Logger.info(
       "fake sensors updated: temp=#{format_temperature(temperature)} humidity=#{format_humidity(humidity)} illuminance=#{format_illuminance(illuminance)} occupancy=#{occupied} contact_open=#{contact_open} air_quality=#{air_quality}"
@@ -74,14 +74,14 @@ defmodule NetTest.FakeSensor do
 
   def fake_air_quality(step), do: rem(step, 5) + 1
 
-  defp update(endpoint, cluster, attribute, value) do
-    case NetTest.Device.update_attribute(endpoint, cluster, attribute, value) do
+  defp update(endpoint, attribute, value) do
+    case MatterExample.Device.update_attribute(endpoint, attribute, value) do
       :ok ->
         :ok
 
       {:error, reason} ->
         Logger.warning(
-          "fake sensor update failed for endpoint #{endpoint} #{cluster}.#{attribute}: #{inspect(reason)}"
+          "fake sensor update failed for #{endpoint}.#{attribute}: #{inspect(reason)}"
         )
     end
   end

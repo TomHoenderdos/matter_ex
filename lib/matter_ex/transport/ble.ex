@@ -17,8 +17,8 @@ defmodule MatterEx.Transport.BLE do
 
       {:ok, ble} = MatterEx.Transport.BLE.start_link(
         discriminator: 3840,
-        vendor_id: 0xFFF1,
-        product_id: 0x8001,
+        vendor: :test,
+        product: :smart_light,
         adapter: SomeAdapter
       )
 
@@ -67,8 +67,8 @@ defmodule MatterEx.Transport.BLE do
 
   Required options:
   - `:discriminator` — 12-bit commissioning discriminator (0..4095)
-  - `:vendor_id` — 16-bit vendor ID
-  - `:product_id` — 16-bit product ID
+  - `:vendor` — known vendor alias, or `:vendor_id` with a 16-bit ID
+  - `:product` — known product alias, or `:product_id` with a 16-bit ID
   - `:adapter` — module implementing `MatterEx.Transport.BLE.Adapter`
 
   Optional:
@@ -104,8 +104,8 @@ defmodule MatterEx.Transport.BLE do
     adapter = Keyword.fetch!(opts, :adapter)
     owner = Keyword.get(opts, :owner, self())
     discriminator = Keyword.fetch!(opts, :discriminator)
-    vendor_id = Keyword.fetch!(opts, :vendor_id)
-    product_id = Keyword.fetch!(opts, :product_id)
+    vendor_id = resolve_vendor_id!(opts)
+    product_id = resolve_product_id!(opts)
 
     adapter_opts = [
       owner: self(),
@@ -271,5 +271,26 @@ defmodule MatterEx.Transport.BLE do
 
   defp build_ad_data(discriminator, vendor_id, product_id) do
     <<discriminator::little-16, vendor_id::little-16, product_id::little-16>>
+  end
+
+  defp resolve_vendor_id!(opts) do
+    cond do
+      Keyword.has_key?(opts, :vendor_id) -> Keyword.fetch!(opts, :vendor_id)
+      Keyword.has_key?(opts, :vendor) -> MatterEx.Device.vendor_id!(Keyword.fetch!(opts, :vendor))
+      true -> Keyword.fetch!(opts, :vendor_id)
+    end
+  end
+
+  defp resolve_product_id!(opts) do
+    cond do
+      Keyword.has_key?(opts, :product_id) ->
+        Keyword.fetch!(opts, :product_id)
+
+      Keyword.has_key?(opts, :product) ->
+        MatterEx.Device.product_id!(Keyword.fetch!(opts, :product))
+
+      true ->
+        Keyword.fetch!(opts, :product_id)
+    end
   end
 end

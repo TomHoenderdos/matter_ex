@@ -23,9 +23,36 @@ defmodule MatterEx.DeviceTest.TestSensor do
   end
 end
 
+defmodule MatterEx.DeviceTest.FriendlyDevice do
+  use MatterEx.Device,
+    vendor_name: "TestCo",
+    product_name: "FriendlyDevice",
+    vendor_id: 0xFFF1,
+    product_id: 0x8003
+
+  endpoint :light, :on_off_light do
+    cluster(:on_off)
+  end
+
+  endpoint :sensor, :temperature_sensor do
+    cluster(:identify)
+    cluster(:temperature_measurement)
+  end
+end
+
+defmodule MatterEx.DeviceTest.PresetDevice do
+  use MatterEx.Device,
+    vendor: :test,
+    product: :smart_light
+
+  endpoint(:light, :dimmable_light)
+end
+
 defmodule MatterEx.DeviceTest do
   use ExUnit.Case
 
+  alias MatterEx.DeviceTest.FriendlyDevice
+  alias MatterEx.DeviceTest.PresetDevice
   alias MatterEx.DeviceTest.TestLight
   alias MatterEx.DeviceTest.TestSensor
   alias MatterEx.IM
@@ -81,6 +108,133 @@ defmodule MatterEx.DeviceTest do
     test "read from unknown cluster" do
       assert {:error, :unsupported_cluster} =
                TestLight.read_attribute(1, :bogus_cluster, :something)
+    end
+  end
+
+  describe "friendly device DSL" do
+    setup do
+      start_supervised!(FriendlyDevice)
+      :ok
+    end
+
+    test "endpoint aliases resolve to generated endpoint IDs" do
+      assert FriendlyDevice.endpoints() == %{root: 0, light: 1, sensor: 2}
+      assert FriendlyDevice.__endpoint_id__(:light) == 1
+      assert FriendlyDevice.__endpoint_id__(:sensor) == 2
+      assert FriendlyDevice.__endpoint_id__(:missing) == nil
+    end
+
+    test "named device types populate descriptor device_type_list" do
+      assert {:ok, [%{0 => {:uint, 0x0100}, 1 => {:uint, 3}}]} =
+               FriendlyDevice.read_attribute(:light, :descriptor, :device_type_list)
+
+      assert {:ok, [%{0 => {:uint, 0x0302}, 1 => {:uint, 2}}]} =
+               FriendlyDevice.read_attribute(:sensor, :descriptor, :device_type_list)
+    end
+
+    test "cluster aliases produce the same server lists as module declarations" do
+      assert 0x0006 in FriendlyDevice.__cluster_ids__(:light)
+      assert 0x0402 in FriendlyDevice.__cluster_ids__(:sensor)
+      assert FriendlyDevice.__cluster_module__(:light, 0x0006) == MatterEx.Cluster.OnOff
+    end
+
+    test "lists clusters by endpoint alias" do
+      assert :on_off in FriendlyDevice.clusters(:light)
+      assert :temperature_measurement in FriendlyDevice.clusters(:sensor)
+      assert {:error, :unsupported_endpoint} = FriendlyDevice.clusters(:missing)
+    end
+
+    test "explicit runtime calls accept endpoint aliases" do
+      assert {:ok, false} = FriendlyDevice.read_attribute(:light, :on_off, :on_off)
+      assert :ok = FriendlyDevice.write_attribute(:light, :on_off, :on_off, true)
+      assert {:ok, true} = FriendlyDevice.read_attribute(:light, :on_off, :on_off)
+      assert {:ok, nil} = FriendlyDevice.invoke_command(:light, :on_off, :toggle)
+      assert {:ok, false} = FriendlyDevice.read_attribute(:light, :on_off, :on_off)
+    end
+
+    test "shortcut attribute calls resolve unambiguous attributes" do
+      assert {:ok, false} = FriendlyDevice.read_attribute(:light, :on_off)
+      assert :ok = FriendlyDevice.update_attribute(:light, :on_off, true)
+      assert {:ok, true} = FriendlyDevice.read_attribute(:light, :on_off)
+    end
+
+    test "shortcut attribute calls report ambiguous attributes" do
+      assert {:error, :ambiguous_attribute} =
+               FriendlyDevice.read_attribute(:light, :cluster_revision)
+    end
+
+    test "shortcut command calls resolve unambiguous commands" do
+      assert {:ok, nil} = FriendlyDevice.invoke(:light, :on)
+      assert {:ok, true} = FriendlyDevice.read_attribute(:light, :on_off)
+    end
+
+    test "unknown endpoint returns unsupported_endpoint" do
+      assert {:error, :unsupported_endpoint} =
+               FriendlyDevice.read_attribute(:missing, :on_off, :on_off)
+    end
+  end
+
+  describe "device presets" do
+    setup do
+      start_supervised!(PresetDevice)
+      :ok
+    end
+
+    test "known vendor and product aliases are discoverable" do
+      assert {:test, vendor_opts} = List.keyfind(MatterEx.Device.known_vendors(), :test, 0)
+      assert vendor_opts[:vendor_name] == "MatterEx Test"
+      assert vendor_opts[:vendor_id] == 0xFFF1
+
+      assert {:smart_light, product_opts} =
+               List.keyfind(MatterEx.Device.known_products(), :smart_light, 0)
+
+      assert product_opts[:product_name] == "Smart Light"
+      assert product_opts[:product_id] == 0x8001
+    end
+
+    test "known aliases resolve to numeric vendor and product IDs" do
+      assert MatterEx.Device.vendor_id!(:test) == 0xFFF1
+      assert MatterEx.Device.product_id!(:matter_example) == 0x8000
+      assert MatterEx.Device.product_id!(:net_test) == 0x8000
+      assert MatterEx.Device.vendor_id!(0xFFF1) == 0xFFF1
+      assert MatterEx.Device.product_id!(0x8000) == 0x8000
+    end
+
+    test "vendor and product aliases populate BasicInformation" do
+      assert {:ok, "MatterEx Test"} =
+               PresetDevice.read_attribute(:root, :basic_information, :vendor_name)
+
+      assert {:ok, 0xFFF1} =
+               PresetDevice.read_attribute(:root, :basic_information, :vendor_id)
+
+      assert {:ok, "Smart Light"} =
+               PresetDevice.read_attribute(:root, :basic_information, :product_name)
+
+      assert {:ok, 0x8001} =
+               PresetDevice.read_attribute(:root, :basic_information, :product_id)
+    end
+
+    test "named endpoint without a block auto-composes required clusters" do
+      assert PresetDevice.endpoints() == %{root: 0, light: 1}
+
+      assert PresetDevice.__cluster_ids__(:light) |> Enum.sort() == [
+               0x0003,
+               0x0004,
+               0x0005,
+               0x0006,
+               0x0008,
+               0x001D
+             ]
+
+      assert :identify in PresetDevice.clusters(:light)
+      assert :level_control in PresetDevice.clusters(:light)
+      assert :on_off in PresetDevice.clusters(:light)
+    end
+
+    test "auto-composed endpoint works with shortcut calls" do
+      assert {:ok, false} = PresetDevice.read_attribute(:light, :on_off)
+      assert {:ok, nil} = PresetDevice.invoke(:light, :on)
+      assert {:ok, true} = PresetDevice.read_attribute(:light, :on_off)
     end
   end
 
