@@ -1,7 +1,7 @@
 # MatterEx
 
 [![CI](https://github.com/TomHoenderdos/matter_ex/actions/workflows/ci.yml/badge.svg)](https://github.com/TomHoenderdos/matter_ex/actions/workflows/ci.yml)
-[![Hex.pm](https://img.shields.io/hexpm/v/matter_ex.svg)](https://hex.pm/packages/matter_ex)
+[![Hex.pm](https://img.shields.io/hexpm/v/matter_ex.svg?cacheSeconds=300)](https://hex.pm/packages/matter_ex)
 [![Docs](https://img.shields.io/badge/docs-hexdocs-blue.svg)](https://hexdocs.pm/matter_ex)
 
 A [Matter](https://csa-iot.org/all-solutions/matter/) smart home protocol stack written in pure Elixir.
