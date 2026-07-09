@@ -181,6 +181,16 @@ defmodule MatterEx.MessageHandlerTest do
     end
   end
 
+  # Push a subscription's last_sent_at back in time to simulate max_interval
+  # elapsing without waiting real seconds.
+  defp backdate_last_sent(handler, session_id, sub_id, seconds) do
+    entry = handler.sessions[session_id]
+    mgr = entry.subscription_mgr
+    sub = Map.update!(mgr.subscriptions[sub_id], :last_sent_at, &(&1 - seconds))
+    mgr = %{mgr | subscriptions: Map.put(mgr.subscriptions, sub_id, sub)}
+    %{handler | sessions: Map.put(handler.sessions, session_id, %{entry | subscription_mgr: mgr})}
+  end
+
   # ── PASE via MessageHandler ─────────────────────────────────────
 
   describe "PASE via MessageHandler" do
@@ -625,6 +635,45 @@ defmodule MatterEx.MessageHandlerTest do
                   value: true
                 }}
              ] = report.attribute_reports
+    end
+
+    test "check_subscriptions sends a max_interval keep-alive when nothing changed",
+         %{handler: handler, comm_session: comm_session} do
+      sub_req =
+        IM.encode(%IM.SubscribeRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          min_interval: 0,
+          max_interval: 60
+        })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: sub_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      {_actions, handler} = MessageHandler.handle_frame(handler, frame)
+
+      # Nothing changed and the keep-alive is not yet due → no report.
+      {actions, handler} = MessageHandler.check_subscriptions(handler)
+      assert Enum.filter(actions, &match?({:send, _, _}, &1)) == []
+
+      # Simulate max_interval elapsing since the priming report, with no change.
+      handler = backdate_last_sent(handler, 1, 1, 61)
+
+      {actions, _handler} = MessageHandler.check_subscriptions(handler)
+      [{:send, _sid, report_frame}] = Enum.filter(actions, &match?({:send, _, _}, &1))
+      {:ok, msg, _cs} = SecureChannel.open(comm_session, report_frame)
+      assert msg.proto.opcode == ProtocolID.opcode(:interaction_model, :report_data)
+
+      {:ok, report} = IM.decode(:report_data, msg.proto.payload)
+      assert report.subscription_id == 1
+      # A keep-alive carries no changed attributes.
+      assert report.attribute_reports == []
     end
 
     test "chunked wildcard subscription completes with SubscribeResponse",
