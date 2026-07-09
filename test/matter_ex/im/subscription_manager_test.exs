@@ -95,16 +95,17 @@ defmodule MatterEx.IM.SubscriptionManagerTest do
       assert [{^sub_id, _paths}] = SubscriptionManager.due_reports(mgr, sub.last_report_at + 1)
     end
 
-    test "returns IDs when max_interval elapsed" do
+    test "returns IDs when the max-interval report is due since the last send" do
       mgr = SubscriptionManager.new()
-      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 60, 10)
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 60, 100)
+      mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, 0)
+      # A later no-send poll advanced last_report_at, so the min-cadence check is
+      # not due at 80 — but the max-interval report (80% of 100 since the last
+      # send) is.
+      mgr = SubscriptionManager.record_report(mgr, sub_id, %{}, 70)
 
-      # Get the subscription's last_report_at
-      sub = SubscriptionManager.get(mgr, sub_id)
-      future = sub.last_report_at + 11
-
-      due = SubscriptionManager.due_reports(mgr, future)
-      assert [{^sub_id, _paths}] = due
+      assert SubscriptionManager.due_reports(mgr, 79) == []
+      assert [{^sub_id, _paths}] = SubscriptionManager.due_reports(mgr, 80)
     end
 
     test "returns empty when interval not elapsed" do
@@ -283,19 +284,6 @@ defmodule MatterEx.IM.SubscriptionManagerTest do
 
     test "non-existent subscription is not due" do
       refute SubscriptionManager.max_interval_elapsed?(SubscriptionManager.new(), 999, 0)
-    end
-
-    test "due_reports surfaces a subscription when only the interval report is due" do
-      mgr = SubscriptionManager.new()
-      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 30, 100)
-      mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, 0)
-      # A later poll advanced last_report_at without sending (record_report keeps
-      # last_sent_at), so the ordinary min-cadence check is NOT due at 80...
-      mgr = SubscriptionManager.record_report(mgr, sub_id, %{}, 70)
-
-      # ...but 80% of max_interval since the last *send* surfaces the subscription.
-      assert SubscriptionManager.due_reports(mgr, 79) == []
-      assert SubscriptionManager.due_reports(mgr, 80) == [{sub_id, @paths}]
     end
   end
 

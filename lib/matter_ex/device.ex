@@ -634,7 +634,12 @@ defmodule MatterEx.Device do
           name = :"#{device_module}.ep#{ep_id}.#{cluster_mod.cluster_name()}"
 
           init_opts =
-            [name: name, endpoint: ep_id, event_store: event_store_name, reporting: reporting_name] ++
+            [
+              name: name,
+              endpoint: ep_id,
+              event_store: event_store_name,
+              reporting: reporting_name
+            ] ++
               cluster_init_opts(
                 cluster_mod,
                 ep_id,

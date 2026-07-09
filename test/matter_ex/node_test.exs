@@ -772,7 +772,9 @@ defmodule MatterEx.NodeTest do
       }
 
       {frame, comm_session} = SecureChannel.seal(comm_session, proto)
-      {:ok, priming, comm_session} = SecureChannel.open(comm_session, send_and_receive(client, port, frame))
+
+      {:ok, priming, comm_session} =
+        SecureChannel.open(comm_session, send_and_receive(client, port, frame))
 
       # Ack the priming report so it stops retransmitting; the SubscribeResponse
       # completes the two-phase subscribe.
