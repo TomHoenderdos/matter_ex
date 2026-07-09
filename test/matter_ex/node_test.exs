@@ -532,6 +532,49 @@ defmodule MatterEx.NodeTest do
       assert sub_resp.subscription_id == 1
       assert sub_resp.max_interval == 60
     end
+
+    test "caps the reported max_interval at the node's max_interval_cap", %{
+      client: client,
+      port: port
+    } do
+      comm_session = run_pase_over_udp(client, port)
+
+      # Request a 10-minute ceiling; the node (default cap 120s) should hand back 120.
+      sub_req =
+        IM.encode(%IM.SubscribeRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          min_interval: 0,
+          max_interval: 600
+        })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 10,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: sub_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      {:ok, msg, comm_session} = SecureChannel.open(comm_session, send_and_receive(client, port, frame))
+
+      status_proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        ack_counter: msg.header.message_counter,
+        opcode: ProtocolID.opcode(:interaction_model, :status_response),
+        exchange_id: 10,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: IM.encode(%IM.StatusResponse{status: 0})
+      }
+
+      {status_frame, comm_session} = SecureChannel.seal(comm_session, status_proto)
+      {:ok, sub_msg, _comm_session} = SecureChannel.open(comm_session, send_and_receive(client, port, status_frame))
+
+      {:ok, sub_resp} = IM.decode(:subscribe_response, sub_msg.proto.payload)
+      assert sub_resp.max_interval == 120
+    end
   end
 
   # ── Push-based reporting ────────────────────────────────────────
