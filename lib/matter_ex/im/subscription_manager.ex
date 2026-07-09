@@ -112,14 +112,16 @@ defmodule MatterEx.IM.SubscriptionManager do
   end
 
   @doc """
-  Check whether the `max_interval` keep-alive is due for a subscription.
+  Check whether a subscription is due for a report on its `max_interval`.
 
   Returns `true` when a report was previously sent (`last_sent_at` set) and at
-  least `max_interval` seconds have elapsed since — so a report must be sent even
-  if nothing changed. Anchored on the last *sent* report, not the last poll.
+  least 80% of `max_interval` has elapsed since. Anchored on the last *sent*
+  report, not the last poll. The report fires at 80% of the negotiated interval
+  (rather than 100%) to defensively leave headroom for poll granularity, network
+  delay, and retransmits, so the subscriber always hears back in plenty of time.
 
-  A `max_interval` of 0 disables the heartbeat; it is only used in tests as an
-  "always due" value, and real subscriptions negotiate a positive ceiling.
+  A `max_interval` of 0 disables it; it is only used in tests as an "always due"
+  value, and real subscriptions negotiate a positive ceiling.
   """
   @spec max_interval_elapsed?(t(), non_neg_integer(), integer()) :: boolean()
   def max_interval_elapsed?(%__MODULE__{} = state, sub_id, now) do
@@ -131,7 +133,7 @@ defmodule MatterEx.IM.SubscriptionManager do
 
   defp heartbeat_due?(%{last_sent_at: sent, max_interval: max}, now)
        when is_integer(sent) and max > 0,
-       do: now - sent >= max
+       do: now - sent >= div(max * 4, 5)
 
   defp heartbeat_due?(_sub, _now), do: false
 

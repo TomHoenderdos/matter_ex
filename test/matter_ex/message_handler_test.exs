@@ -637,7 +637,7 @@ defmodule MatterEx.MessageHandlerTest do
              ] = report.attribute_reports
     end
 
-    test "check_subscriptions sends a max_interval keep-alive when nothing changed",
+    test "check_subscriptions sends a report on max_interval when nothing changed",
          %{handler: handler, comm_session: comm_session} do
       sub_req =
         IM.encode(%IM.SubscribeRequest{
@@ -672,7 +672,7 @@ defmodule MatterEx.MessageHandlerTest do
 
       {:ok, report} = IM.decode(:report_data, msg.proto.payload)
       assert report.subscription_id == 1
-      # A keep-alive carries no changed attributes.
+      # An unchanged max_interval report carries no changed attributes.
       assert report.attribute_reports == []
     end
 

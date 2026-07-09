@@ -34,7 +34,9 @@ defmodule MatterEx.Node do
   alias MatterEx.Protocol.MessageCodec.Header
   alias MatterEx.Transport.TCP, as: TCPFraming
 
-  @sub_check_interval 1000
+  # Fallback poll interval. Reporting is push-driven; this only backstops the
+  # max-interval report and min_interval-throttled flushes, so it can be slow.
+  @sub_check_interval 10_000
 
   # Re-announcement backoff while no controller is connected. RFC 6762 §6 forbids
   # multicasting the same record more than once a second, and §8.3 wants
@@ -58,7 +60,7 @@ defmodule MatterEx.Node do
       :commissioning_instance,
       :operational_instance,
       # Periodic subscription poll interval (ms); the push path is primary
-      sub_check_interval: 1000,
+      sub_check_interval: 10_000,
       # Current transport for the frame being processed
       current_transport: nil,
       # Per-session transport: session_id => {:udp, {ip, port}} | {:tcp, tcp_socket}

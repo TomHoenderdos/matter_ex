@@ -1105,13 +1105,13 @@ defmodule MatterEx.MessageHandler do
     entry = state.sessions[session_id]
     sub = SubscriptionManager.get(entry.subscription_mgr, sub_id)
     versions = Router.cluster_versions(state.device, paths)
-    heartbeat? = SubscriptionManager.max_interval_elapsed?(entry.subscription_mgr, sub_id, now)
+    interval_due? = SubscriptionManager.max_interval_elapsed?(entry.subscription_mgr, sub_id, now)
 
     # Fast path: skip the full attribute read only when nothing changed *and* no
-    # max_interval keep-alive is due. Every attribute change bumps its cluster's
+    # max_interval report is due. Every attribute change bumps its cluster's
     # DataVersion, so an unchanged version map means nothing the subscription
     # reports on has changed.
-    if not heartbeat? and versions != %{} and versions == sub.last_versions do
+    if not interval_due? and versions != %{} and versions == sub.last_versions do
       update_subscription_report_time(
         state,
         session_id,
@@ -1141,10 +1141,11 @@ defmodule MatterEx.MessageHandler do
   # `report` bundles the freshly-read `%{data:, values:, changed:}` for this poll.
   defp process_subscription_report(state, session_id, entry, sub, report, versions, now) do
     cond do
-      # max_interval keep-alive: send even when nothing changed. `report.changed`
-      # may be [] — an empty ReportData is a valid liveness report — and this
-      # resets the interval via record_sent.
+      # The max reporting interval is approaching (fires at 80% of it): send a
+      # report even when nothing changed so the subscriber hears back in time.
+      # `report.changed` may be [], and sending resets the interval via record_sent.
       SubscriptionManager.max_interval_elapsed?(entry.subscription_mgr, sub.id, now) ->
+        Logger.debug("Subscription #{sub.id}: sending report before max reporting interval")
         send_subscription_report(state, session_id, entry, sub.id, report, versions, now)
 
       report.values == sub.last_values ->
