@@ -191,6 +191,17 @@ defmodule MatterEx.MessageHandlerTest do
     %{handler | sessions: Map.put(handler.sessions, session_id, %{entry | subscription_mgr: mgr})}
   end
 
+  # Make a subscription due for the next check_subscriptions by backdating its
+  # last_report_at (the poll otherwise waits out the min-interval check cadence).
+  # Leaves last_sent_at untouched, so change detection is exercised.
+  defp force_due(handler, session_id, sub_id) do
+    entry = handler.sessions[session_id]
+    mgr = entry.subscription_mgr
+    sub = Map.update!(mgr.subscriptions[sub_id], :last_report_at, &(&1 - 3600))
+    mgr = %{mgr | subscriptions: Map.put(mgr.subscriptions, sub_id, sub)}
+    %{handler | sessions: Map.put(handler.sessions, session_id, %{entry | subscription_mgr: mgr})}
+  end
+
   # ── PASE via MessageHandler ─────────────────────────────────────
 
   describe "PASE via MessageHandler" do
@@ -542,8 +553,7 @@ defmodule MatterEx.MessageHandlerTest do
         IM.encode(%IM.SubscribeRequest{
           attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
           min_interval: 0,
-          # immediately due
-          max_interval: 0
+          max_interval: 60
         })
 
       proto = %ProtoHeader{
@@ -559,6 +569,7 @@ defmodule MatterEx.MessageHandlerTest do
       {_actions, handler} = MessageHandler.handle_frame(handler, frame)
 
       # First check after priming — no duplicate report for already-sent values.
+      handler = force_due(handler, 1, 1)
       {actions, handler} = MessageHandler.check_subscriptions(handler)
       send_actions = Enum.filter(actions, &match?({:send, _, _}, &1))
       assert send_actions == []
@@ -566,6 +577,7 @@ defmodule MatterEx.MessageHandlerTest do
       on_off_name = TestLight.__process_name__(1, :on_off)
       :ok = GenServer.call(on_off_name, {:write_attribute, :on_off, true})
 
+      handler = force_due(handler, 1, 1)
       {actions, _handler} = MessageHandler.check_subscriptions(handler)
       [{:send, _session_id, report_frame}] = Enum.filter(actions, &match?({:send, _, _}, &1))
       {:ok, msg, _comm_session} = SecureChannel.open(comm_session, report_frame)
@@ -589,7 +601,7 @@ defmodule MatterEx.MessageHandlerTest do
         IM.encode(%IM.SubscribeRequest{
           attribute_paths: [%{}],
           min_interval: 0,
-          max_interval: 0
+          max_interval: 60
         })
 
       proto = %ProtoHeader{
@@ -615,13 +627,14 @@ defmodule MatterEx.MessageHandlerTest do
       [subscription] = MatterEx.IM.SubscriptionManager.subscriptions(entry.subscription_mgr)
       assert subscription.paths == [%{}]
 
+      handler = force_due(handler, 1, 1)
       {actions, handler} = MessageHandler.check_subscriptions(handler)
       assert Enum.filter(actions, &match?({:send, _, _}, &1)) == []
 
       on_off_name = TestLight.__process_name__(1, :on_off)
       :ok = GenServer.call(on_off_name, {:write_attribute, :on_off, true})
 
-      Process.sleep(1)
+      handler = force_due(handler, 1, 1)
       {actions, _handler} = MessageHandler.check_subscriptions(handler)
       [{:send, _session_id, report_frame}] = Enum.filter(actions, &match?({:send, _, _}, &1))
 
@@ -924,12 +937,12 @@ defmodule MatterEx.MessageHandlerTest do
 
     test "min_interval throttle suppresses early reports",
          %{handler: handler, comm_session: comm_session} do
-      # Subscribe with min_interval=60 seconds, max_interval=0 (immediately due)
+      # min_interval=60s: a change within 60s of the last send is throttled.
       sub_req =
         IM.encode(%IM.SubscribeRequest{
           attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
           min_interval: 60,
-          max_interval: 0
+          max_interval: 120
         })
 
       proto = %ProtoHeader{
@@ -945,18 +958,19 @@ defmodule MatterEx.MessageHandlerTest do
       {_actions, handler} = MessageHandler.handle_frame(handler, frame)
 
       # First check after priming — no duplicate report for already-sent values.
+      handler = force_due(handler, 1, 1)
       {actions1, handler} = MessageHandler.check_subscriptions(handler)
-      send_actions1 = Enum.filter(actions1, &match?({:send, _, _}, &1))
-      assert send_actions1 == []
+      assert Enum.filter(actions1, &match?({:send, _, _}, &1)) == []
 
       # Toggle the light so values change
       on_off_name = TestLight.__process_name__(1, :on_off)
       GenServer.call(on_off_name, {:write_attribute, :on_off, true})
 
-      # Second check — values changed BUT min_interval (60s) not elapsed
+      # Second check — value changed BUT min_interval (60s) has not elapsed since
+      # the last send, so the report is throttled.
+      handler = force_due(handler, 1, 1)
       {actions2, _handler} = MessageHandler.check_subscriptions(handler)
-      send_actions2 = Enum.filter(actions2, &match?({:send, _, _}, &1))
-      assert send_actions2 == []
+      assert Enum.filter(actions2, &match?({:send, _, _}, &1)) == []
     end
 
     test "min_interval=0 allows immediate reports",
@@ -965,7 +979,7 @@ defmodule MatterEx.MessageHandlerTest do
         IM.encode(%IM.SubscribeRequest{
           attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
           min_interval: 0,
-          max_interval: 0
+          max_interval: 60
         })
 
       proto = %ProtoHeader{
@@ -981,6 +995,7 @@ defmodule MatterEx.MessageHandlerTest do
       {_actions, handler} = MessageHandler.handle_frame(handler, frame)
 
       # First check after priming — no duplicate report for already-sent values.
+      handler = force_due(handler, 1, 1)
       {actions1, handler} = MessageHandler.check_subscriptions(handler)
       assert Enum.filter(actions1, &match?({:send, _, _}, &1)) == []
 
@@ -989,7 +1004,7 @@ defmodule MatterEx.MessageHandlerTest do
       GenServer.call(on_off_name, {:write_attribute, :on_off, true})
 
       # Second report — min_interval=0 means no throttle
-      Process.sleep(1)
+      handler = force_due(handler, 1, 1)
       {actions2, _handler} = MessageHandler.check_subscriptions(handler)
       assert length(Enum.filter(actions2, &match?({:send, _, _}, &1))) == 1
     end

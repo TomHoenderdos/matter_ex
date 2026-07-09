@@ -93,9 +93,10 @@ defmodule MatterEx.IM.SubscriptionManager do
   @doc """
   Check which subscriptions are due for a report check.
 
-  Returns a list of `{sub_id, paths}` tuples when either the minimum
-  reporting interval allows change detection or the maximum interval has
-  elapsed. The caller decides whether to send a report after comparing values.
+  Returns `{sub_id, paths}` for each subscription whose min-interval change-check
+  cadence has elapsed (measured from `last_report_at`) or whose max-interval
+  report is due (measured from the last *sent* report). The caller decides
+  whether to actually send after comparing values.
   """
   @spec due_reports(t(), integer()) :: [{non_neg_integer(), [map()]}]
   def due_reports(%__MODULE__{} = state, now) do
@@ -103,7 +104,7 @@ defmodule MatterEx.IM.SubscriptionManager do
       elapsed = now - sub.last_report_at
       check_interval = max(sub.min_interval, 1)
 
-      if elapsed >= check_interval or elapsed >= sub.max_interval or heartbeat_due?(sub, now) do
+      if elapsed >= check_interval or heartbeat_due?(sub, now) do
         [{sub_id, sub.paths}]
       else
         []
