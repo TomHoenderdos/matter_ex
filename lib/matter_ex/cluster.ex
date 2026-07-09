@@ -77,10 +77,12 @@ defmodule MatterEx.Cluster do
   def dispatch_command_reply(module, name, params, state) do
     case module.handle_command(name, params, state) do
       {:ok, response, new_state} ->
-        # Bump data_version if state changed
+        # Bump data_version (and publish a change) if state changed
         new_state =
           if Map.drop(new_state, [:__data_version__]) != Map.drop(state, [:__data_version__]) do
-            Map.update!(new_state, :__data_version__, &(&1 + 1))
+            bumped = Map.update!(new_state, :__data_version__, &(&1 + 1))
+            notify_changed(bumped)
+            bumped
           else
             new_state
           end
@@ -90,6 +92,26 @@ defmodule MatterEx.Cluster do
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
+  end
+
+  @doc false
+  # Publish an attribute-changed event on the device's reporting bus so the node
+  # can report it immediately (push-based reporting). No-op when the cluster was
+  # started without a `:reporting` registry (e.g. standalone in a unit test).
+  def notify_changed(state) do
+    registry = Map.get(state, :__reporting__)
+    endpoint = Map.get(state, :__endpoint__)
+    cluster = Map.get(state, :__cluster_id__)
+
+    if registry && endpoint && cluster do
+      Registry.dispatch(registry, :changes, fn subscribers ->
+        Enum.each(subscribers, fn {pid, _} ->
+          send(pid, {:attribute_changed, endpoint, cluster})
+        end)
+      end)
+    end
+
+    :ok
   end
 
   @known_cluster_ids %{
@@ -347,6 +369,13 @@ defmodule MatterEx.Cluster do
             Map.put(acc, attr.name, value)
           end)
 
+        # Identity + pub/sub bus for push-based reporting (see notify_changed/1).
+        state =
+          state
+          |> Map.put(:__endpoint__, opts[:endpoint])
+          |> Map.put(:__cluster_id__, cluster_id())
+          |> Map.put(:__reporting__, opts[:reporting])
+
         {:ok, state}
       end
 
@@ -430,7 +459,9 @@ defmodule MatterEx.Cluster do
       end
 
       defp bump_data_version(state) do
-        Map.update!(state, :__data_version__, &(&1 + 1))
+        state = Map.update!(state, :__data_version__, &(&1 + 1))
+        MatterEx.Cluster.notify_changed(state)
+        state
       end
 
       def get_attribute(state, name), do: Map.get(state, name)

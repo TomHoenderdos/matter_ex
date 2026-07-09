@@ -617,6 +617,11 @@ defmodule MatterEx.Device do
          endpoint_server_lists
        ) do
     event_store_name = :"#{device_module}.ep0.event_store"
+    reporting_name = :"#{device_module}.Reporting"
+
+    # Duplicate-key Registry used as a pub/sub bus: clusters publish attribute
+    # changes and the node subscribes to report them (push-based reporting).
+    reporting_spec = {Registry, keys: :duplicate, name: reporting_name}
 
     event_store_spec = %{
       id: event_store_name,
@@ -629,7 +634,7 @@ defmodule MatterEx.Device do
           name = :"#{device_module}.ep#{ep_id}.#{cluster_mod.cluster_name()}"
 
           init_opts =
-            [name: name, endpoint: ep_id, event_store: event_store_name] ++
+            [name: name, endpoint: ep_id, event_store: event_store_name, reporting: reporting_name] ++
               cluster_init_opts(
                 cluster_mod,
                 ep_id,
@@ -646,8 +651,9 @@ defmodule MatterEx.Device do
         end)
       end)
 
-    # EventStore must start before clusters so clusters can emit events in init
-    [event_store_spec | cluster_specs]
+    # Registry and EventStore start before clusters so clusters can publish
+    # changes and emit events during init.
+    [reporting_spec, event_store_spec | cluster_specs]
   end
 
   # Matter DeviceTypeStruct context tags (spec section 11.1.5.1)

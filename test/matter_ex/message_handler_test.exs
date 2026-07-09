@@ -676,6 +676,44 @@ defmodule MatterEx.MessageHandlerTest do
       assert report.attribute_reports == []
     end
 
+    test "report_targets reports only subscriptions covering a changed cluster",
+         %{handler: handler, comm_session: comm_session} do
+      sub_req =
+        IM.encode(%IM.SubscribeRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          min_interval: 0,
+          max_interval: 60
+        })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: sub_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      {_actions, handler} = MessageHandler.handle_frame(handler, frame)
+
+      on_off_name = TestLight.__process_name__(1, :on_off)
+      :ok = GenServer.call(on_off_name, {:write_attribute, :on_off, true})
+
+      # A change to a cluster the subscription does not cover → nothing.
+      {actions, handler} = MessageHandler.report_targets(handler, [{1, 0x001D}])
+      assert Enum.filter(actions, &match?({:send, _, _}, &1)) == []
+
+      # A change to the subscribed cluster → an immediate report of the new value.
+      {actions, _handler} = MessageHandler.report_targets(handler, [{1, 6}])
+      [{:send, _sid, report_frame}] = Enum.filter(actions, &match?({:send, _, _}, &1))
+      {:ok, msg, _cs} = SecureChannel.open(comm_session, report_frame)
+
+      {:ok, report} = IM.decode(:report_data, msg.proto.payload)
+      assert [{:data, %{path: %{endpoint: 1, cluster: 6, attribute: 0}, value: true}}] =
+               report.attribute_reports
+    end
+
     test "chunked wildcard subscription completes with SubscribeResponse",
          %{handler: handler, comm_session: comm_session} do
       sub_req =
