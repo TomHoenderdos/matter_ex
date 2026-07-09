@@ -255,7 +255,7 @@ defmodule MatterEx.IM.SubscriptionManagerTest do
     end
   end
 
-  describe "max_interval_elapsed?/3 (keep-alive)" do
+  describe "max_interval_elapsed?/3 (max reporting interval)" do
     test "false before a report has ever been sent" do
       mgr = SubscriptionManager.new()
       {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
@@ -263,16 +263,17 @@ defmodule MatterEx.IM.SubscriptionManagerTest do
       refute SubscriptionManager.max_interval_elapsed?(mgr, sub_id, 10_000)
     end
 
-    test "false before max_interval, true once it elapses since the last send" do
+    test "fires at 80% of max_interval since the last send (defensive margin)" do
       mgr = SubscriptionManager.new()
-      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
-      mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, 100)
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 100)
+      mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, 0)
 
-      refute SubscriptionManager.max_interval_elapsed?(mgr, sub_id, 159)
-      assert SubscriptionManager.max_interval_elapsed?(mgr, sub_id, 160)
+      # 80% of 100 = 80s after the last send.
+      refute SubscriptionManager.max_interval_elapsed?(mgr, sub_id, 79)
+      assert SubscriptionManager.max_interval_elapsed?(mgr, sub_id, 80)
     end
 
-    test "max_interval 0 disables the heartbeat" do
+    test "max_interval 0 disables the interval report" do
       mgr = SubscriptionManager.new()
       {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 0)
       mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, 100)
@@ -284,17 +285,17 @@ defmodule MatterEx.IM.SubscriptionManagerTest do
       refute SubscriptionManager.max_interval_elapsed?(SubscriptionManager.new(), 999, 0)
     end
 
-    test "due_reports surfaces a subscription when only the keep-alive is due" do
+    test "due_reports surfaces a subscription when only the interval report is due" do
       mgr = SubscriptionManager.new()
-      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 30, 45)
-      mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, 100)
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 30, 100)
+      mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, 0)
       # A later poll advanced last_report_at without sending (record_report keeps
-      # last_sent_at), so the ordinary min-cadence check is NOT due at 145...
-      mgr = SubscriptionManager.record_report(mgr, sub_id, %{}, 140)
+      # last_sent_at), so the ordinary min-cadence check is NOT due at 80...
+      mgr = SubscriptionManager.record_report(mgr, sub_id, %{}, 70)
 
-      # ...but 45s after the last *send*, the keep-alive surfaces the subscription.
-      assert SubscriptionManager.due_reports(mgr, 144) == []
-      assert SubscriptionManager.due_reports(mgr, 145) == [{sub_id, @paths}]
+      # ...but 80% of max_interval since the last *send* surfaces the subscription.
+      assert SubscriptionManager.due_reports(mgr, 79) == []
+      assert SubscriptionManager.due_reports(mgr, 80) == [{sub_id, @paths}]
     end
   end
 
