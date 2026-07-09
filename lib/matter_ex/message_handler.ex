@@ -837,7 +837,8 @@ defmodule MatterEx.MessageHandler do
             sub_mgr,
             sub_id,
             report_values(priming_report.attribute_reports),
-            now
+            now,
+            Router.cluster_versions(device, attribute_paths)
           )
 
         MatterEx.DebugTrace.record(%{
@@ -1046,56 +1047,52 @@ defmodule MatterEx.MessageHandler do
   defp process_due_subscription(state, session_id, sub_id, paths, now) do
     entry = state.sessions[session_id]
     sub = SubscriptionManager.get(entry.subscription_mgr, sub_id)
+    versions = Router.cluster_versions(state.device, paths)
 
-    case build_subscription_report(state.device, sub_id, paths, entry.session) do
-      nil ->
-        update_subscription_report_time(state, session_id, entry, sub_id, %{}, now)
+    # Fast path: every attribute change bumps its cluster's DataVersion, so if no
+    # covered cluster's version moved since the last poll, nothing the
+    # subscription reports on has changed — skip the full attribute read.
+    if versions != %{} and versions == sub.last_versions do
+      update_subscription_report_time(state, session_id, entry, sub_id, sub.last_values, versions, now)
+    else
+      case build_subscription_report(state.device, sub_id, paths, entry.session) do
+        nil ->
+          update_subscription_report_time(state, session_id, entry, sub_id, %{}, versions, now)
 
-      {report_data, current_values} ->
-        changed_reports = changed_subscription_reports(report_data.attribute_reports, sub)
+        {report_data, current_values} ->
+          report = %{
+            data: report_data,
+            values: current_values,
+            changed: changed_subscription_reports(report_data.attribute_reports, sub)
+          }
 
-        process_subscription_report(
-          state,
-          session_id,
-          entry,
-          sub,
-          report_data,
-          current_values,
-          changed_reports,
-          now
-        )
+          process_subscription_report(state, session_id, entry, sub, report, versions, now)
+      end
     end
   end
 
-  defp process_subscription_report(
-         state,
-         session_id,
-         entry,
-         sub,
-         report_data,
-         current_values,
-         changed_reports,
-         now
-       ) do
+  # `report` bundles the freshly-read `%{data:, values:, changed:}` for this poll.
+  defp process_subscription_report(state, session_id, entry, sub, report, versions, now) do
     cond do
-      current_values == sub.last_values ->
-        update_subscription_report_time(state, session_id, entry, sub.id, current_values, now)
+      report.values == sub.last_values ->
+        update_subscription_report_time(state, session_id, entry, sub.id, report.values, versions, now)
 
       SubscriptionManager.throttled?(entry.subscription_mgr, sub.id, now) ->
         Logger.debug("Subscription #{sub.id}: suppressed report (min_interval throttle)")
-        update_subscription_report_time(state, session_id, entry, sub.id, sub.last_values, now)
-
-      true ->
-        send_subscription_report(
+        # Keep the OLD values and versions so the throttled change is re-read and
+        # sent once min_interval elapses — the version gate must not skip it.
+        update_subscription_report_time(
           state,
           session_id,
           entry,
           sub.id,
-          report_data,
-          current_values,
-          changed_reports,
+          sub.last_values,
+          sub.last_versions,
           now
         )
+
+      true ->
+        send_subscription_report(state, session_id, entry, sub.id, report, versions, now)
     end
   end
 
@@ -1110,24 +1107,15 @@ defmodule MatterEx.MessageHandler do
     end)
   end
 
-  defp update_subscription_report_time(state, session_id, entry, sub_id, values, now) do
-    sub_mgr = SubscriptionManager.record_report(entry.subscription_mgr, sub_id, values, now)
+  defp update_subscription_report_time(state, session_id, entry, sub_id, values, versions, now) do
+    sub_mgr = SubscriptionManager.record_report(entry.subscription_mgr, sub_id, values, now, versions)
     entry = %{entry | subscription_mgr: sub_mgr}
     sessions = Map.put(state.sessions, session_id, entry)
     {[], %{state | sessions: sessions}}
   end
 
-  defp send_subscription_report(
-         state,
-         session_id,
-         entry,
-         sub_id,
-         report_data,
-         current_values,
-         changed_reports,
-         now
-       ) do
-    report_data = %{report_data | attribute_reports: changed_reports}
+  defp send_subscription_report(state, session_id, entry, sub_id, report, versions, now) do
+    report_data = %{report.data | attribute_reports: report.changed}
     payload = IM.encode(report_data)
     im_protocol_id = ProtocolID.protocol_id(:interaction_model)
 
@@ -1142,15 +1130,16 @@ defmodule MatterEx.MessageHandler do
       subscription_id: sub_id,
       exchange_id: proto.exchange_id,
       message_counter: message_counter,
-      attribute_count: length(changed_reports),
+      attribute_count: length(report.changed),
       payload_size: byte_size(payload),
-      paths: summarize_report_paths(changed_reports),
+      paths: summarize_report_paths(report.changed),
       needs_ack: proto.needs_ack
     })
 
     mgr = maybe_record_mrp_send(mgr, proto, frame, message_counter)
     exchange_to_sub = entry |> Map.get(:exchange_to_sub, %{}) |> Map.put(message_counter, sub_id)
-    sub_mgr = SubscriptionManager.record_sent(entry.subscription_mgr, sub_id, current_values, now)
+    sub_mgr =
+      SubscriptionManager.record_sent(entry.subscription_mgr, sub_id, report.values, now, versions)
 
     entry = %{
       entry

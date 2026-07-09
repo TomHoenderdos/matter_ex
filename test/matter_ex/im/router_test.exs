@@ -231,4 +231,52 @@ defmodule MatterEx.IM.RouterTest do
               ]} = data.value
     end
   end
+
+  # ── cluster_versions (subscription poll gate) ──────────────────
+
+  describe "cluster_versions/2" do
+    test "returns an integer DataVersion for each cluster a wildcard covers" do
+      versions = Router.cluster_versions(FabricDevice, [%{}])
+
+      # OnOff on endpoint 1 is covered; all values are integer versions.
+      assert Map.has_key?(versions, {1, 0x0006})
+      assert map_size(versions) > 1
+      assert Enum.all?(Map.values(versions), &is_integer/1)
+    end
+
+    test "a concrete path covers only that cluster" do
+      versions =
+        Router.cluster_versions(FabricDevice, [%{endpoint: 1, cluster: 0x0006, attribute: 0}])
+
+      assert Map.keys(versions) == [{1, 0x0006}]
+    end
+
+    test "a write bumps only the written cluster's version" do
+      before = Router.cluster_versions(FabricDevice, [%{}])
+
+      on_off = FabricDevice.__process_name__(1, :on_off)
+      :ok = GenServer.call(on_off, {:write_attribute, :on_off, true})
+
+      after_write = Router.cluster_versions(FabricDevice, [%{}])
+
+      assert after_write[{1, 0x0006}] == before[{1, 0x0006}] + 1
+      # Every other cluster is unchanged — so the poll gate skips the full read.
+      others = Map.delete(after_write, {1, 0x0006})
+      assert Enum.all?(others, fn {key, version} -> before[key] == version end)
+    end
+
+    test "an invoke that changes state bumps the cluster version" do
+      path = [%{endpoint: 1, cluster: 0x0006, attribute: 0}]
+      before = Router.cluster_versions(FabricDevice, path)
+
+      on_off = FabricDevice.__process_name__(1, :on_off)
+      {:ok, _} = GenServer.call(on_off, {:invoke_command, :on, %{}, %{auth_mode: :pase}})
+
+      assert Router.cluster_versions(FabricDevice, path)[{1, 0x0006}] > before[{1, 0x0006}]
+    end
+
+    test "nil device returns an empty map" do
+      assert Router.cluster_versions(nil, [%{}]) == %{}
+    end
+  end
 end

@@ -255,6 +255,40 @@ defmodule MatterEx.IM.SubscriptionManagerTest do
     end
   end
 
+  describe "last_versions (poll gate)" do
+    test "subscribe/4 starts with empty last_versions" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
+      assert SubscriptionManager.get(mgr, sub_id).last_versions == %{}
+    end
+
+    test "record_report stores last_versions" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
+
+      versions = %{{1, 6} => 3}
+      mgr = SubscriptionManager.record_report(mgr, sub_id, %{}, 100, versions)
+      assert SubscriptionManager.get(mgr, sub_id).last_versions == versions
+    end
+
+    test "record_sent stores last_versions" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
+
+      versions = %{{1, 6} => 7}
+      mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, 100, versions)
+      assert SubscriptionManager.get(mgr, sub_id).last_versions == versions
+    end
+
+    test "versions arg is optional and defaults to empty" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
+
+      mgr = SubscriptionManager.record_report(mgr, sub_id, %{}, 100)
+      assert SubscriptionManager.get(mgr, sub_id).last_versions == %{}
+    end
+  end
+
   describe "unsubscribe_all/1" do
     test "removes all subscriptions" do
       mgr = SubscriptionManager.new()
