@@ -50,6 +50,8 @@ defmodule MatterEx.Node do
       :commissioning_service,
       :commissioning_instance,
       :operational_instance,
+      # Periodic subscription poll interval (ms); the push path is primary
+      sub_check_interval: 1000,
       # Current transport for the frame being processed
       current_transport: nil,
       # Per-session transport: session_id => {:udp, {ip, port}} | {:tcp, tcp_socket}
@@ -74,6 +76,9 @@ defmodule MatterEx.Node do
   - `:port` — UDP/TCP port (default 5540, use 0 for OS-assigned)
   - `:name` — GenServer name
   - `:tcp` — enable TCP listener (default true)
+  - `:sub_check_interval` — subscription poll interval in ms (default 1000). The
+    push path reports changes immediately; this is the fallback for keep-alives
+    and `min_interval`-throttled changes.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -97,11 +102,17 @@ defmodule MatterEx.Node do
   def init(opts) do
     udp_port = Keyword.get(opts, :port, 5540)
     tcp_enabled = Keyword.get(opts, :tcp, true)
+    device = Keyword.fetch!(opts, :device)
+    sub_check_interval = Keyword.get(opts, :sub_check_interval, @sub_check_interval)
 
     # Start commissioning agent if not already running
     if !Process.whereis(Commissioning) do
       Commissioning.start_link()
     end
+
+    # Subscribe to the device's reporting bus for push-based reporting. Best
+    # effort: the poll still runs if the device has no reporting registry.
+    subscribe_to_reporting(device)
 
     case open_udp_sockets(udp_port) do
       {:ok, socket, socket6, assigned_port} ->
@@ -115,7 +126,7 @@ defmodule MatterEx.Node do
 
         handler =
           MessageHandler.new(
-            device: Keyword.fetch!(opts, :device),
+            device: device,
             passcode: Keyword.fetch!(opts, :passcode),
             salt: Keyword.fetch!(opts, :salt),
             iterations: Keyword.fetch!(opts, :iterations),
@@ -123,7 +134,7 @@ defmodule MatterEx.Node do
           )
 
         Logger.info("Matter node listening on UDP port #{assigned_port}")
-        Process.send_after(self(), :check_subscriptions, @sub_check_interval)
+        Process.send_after(self(), :check_subscriptions, sub_check_interval)
 
         {:ok,
          %State{
@@ -132,6 +143,7 @@ defmodule MatterEx.Node do
            socket6: socket6,
            port: assigned_port,
            tcp_sup: tcp_sup,
+           sub_check_interval: sub_check_interval,
            mdns: Keyword.get(opts, :mdns),
            commissioning_service: Keyword.get(opts, :commissioning_service),
            commissioning_instance: Keyword.get(opts, :commissioning_instance)
@@ -299,6 +311,19 @@ defmodule MatterEx.Node do
     {:noreply, state}
   end
 
+  # ── Push-based reporting ────────────────────────────────────────
+
+  # A cluster attribute changed. Report the affected subscriptions immediately
+  # rather than waiting for the next poll. Coalesce a same-tick burst (e.g. a
+  # command that touches several clusters) into one pass.
+  def handle_info({:attribute_changed, endpoint, cluster}, state) do
+    targets = drain_attribute_changes([{endpoint, cluster}])
+    {actions, handler} = MessageHandler.report_targets(state.handler, targets)
+    state = %{state | handler: handler}
+    state = process_subscription_actions(actions, state)
+    {:noreply, state}
+  end
+
   # ── Subscription check ──────────────────────────────────────────
 
   def handle_info(:check_subscriptions, state) do
@@ -307,7 +332,7 @@ defmodule MatterEx.Node do
     handler = maybe_update_group_keys(handler)
     state = %{state | handler: handler}
     state = process_subscription_actions(actions, state)
-    Process.send_after(self(), :check_subscriptions, @sub_check_interval)
+    Process.send_after(self(), :check_subscriptions, state.sub_check_interval)
     {:noreply, state}
   end
 
@@ -320,6 +345,26 @@ defmodule MatterEx.Node do
     {handler, state} = maybe_update_case(state.handler, state)
     handler = maybe_update_group_keys(handler)
     %{state | handler: handler}
+  end
+
+  # Register on the device's reporting bus. The registry is started by the device
+  # supervisor; if it isn't running (device without reporting), fall back to the
+  # poll rather than crashing.
+  defp subscribe_to_reporting(device) do
+    Registry.register(:"#{device}.Reporting", :changes, nil)
+    :ok
+  rescue
+    ArgumentError -> :ok
+  end
+
+  # Pull any other queued attribute-changed messages so a burst is reported once.
+  defp drain_attribute_changes(acc) do
+    receive do
+      {:attribute_changed, endpoint, cluster} ->
+        drain_attribute_changes([{endpoint, cluster} | acc])
+    after
+      0 -> Enum.uniq(acc)
+    end
   end
 
   @impl true

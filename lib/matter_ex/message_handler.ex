@@ -1044,6 +1044,36 @@ defmodule MatterEx.MessageHandler do
     end)
   end
 
+  @doc """
+  Report the subscriptions affected by a set of changed `{endpoint, cluster}`
+  targets (push-based reporting).
+
+  When a cluster attribute changes, only the subscriptions that cover it are
+  read and — unless throttled by `min_interval` — reported immediately, instead
+  of waiting for the next periodic `check_subscriptions/1`. A throttled change is
+  left for the poll to flush once `min_interval` elapses.
+
+  Returns `{actions, updated_state}`.
+  """
+  @spec report_targets(t(), [{non_neg_integer(), non_neg_integer()}]) :: {[action()], t()}
+  def report_targets(%__MODULE__{} = state, targets) do
+    now = System.monotonic_time(:second)
+
+    Enum.flat_map_reduce(state.sessions, state, fn {session_id, entry}, state ->
+      due =
+        entry.subscription_mgr
+        |> SubscriptionManager.subscriptions()
+        |> Enum.filter(fn sub ->
+          Enum.any?(targets, &Router.covers?(state.device, sub.paths, &1))
+        end)
+        |> Enum.map(fn sub -> {sub.id, sub.paths} end)
+
+      Enum.flat_map_reduce(due, state, fn {sub_id, paths}, state ->
+        process_due_subscription(state, session_id, sub_id, paths, now)
+      end)
+    end)
+  end
+
   defp process_due_subscription(state, session_id, sub_id, paths, now) do
     entry = state.sessions[session_id]
     sub = SubscriptionManager.get(entry.subscription_mgr, sub_id)
