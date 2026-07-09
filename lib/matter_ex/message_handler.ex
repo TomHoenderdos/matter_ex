@@ -286,6 +286,18 @@ defmodule MatterEx.MessageHandler do
   end
 
   @doc """
+  Drop all operational state for a factory reset.
+
+  Clears CASE credentials, live sessions (and their subscriptions), and group
+  keys, while keeping the PASE responder, device, plaintext counter, and
+  `max_interval_cap` so the node can be re-commissioned without a restart.
+  """
+  @spec reset_operational(t()) :: t()
+  def reset_operational(%__MODULE__{} = state) do
+    %{state | case_states: %{}, sessions: %{}, group_keys: %{}}
+  end
+
+  @doc """
   Close a session, removing it and all its subscriptions.
 
   Returns `{actions, updated_state}` where actions may include

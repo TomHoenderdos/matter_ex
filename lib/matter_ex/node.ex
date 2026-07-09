@@ -162,6 +162,24 @@ defmodule MatterEx.Node do
     GenServer.call(server, :get_port)
   end
 
+  @doc """
+  Factory reset — remove all fabrics and return the node to commissioning mode
+  without a restart.
+
+  Forgets every fabric (commissioning agent), resets the fabric-scoped clusters
+  (OperationalCredentials, AccessControl, GroupKeyManagement) to defaults, wipes
+  the persistent `:storage` backend, drops all CASE sessions and subscriptions,
+  and re-advertises the commissioning service so a controller can pair again.
+
+  Suitable for a hardware reset button. The controller that paired it is not
+  notified — it keeps a stale accessory entry until removed on its side, just
+  like any Matter device that is locally reset.
+  """
+  @spec factory_reset(GenServer.server()) :: :ok
+  def factory_reset(server) do
+    GenServer.call(server, :factory_reset)
+  end
+
   # ── GenServer Callbacks ──────────────────────────────────────────
 
   @impl true
@@ -236,6 +254,25 @@ defmodule MatterEx.Node do
   @impl true
   def handle_call(:get_port, _from, state) do
     {:reply, state.port, state}
+  end
+
+  def handle_call(:factory_reset, _from, state) do
+    Logger.info("Factory reset: removing all fabrics and returning to commissioning")
+
+    # Forget fabrics (agent), reset the fabric-scoped clusters to defaults, and
+    # wipe persistent storage. Cluster resets go through {:restore_state, …},
+    # which does not publish a change, so this does not re-trigger persistence.
+    Commissioning.reset()
+    FabricStore.clear(state.handler.device, state.storage)
+
+    # Drop all CASE sessions/subscriptions and their transports.
+    handler = MessageHandler.reset_operational(state.handler)
+    state = %{state | handler: handler, session_transports: %{}}
+
+    # Re-advertise commissioning now (rather than waiting for the next poll).
+    state = maybe_transition_to_commissioning(state)
+
+    {:reply, :ok, state}
   end
 
   # ── UDP messages ────────────────────────────────────────────────

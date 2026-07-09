@@ -110,4 +110,36 @@ defmodule MatterEx.NodePersistenceTest do
     # Nothing to assert about files — just that the Node runs fine without storage.
     assert Commissioning.commissioned?()
   end
+
+  test "factory_reset forgets fabrics, resets clusters, and wipes storage", %{storage: storage} do
+    node = start_node(storage)
+
+    Commissioning.restore_fabric(@fabric)
+    write_acl()
+    wait_until(fn -> match?({:ok, _}, Storage.get(storage, "matter/fabric/1")) end)
+    assert Commissioning.commissioned?()
+
+    assert :ok = MatterEx.Node.factory_reset(node)
+
+    # Node is back to an un-commissioned, empty state — ready to pair again.
+    refute Commissioning.commissioned?()
+    assert {:ok, []} = GenServer.call(acl_name(), {:read_attribute, :acl})
+    assert Storage.keys(storage, "matter/") == []
+
+    opcreds = Device.__process_name__(0, :operational_credentials)
+    assert {:ok, []} = GenServer.call(opcreds, {:read_attribute, :nocs})
+  end
+
+  test "factory_reset works without a storage backend", %{storage: _storage} do
+    node = start_node(nil)
+    Commissioning.restore_fabric(@fabric)
+    write_acl()
+    Process.sleep(30)
+    assert Commissioning.commissioned?()
+
+    assert :ok = MatterEx.Node.factory_reset(node)
+
+    refute Commissioning.commissioned?()
+    assert {:ok, []} = GenServer.call(acl_name(), {:read_attribute, :acl})
+  end
 end

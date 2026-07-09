@@ -21,6 +21,8 @@ defmodule MatterEx.FabricStore do
   `persist/2` reconciles the whole set (writing current fabrics, deleting removed
   ones); `load/2` reads it back into the commissioning agent and the clusters and
   returns the loaded fabric credentials for the node to bring CASE back up.
+  `clear/3` is the inverse of both — it resets the clusters and wipes storage for
+  a factory reset.
   """
 
   require Logger
@@ -39,10 +41,32 @@ defmodule MatterEx.FabricStore do
   # plus the internal fields the cluster needs (e.g. group key sets), excluding
   # runtime identity and transient commissioning state.
   @cluster_snapshot %{
-    operational_credentials:
-      [:nocs, :fabrics, :trusted_root_certificates, :commissioned_fabrics, :current_fabric_index, :_next_fabric_index],
+    operational_credentials: [
+      :nocs,
+      :fabrics,
+      :trusted_root_certificates,
+      :commissioned_fabrics,
+      :current_fabric_index,
+      :_next_fabric_index
+    ],
     access_control: [:acl, :extension],
     group_key_management: [:group_key_map, :group_table, :_key_sets]
+  }
+
+  # Values to restore each snapshotted cluster field to on a factory reset —
+  # the cluster's freshly-initialized defaults (attribute defaults plus the
+  # internal fields' init values). Keys mirror @cluster_snapshot.
+  @cluster_defaults %{
+    operational_credentials: %{
+      nocs: [],
+      fabrics: [],
+      trusted_root_certificates: [],
+      commissioned_fabrics: 0,
+      current_fabric_index: 0,
+      _next_fabric_index: 1
+    },
+    access_control: %{acl: [], extension: []},
+    group_key_management: %{group_key_map: [], group_table: [], _key_sets: %{}}
   }
 
   @doc """
@@ -71,7 +95,11 @@ defmodule MatterEx.FabricStore do
     Storage.put(backend, @index_key, serialize(indices))
 
     for {cluster, keys} <- @cluster_snapshot do
-      Storage.put(backend, cluster_key(cluster), serialize(cluster_snapshot(device, cluster, keys)))
+      Storage.put(
+        backend,
+        cluster_key(cluster),
+        serialize(cluster_snapshot(device, cluster, keys))
+      )
     end
 
     Logger.debug("FabricStore: persisted #{length(indices)} fabric(s)")
@@ -106,6 +134,32 @@ defmodule MatterEx.FabricStore do
     end
   end
 
+  @doc """
+  Wipe all persisted Matter state — the inverse of `persist/3`, for factory reset.
+
+  Resets the live fabric-scoped clusters (OperationalCredentials, AccessControl,
+  GroupKeyManagement) back to their initial defaults, then deletes every
+  `matter/`-prefixed key from `backend`. `backend` may be `nil` (in-memory node),
+  in which case only the clusters are reset. The commissioning agent and the
+  message handler's session state are reset separately by the caller.
+  """
+  @spec clear(module(), Storage.backend() | nil) :: :ok
+  def clear(device, backend) do
+    for {cluster, defaults} <- @cluster_defaults do
+      case cluster_pid(device, cluster) do
+        nil -> :ok
+        name -> GenServer.call(name, {:restore_state, defaults})
+      end
+    end
+
+    if backend do
+      for key <- Storage.keys(backend, "matter/"), do: Storage.delete(backend, key)
+    end
+
+    Logger.info("FabricStore: cleared all persisted fabric state")
+    :ok
+  end
+
   # ── Private ─────────────────────────────────────────────────────
 
   defp cluster_snapshot(device, cluster, keys) do
@@ -115,7 +169,8 @@ defmodule MatterEx.FabricStore do
     end
   end
 
-  defp restore_cluster(device, cluster, {:ok, snapshot}) when is_map(snapshot) and snapshot != %{} do
+  defp restore_cluster(device, cluster, {:ok, snapshot})
+       when is_map(snapshot) and snapshot != %{} do
     case cluster_pid(device, cluster) do
       nil -> :ok
       name -> GenServer.call(name, {:restore_state, snapshot})
