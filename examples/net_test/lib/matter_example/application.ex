@@ -39,6 +39,9 @@ defmodule MatterExample.Application do
          iterations: 1000,
          port: 5540,
          mdns: MatterEx.MDNS,
+         # Persist fabric credentials so pairing survives a restart. Swap the
+         # adapter for your own MatterEx.Storage backend as needed.
+         storage: {MatterEx.Storage.FileSystem, dir: storage_dir()},
          commissioning_service: service,
          commissioning_instance: service[:instance]}
       ] ++ ble_children() ++ target_children()
@@ -48,12 +51,16 @@ defmodule MatterExample.Application do
     opts = [strategy: :one_for_one, name: MatterExample.Supervisor]
     result = Supervisor.start_link(children, opts)
 
-    # Post-startup: advertise commissioning service via mDNS
-    try do
-      MatterEx.MDNS.advertise(MatterEx.MDNS, service)
-    catch
-      :exit, reason ->
-        Logger.warning("MDNS advertise failed: #{inspect(reason)}, continuing without mDNS")
+    # Post-startup: advertise the commissioning service via mDNS, but only when
+    # not already commissioned. A restored device advertises operationally (the
+    # node does this during restore) and must not re-enter pairing mode.
+    unless MatterEx.Commissioning.commissioned?() do
+      try do
+        MatterEx.MDNS.advertise(MatterEx.MDNS, service)
+      catch
+        :exit, reason ->
+          Logger.warning("MDNS advertise failed: #{inspect(reason)}, continuing without mDNS")
+      end
     end
 
     qr_payload =
@@ -110,6 +117,13 @@ defmodule MatterExample.Application do
     defp mdns_interface_opts, do: []
   else
     defp mdns_interface_opts, do: [interface: "wlan0"]
+  end
+
+  if Mix.target() == :host do
+    defp storage_dir, do: Path.join(System.tmp_dir!(), "matter_example")
+  else
+    # Nerves: /data is the writable, persistent application partition.
+    defp storage_dir, do: "/data/matter_example"
   end
 
   if Mix.target() == :host do
