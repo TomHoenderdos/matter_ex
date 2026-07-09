@@ -370,7 +370,10 @@ defmodule MatterEx.ExchangeManager do
     payload = IM.encode(report)
 
     if byte_size(payload) > @max_im_payload do
-      IM.chunk_report_data(report, 4)
+      # Pack by byte size, not a fixed report count: a fixed count fragments a
+      # large wildcard report into far more (tiny) messages than the MTU needs,
+      # and each chunk is a separate reliable round-trip.
+      IM.chunk_report_data_by_size(report, @max_im_payload)
     else
       [report]
     end

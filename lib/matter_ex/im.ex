@@ -110,6 +110,68 @@ defmodule MatterEx.IM do
     end
   end
 
+  @doc """
+  Chunk a ReportData so each encoded message stays within `max_bytes`.
+
+  Greedily packs as many attribute reports into each chunk as fit under the
+  byte budget, so a large report becomes the *fewest* messages the transport
+  MTU allows. Each chunk costs a reliable round-trip, so this is strongly
+  preferred over the fixed-count `chunk_report_data/2` for UDP: a fixed report
+  count produces far more, far smaller messages than necessary.
+
+  A single report larger than `max_bytes` is still emitted as its own chunk
+  (it cannot be split further at this layer), guaranteeing progress. All chunks
+  except the last have `more_chunked_messages: true`.
+  """
+  @spec chunk_report_data_by_size(%ReportData{}, pos_integer()) :: [%ReportData{}]
+  def chunk_report_data_by_size(%ReportData{} = report, max_bytes) when max_bytes > 0 do
+    # Size each chunk as if it carries the more_chunked_messages flag (set on
+    # every chunk but the last), so its bytes are always budgeted; the final
+    # chunk, lacking the flag, only comes out smaller. Matter TLV containers are
+    # not length-prefixed — elements are self-delimiting — so report sizes are
+    # additive: one encode per report suffices, with no re-encoding of a growing
+    # chunk (which would be O(n·chunk) work on-device).
+    template = %ReportData{report | more_chunked_messages: true}
+    overhead = byte_size(encode(%ReportData{template | attribute_reports: []}))
+
+    case pack_by_size(report.attribute_reports, template, overhead, max_bytes) do
+      groups when length(groups) <= 1 ->
+        [report]
+
+      groups ->
+        {init, [last]} = Enum.split(groups, -1)
+
+        init_reports =
+          Enum.map(init, fn group ->
+            %ReportData{report | attribute_reports: group, more_chunked_messages: true}
+          end)
+
+        init_reports ++
+          [%ReportData{report | attribute_reports: last, more_chunked_messages: false}]
+    end
+  end
+
+  defp pack_by_size(reports, %ReportData{} = template, overhead, max_bytes) do
+    {groups, current, _running} =
+      Enum.reduce(reports, {[], [], overhead}, fn r, {groups, current, running} ->
+        size_r = byte_size(encode(%ReportData{template | attribute_reports: [r]})) - overhead
+
+        cond do
+          # Always place at least one report per chunk (oversized report → own chunk).
+          current == [] ->
+            {groups, [r], overhead + size_r}
+
+          running + size_r > max_bytes ->
+            {[Enum.reverse(current) | groups], [r], overhead + size_r}
+
+          true ->
+            {groups, [r | current], running + size_r}
+        end
+      end)
+
+    Enum.reverse([Enum.reverse(current) | groups])
+  end
+
   @spec decode(atom(), binary()) :: {:ok, struct()} | {:error, atom()}
   def decode(opcode, binary) do
     decoded = TLV.decode(binary)
