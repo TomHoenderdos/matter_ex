@@ -357,8 +357,12 @@ defmodule MatterEx.MDNS do
       socket6: state.socket6 != nil
     })
 
-    # Send gratuitous announcement
+    # Send a small announcement burst (this one plus two follow-ups ~1s apart,
+    # per DNS-SD convention) so a controller reliably catches at least one after
+    # a device reboot.
     send_announcement(state, service_config, @default_ttl)
+    Process.send_after(self(), {:reannounce, instance}, 1000)
+    Process.send_after(self(), {:reannounce, instance}, 2000)
 
     Logger.info("mDNS: advertising #{instance}.#{service_config.service}")
     {:reply, :ok, state}
@@ -407,6 +411,18 @@ defmodule MatterEx.MDNS do
 
       {:error, _reason} ->
         :ok
+    end
+
+    {:noreply, state}
+  end
+
+  # Follow-up announcement in the burst; also re-sent when addresses change.
+  def handle_info({:reannounce, instance}, state) do
+    state = refresh_network_state(state)
+
+    case Map.get(state.services, instance) do
+      nil -> :ok
+      config -> send_announcement(state, config, @default_ttl)
     end
 
     {:noreply, state}
@@ -738,16 +754,21 @@ defmodule MatterEx.MDNS do
 
   defp refresh_network_state(%State{} = state) do
     addresses = detect_addresses(state.interface)
+    new_addresses = addresses -- state.addresses
 
     if addresses != state.addresses do
-      join_multicast_interfaces(
-        state.socket,
-        state.socket6,
-        state.port,
-        addresses -- state.addresses
-      )
+      join_multicast_interfaces(state.socket, state.socket6, state.port, new_addresses)
+      state = %{state | addresses: addresses}
 
-      %{state | addresses: addresses}
+      # A fresh address just appeared (e.g. the interface came up after boot) —
+      # re-announce so controllers relearn where to reach us.
+      if new_addresses != [] do
+        Enum.each(state.services, fn {_instance, config} ->
+          send_announcement(state, config, @default_ttl)
+        end)
+      end
+
+      state
     else
       state
     end
