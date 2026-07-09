@@ -45,7 +45,7 @@ defmodule MatterEx.Node do
       :socket,
       :socket6,
       :port,
-      :tcp_listener,
+      :tcp_sup,
       :mdns,
       :commissioning_service,
       :commissioning_instance,
@@ -105,8 +105,10 @@ defmodule MatterEx.Node do
 
     case open_udp_sockets(udp_port) do
       {:ok, socket, socket6, assigned_port} ->
-        # Start TCP listener on the same port number
-        tcp_listener = if tcp_enabled, do: start_tcp_listener(assigned_port)
+        # Start the TCP acceptor in its own supervised crash domain, on the
+        # same port UDP was assigned. An accept error restarts only the
+        # acceptor; a TCP-listen failure is non-fatal (node stays UDP-only).
+        tcp_sup = if tcp_enabled, do: start_tcp_acceptor(assigned_port)
 
         # Generate random session ID for PASE (1..65534)
         local_session_id = :rand.uniform(65534)
@@ -120,8 +122,7 @@ defmodule MatterEx.Node do
             local_session_id: local_session_id
           )
 
-        transport_msg = if tcp_listener, do: "UDP+TCP", else: "UDP"
-        Logger.info("Matter node listening on #{transport_msg} port #{assigned_port}")
+        Logger.info("Matter node listening on UDP port #{assigned_port}")
         Process.send_after(self(), :check_subscriptions, @sub_check_interval)
 
         {:ok,
@@ -130,7 +131,7 @@ defmodule MatterEx.Node do
            socket: socket,
            socket6: socket6,
            port: assigned_port,
-           tcp_listener: tcp_listener,
+           tcp_sup: tcp_sup,
            mdns: Keyword.get(opts, :mdns),
            commissioning_service: Keyword.get(opts, :commissioning_service),
            commissioning_instance: Keyword.get(opts, :commissioning_instance)
@@ -165,6 +166,9 @@ defmodule MatterEx.Node do
   # ── TCP connection acceptance ────────────────────────────────────
 
   def handle_info({:tcp_accepted, tcp_socket}, state) do
+    # The acceptor handed us a passive socket; as the new owner we enable
+    # active mode so data arrives as {:tcp, socket, data} messages.
+    :inet.setopts(tcp_socket, [{:active, true}])
     {:ok, {ip, port}} = :inet.peername(tcp_socket)
     Logger.info("TCP connection accepted from #{:inet.ntoa(ip)}:#{port}")
     tcp_buffers = Map.put(state.tcp_buffers, tcp_socket, <<>>)
@@ -322,7 +326,8 @@ defmodule MatterEx.Node do
   def terminate(_reason, state) do
     if state.socket, do: :gen_udp.close(state.socket)
     if state.socket6, do: :gen_udp.close(state.socket6)
-    if state.tcp_listener, do: :gen_tcp.close(state.tcp_listener)
+    # The TCP acceptor (and its listen socket) is torn down via its supervisor,
+    # which is linked to this process.
 
     # Close all TCP connections
     for {tcp_socket, _buf} <- state.tcp_buffers do
@@ -366,37 +371,20 @@ defmodule MatterEx.Node do
     [{:raw, @sol_socket, @so_bindtodevice, device <> <<0>>}]
   end
 
-  defp start_tcp_listener(port) do
-    case :gen_tcp.listen(port, [:binary, {:active, false}, {:reuseaddr, true}, {:backlog, 8}]) do
-      {:ok, listener} ->
-        spawn_acceptor(listener, self())
-        listener
+  # Start the TCP acceptor under its own supervisor so an accept crash restarts
+  # only the acceptor, not this node. The supervisor is linked to this process,
+  # so it is torn down when the node stops. Returns the supervisor pid, or nil
+  # when TCP is disabled.
+  defp start_tcp_acceptor(port) do
+    {:ok, sup} =
+      Supervisor.start_link(
+        [{MatterEx.Node.TCPAcceptor, port: port, node: self()}],
+        strategy: :one_for_one,
+        max_restarts: 10,
+        max_seconds: 5
+      )
 
-      {:error, reason} ->
-        Logger.warning("Failed to start TCP listener on port #{port}: #{inspect(reason)}")
-        nil
-    end
-  end
-
-  defp spawn_acceptor(listener, node_pid) do
-    spawn_link(fn -> accept_loop(listener, node_pid) end)
-  end
-
-  defp accept_loop(listener, node_pid) do
-    case :gen_tcp.accept(listener) do
-      {:ok, socket} ->
-        :gen_tcp.controlling_process(socket, node_pid)
-        :inet.setopts(socket, [{:active, true}])
-        send(node_pid, {:tcp_accepted, socket})
-        accept_loop(listener, node_pid)
-
-      {:error, :closed} ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning("TCP accept error: #{inspect(reason)}")
-        :ok
-    end
+    sup
   end
 
   # ── Private: Action processing ──────────────────────────────────
