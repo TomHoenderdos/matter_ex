@@ -458,6 +458,14 @@ defmodule MatterEx.Cluster do
         {:reply, state, state}
       end
 
+      # Restore persisted state verbatim (attributes and internal fields). Merges
+      # so runtime identity (__endpoint__/__reporting__/__data_version__) is kept,
+      # and deliberately does NOT bump the DataVersion or publish a change — this
+      # is loading, not a mutation, so it must not trigger reporting or re-persist.
+      def handle_call({:restore_state, partial}, _from, state) when is_map(partial) do
+        {:reply, :ok, Map.merge(state, partial)}
+      end
+
       defp bump_data_version(state) do
         state = Map.update!(state, :__data_version__, &(&1 + 1))
         MatterEx.Cluster.notify_changed(state)
