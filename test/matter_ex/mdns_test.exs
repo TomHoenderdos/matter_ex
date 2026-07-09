@@ -171,6 +171,22 @@ defmodule MatterEx.MDNSTest do
   # ── Service Lifecycle ───────────────────────────────────────────
 
   describe "service lifecycle" do
+    test "reannounce is a safe no-op for present and absent instances",
+         %{mdns: mdns, client: client, port: port} do
+      advertise_test_service(mdns)
+
+      send(mdns, {:reannounce, "TEST-INST"})
+      send(mdns, {:reannounce, "does-not-exist"})
+
+      # Server survives and still answers queries.
+      assert Process.alive?(mdns)
+
+      assert {:ok, _} =
+               send_query(client, port, [
+                 %{name: "_matterc._udp.local", type: :ptr, class: :in}
+               ])
+    end
+
     test "withdraw removes service", %{mdns: mdns, client: client, port: port} do
       advertise_test_service(mdns)
 
