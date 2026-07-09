@@ -29,7 +29,8 @@ defmodule MatterEx.IM.SubscriptionManager do
           max_interval: non_neg_integer(),
           last_report_at: integer(),
           last_sent_at: integer() | nil,
-          last_values: map()
+          last_values: map(),
+          last_versions: map()
         }
 
   @type t :: %__MODULE__{
@@ -64,7 +65,8 @@ defmodule MatterEx.IM.SubscriptionManager do
       max_interval: max_interval,
       last_report_at: now,
       last_sent_at: nil,
-      last_values: %{}
+      last_values: %{},
+      last_versions: %{}
     }
 
     subscriptions = Map.put(state.subscriptions, sub_id, subscription)
@@ -128,17 +130,17 @@ defmodule MatterEx.IM.SubscriptionManager do
   @doc """
   Record that a report was checked for a subscription.
 
-  Updates `last_report_at` and `last_values` for change detection.
-  Does NOT update `last_sent_at` — use `record_sent/3` for that.
+  Updates `last_report_at`, `last_values`, and the per-cluster `last_versions`
+  used to gate polling. Does NOT update `last_sent_at` — use `record_sent/5`.
   """
-  @spec record_report(t(), non_neg_integer(), map(), integer()) :: t()
-  def record_report(%__MODULE__{} = state, sub_id, values, now) do
+  @spec record_report(t(), non_neg_integer(), map(), integer(), map()) :: t()
+  def record_report(%__MODULE__{} = state, sub_id, values, now, versions \\ %{}) do
     case Map.get(state.subscriptions, sub_id) do
       nil ->
         state
 
       sub ->
-        sub = %{sub | last_report_at: now, last_values: values}
+        sub = %{sub | last_report_at: now, last_values: values, last_versions: versions}
         %{state | subscriptions: Map.put(state.subscriptions, sub_id, sub)}
     end
   end
@@ -146,16 +148,23 @@ defmodule MatterEx.IM.SubscriptionManager do
   @doc """
   Record that a report was actually sent for a subscription.
 
-  Updates `last_sent_at`, `last_report_at`, and `last_values`.
+  Updates `last_sent_at`, `last_report_at`, `last_values`, and `last_versions`.
   """
-  @spec record_sent(t(), non_neg_integer(), map(), integer()) :: t()
-  def record_sent(%__MODULE__{} = state, sub_id, values, now) do
+  @spec record_sent(t(), non_neg_integer(), map(), integer(), map()) :: t()
+  def record_sent(%__MODULE__{} = state, sub_id, values, now, versions \\ %{}) do
     case Map.get(state.subscriptions, sub_id) do
       nil ->
         state
 
       sub ->
-        sub = %{sub | last_sent_at: now, last_report_at: now, last_values: values}
+        sub = %{
+          sub
+          | last_sent_at: now,
+            last_report_at: now,
+            last_values: values,
+            last_versions: versions
+        }
+
         %{state | subscriptions: Map.put(state.subscriptions, sub_id, sub)}
     end
   end
