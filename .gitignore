@@ -7,6 +7,9 @@
 /doc/
 erl_crash.dump
 
+# ExUnit @tag :tmp_dir scratch space
+/tmp/
+
 # Mix lock (keep mix.lock if it exists)
 # /mix.lock
 
