@@ -252,6 +252,32 @@ defmodule MatterEx.Commissioning do
     Agent.update(name, fn _state -> initial_state() end)
   end
 
+  @doc """
+  Load a complete fabric entry from persisted storage (see `MatterEx.FabricStore`).
+
+  Unlike `store_noc/7` this needs no in-progress commissioning state, and does not
+  set `last_added_fabric` — restore drives CASE enablement directly rather than
+  through the commissioning-time path.
+  """
+  @spec restore_fabric(map(), GenServer.server()) :: :ok
+  def restore_fabric(entry, name \\ @default_name) do
+    fabric_entry = %{
+      fabric_index: entry.fabric_index,
+      noc: entry.noc,
+      icac: entry.icac,
+      ipk: entry.ipk,
+      node_id: entry.node_id,
+      fabric_id: entry.fabric_id,
+      private_key: entry.private_key,
+      root_cert: entry.root_cert,
+      case_admin_subject: entry.case_admin_subject
+    }
+
+    Agent.update(name, fn state ->
+      %{state | fabrics: Map.put(state.fabrics, entry.fabric_index, fabric_entry)}
+    end)
+  end
+
   defp build_credentials(entry) do
     %{
       fabric_index: entry.fabric_index,
