@@ -172,6 +172,30 @@ defmodule MatterEx.DeviceTest do
       assert {:error, :unsupported_endpoint} =
                FriendlyDevice.read_attribute(:missing, :on_off, :on_off)
     end
+
+    test "unknown command returns unsupported_command" do
+      assert {:error, :unsupported_command} = FriendlyDevice.invoke(:light, :no_such_command)
+    end
+  end
+
+  describe "generated code cleanliness" do
+    test "a device with no name clashes compiles without unreachable clauses" do
+      # `:ambiguous` only ever lands in a lookup when two clusters on one endpoint
+      # declare the same attribute or command name. Emitting the clause anyway
+      # made Elixir's type checker report an unreachable clause against the
+      # *using* module — a warning about generated code its author can't see.
+      warnings =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          Code.compile_string("""
+          defmodule MatterEx.DeviceTest.ClashFreeDevice do
+            use MatterEx.Device, vendor: :test, product: :matter_example
+            endpoint(:sensor, :temperature_sensor)
+          end
+          """)
+        end)
+
+      refute warnings =~ "will never match"
+    end
   end
 
   describe "device presets" do

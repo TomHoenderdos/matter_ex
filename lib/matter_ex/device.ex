@@ -316,17 +316,21 @@ defmodule MatterEx.Device do
 
       defp resolve_attribute_cluster(endpoint_id, attr_name) do
         case Map.get(unquote(Macro.escape(attribute_cluster_lookup)), {endpoint_id, attr_name}) do
-          nil -> {:error, :unsupported_attribute}
-          :ambiguous -> {:error, :ambiguous_attribute}
-          cluster_name -> {:ok, cluster_name}
+          unquote(
+            resolve_clauses(
+              attribute_cluster_lookup,
+              :unsupported_attribute,
+              :ambiguous_attribute
+            )
+          )
         end
       end
 
       defp resolve_command_cluster(endpoint_id, cmd_name) do
         case Map.get(unquote(Macro.escape(command_cluster_lookup)), {endpoint_id, cmd_name}) do
-          nil -> {:error, :unsupported_command}
-          :ambiguous -> {:error, :ambiguous_command}
-          cluster_name -> {:ok, cluster_name}
+          unquote(
+            resolve_clauses(command_cluster_lookup, :unsupported_command, :ambiguous_command)
+          )
         end
       end
     end
@@ -568,6 +572,40 @@ defmodule MatterEx.Device do
         _other -> :ambiguous
       end)
     end)
+  end
+
+  # Clauses for the `resolve_*_cluster/2` lookups.
+  #
+  # A lookup only holds `:ambiguous` when two clusters on the same endpoint
+  # declare the same attribute or command name. Most devices have no such clash,
+  # and for those the `:ambiguous` clause can never match — which Elixir's type
+  # checker reports as an unreachable clause against the *using* module, where
+  # the author can neither see the generated code nor do anything about it.
+  #
+  # So the clause is emitted only when the lookup can actually produce it. Devices
+  # with a genuine clash keep the error; everyone else stops getting a warning
+  # about code they didn't write.
+  defp resolve_clauses(lookup, unsupported_error, ambiguous_error) do
+    unsupported =
+      quote do
+        nil -> {:error, unquote(unsupported_error)}
+      end
+
+    ambiguous =
+      if :ambiguous in Map.values(lookup) do
+        quote do
+          :ambiguous -> {:error, unquote(ambiguous_error)}
+        end
+      else
+        []
+      end
+
+    found =
+      quote do
+        cluster_name -> {:ok, cluster_name}
+      end
+
+    unsupported ++ ambiguous ++ found
   end
 
   # Build child specs at compile time
