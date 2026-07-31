@@ -168,6 +168,48 @@ defmodule MatterEx.MDNSTest do
     end
   end
 
+  # ── Interface selection ─────────────────────────────────────────
+
+  describe "interface selection" do
+    test "a whitelist naming every interface detects the same addresses as nil" do
+      {:ok, ifaddrs} = :inet.getifaddrs()
+      all_names = for {name, _opts} <- ifaddrs, do: to_string(name)
+
+      every = start_supervised!({MDNS, port: 0, hostname: "every-iface"}, id: :every)
+
+      listed =
+        start_supervised!(
+          {MDNS, port: 0, hostname: "listed-ifaces", interface: all_names},
+          id: :listed
+        )
+
+      assert :sys.get_state(listed).addresses == :sys.get_state(every).addresses
+    end
+
+    test "a single interface name still selects only that interface" do
+      {:ok, ifaddrs} = :inet.getifaddrs()
+      [{first, _} | _] = ifaddrs
+
+      one =
+        start_supervised!(
+          {MDNS, port: 0, hostname: "one", interface: to_string(first)},
+          id: :one
+        )
+
+      assert is_list(:sys.get_state(one).addresses)
+    end
+
+    test "a whitelist matching nothing detects no addresses" do
+      none =
+        start_supervised!(
+          {MDNS, port: 0, hostname: "none", interface: ["not-an-interface0"]},
+          id: :none
+        )
+
+      assert :sys.get_state(none).addresses == []
+    end
+  end
+
   # ── Service Lifecycle ───────────────────────────────────────────
 
   describe "service lifecycle" do

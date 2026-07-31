@@ -71,7 +71,9 @@ defmodule MatterEx.MDNS do
   - `:hostname` — local hostname without `.local` suffix (default: auto-generated)
   - `:port` — mDNS port (default: 5353, use 0 for OS-assigned in tests)
   - `:addresses` — list of IP tuples to advertise (default: auto-detect)
-  - `:interface` — optional interface name to auto-detect and advertise from, e.g. `"wlan0"`
+  - `:interface` — which interface(s) to auto-detect addresses from: `nil` for every
+    interface, a single name (`"wlan0"`), or a list to advertise from several
+    (`["wlan0", "eth0"]`)
   - `:name` — GenServer name
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -914,7 +916,7 @@ defmodule MatterEx.MDNS do
       {:ok, ifaddrs} ->
         ifaddrs
         |> Enum.filter(fn {name, _opts} ->
-          interface in [nil, to_string(name)]
+          interface_selected?(interface, to_string(name))
         end)
         |> Enum.flat_map(fn {_name, opts} ->
           Keyword.get_values(opts, :addr)
@@ -932,4 +934,14 @@ defmodule MatterEx.MDNS do
         []
     end
   end
+
+  # `:interface` may be nil (every interface), a single name, or a list of names.
+  #
+  # The list form matters for a device that can be online over either Wi-Fi or
+  # ethernet: pinning to one name breaks the other, while nil advertises every
+  # interface — including ones a controller can't route to, such as a link-local
+  # USB gadget — so it tries dead addresses first.
+  defp interface_selected?(nil, _name), do: true
+  defp interface_selected?(interface, name) when is_binary(interface), do: interface == name
+  defp interface_selected?(interfaces, name) when is_list(interfaces), do: name in interfaces
 end
