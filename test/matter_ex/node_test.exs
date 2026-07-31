@@ -126,6 +126,36 @@ defmodule MatterEx.NodeTest do
     socket
   end
 
+  # The acceptor is the sole child of the node's linked TCP supervisor.
+  defp tcp_acceptor(node) do
+    case :sys.get_state(node).tcp_sup do
+      nil ->
+        nil
+
+      sup ->
+        case Supervisor.which_children(sup) do
+          [{_id, pid, _type, _mods}] when is_pid(pid) -> pid
+          _ -> nil
+        end
+    end
+  end
+
+  # Poll a condition rather than sleeping a fixed amount — a supervisor restart
+  # plus re-binding the listen socket has no callback to wait on.
+  defp eventually(fun, timeout \\ 1_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+
+    Stream.repeatedly(fn ->
+      if fun.() do
+        true
+      else
+        Process.sleep(20)
+        false
+      end
+    end)
+    |> Enum.find(fn ok -> ok or System.monotonic_time(:millisecond) > deadline end)
+  end
+
   defp tcp_send_and_receive(socket, data) do
     framed = TCPFraming.frame(data)
     :ok = :gen_tcp.send(socket, framed)
@@ -559,6 +589,27 @@ defmodule MatterEx.NodeTest do
       Process.sleep(50)
 
       assert Process.alive?(node)
+    end
+
+    test "an acceptor crash restarts the acceptor, not the node", %{port: port, node: node} do
+      # The point of giving the acceptor its own crash domain: before, an accept
+      # error either exited the loop as :normal — silently accepting nothing ever
+      # again — or propagated over the link and took the node down with it.
+      acceptor = tcp_acceptor(node)
+      ref = Process.monitor(acceptor)
+
+      Process.exit(acceptor, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^acceptor, :killed}, 1_000
+
+      assert Process.alive?(node)
+
+      # A new acceptor takes over and TCP still accepts, so the node did not
+      # silently lose the transport.
+      assert eventually(fn -> tcp_acceptor(node) not in [nil, acceptor] end)
+
+      assert eventually(fn ->
+               match?({:ok, _}, :gen_tcp.connect(~c"127.0.0.1", port, [:binary]))
+             end)
     end
   end
 
