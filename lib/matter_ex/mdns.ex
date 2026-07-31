@@ -104,6 +104,18 @@ defmodule MatterEx.MDNS do
   end
 
   @doc """
+  Re-announce every currently-advertised service, refreshing network state first.
+
+  Nudges controllers to re-resolve the device — e.g. after a new DHCP lease
+  changed its address, or when a controller missed the announcement burst sent at
+  advertise time.
+  """
+  @spec reannounce_all(GenServer.server()) :: :ok
+  def reannounce_all(server) do
+    GenServer.cast(server, :reannounce_all)
+  end
+
+  @doc """
   Remove a service by instance name. Sends goodbye announcement (TTL=0).
   """
   @spec withdraw(GenServer.server(), String.t()) :: :ok
@@ -395,6 +407,17 @@ defmodule MatterEx.MDNS do
         send_announcement(state, service_config, @default_ttl)
         {:reply, :ok, state}
     end
+  end
+
+  @impl true
+  def handle_cast(:reannounce_all, state) do
+    state = refresh_network_state(state)
+
+    Enum.each(state.services, fn {_instance, config} ->
+      send_announcement(state, config, @default_ttl)
+    end)
+
+    {:noreply, state}
   end
 
   @impl true

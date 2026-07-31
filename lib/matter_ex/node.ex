@@ -318,6 +318,7 @@ defmodule MatterEx.Node do
     handler = maybe_update_group_keys(handler)
     state = %{state | handler: handler}
     state = process_subscription_actions(actions, state)
+    maybe_reannounce_while_disconnected(state)
     Process.send_after(self(), :check_subscriptions, @sub_check_interval)
     {:noreply, state}
   end
@@ -325,6 +326,18 @@ defmodule MatterEx.Node do
   def handle_info(msg, state) do
     Logger.debug("Unexpected message: #{inspect(msg)}")
     {:noreply, state}
+  end
+
+  # While no controller holds a session, keep re-announcing operational mDNS so a
+  # controller re-resolves the device after a new DHCP address or a missed
+  # announcement burst. Stops the moment a session exists, so it costs nothing in
+  # steady state. Rides the always-on subscription tick rather than adding a timer.
+  defp maybe_reannounce_while_disconnected(state) do
+    if state.mdns && map_size(state.handler.sessions) == 0 do
+      MatterEx.MDNS.reannounce_all(state.mdns)
+    end
+
+    :ok
   end
 
   defp refresh_runtime_state(state) do

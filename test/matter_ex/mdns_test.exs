@@ -187,6 +187,33 @@ defmodule MatterEx.MDNSTest do
                ])
     end
 
+    test "reannounce_all leaves every advertised service resolvable",
+         %{mdns: mdns, client: client, port: port} do
+      # Announcements go to the multicast group, which this client isn't joined
+      # to, so assert the observable contract instead: the responder survives and
+      # every service it was advertising still resolves afterwards.
+      advertise_test_service(mdns, instance: "INST-A")
+      advertise_test_service(mdns, instance: "INST-B")
+
+      :ok = MDNS.reannounce_all(mdns)
+
+      assert Process.alive?(mdns)
+
+      assert {:ok, response} =
+               send_query(client, port, [
+                 %{name: "_matterc._udp.local", type: :ptr, class: :in}
+               ])
+
+      instances = for %{type: :ptr, data: data} <- response.answers, do: data
+      assert "INST-A._matterc._udp.local" in instances
+      assert "INST-B._matterc._udp.local" in instances
+    end
+
+    test "reannounce_all is a safe no-op with nothing advertised", %{mdns: mdns} do
+      :ok = MDNS.reannounce_all(mdns)
+      assert Process.alive?(mdns)
+    end
+
     test "withdraw removes service", %{mdns: mdns, client: client, port: port} do
       advertise_test_service(mdns)
 
