@@ -119,6 +119,52 @@ defmodule MatterEx.NodeTest do
     comm_session
   end
 
+  # Run a full subscribe handshake (PASE → SubscribeRequest → priming ReportData
+  # → StatusResponse) and return the decoded SubscribeResponse.
+  defp subscribe(client, port, opts) do
+    comm_session = run_pase_over_udp(client, port)
+    exchange_id = Keyword.get(opts, :exchange_id, 10)
+
+    sub_req =
+      IM.encode(%IM.SubscribeRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+        min_interval: Keyword.fetch!(opts, :min_interval),
+        max_interval: Keyword.fetch!(opts, :max_interval)
+      })
+
+    proto = %ProtoHeader{
+      initiator: true,
+      needs_ack: true,
+      opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+      exchange_id: exchange_id,
+      protocol_id: ProtocolID.protocol_id(:interaction_model),
+      payload: sub_req
+    }
+
+    {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+
+    {:ok, msg, comm_session} =
+      SecureChannel.open(comm_session, send_and_receive(client, port, frame))
+
+    status_proto = %ProtoHeader{
+      initiator: true,
+      needs_ack: true,
+      ack_counter: msg.header.message_counter,
+      opcode: ProtocolID.opcode(:interaction_model, :status_response),
+      exchange_id: exchange_id,
+      protocol_id: ProtocolID.protocol_id(:interaction_model),
+      payload: IM.encode(%IM.StatusResponse{status: 0})
+    }
+
+    {status_frame, comm_session} = SecureChannel.seal(comm_session, status_proto)
+
+    {:ok, sub_msg, _comm_session} =
+      SecureChannel.open(comm_session, send_and_receive(client, port, status_frame))
+
+    {:ok, sub_resp} = IM.decode(:subscribe_response, sub_msg.proto.payload)
+    sub_resp
+  end
+
   # TCP helpers
 
   defp tcp_connect(port) do
@@ -571,6 +617,21 @@ defmodule MatterEx.NodeTest do
 
       {:ok, sub_resp} = IM.decode(:subscribe_response, sub_msg.proto.payload)
       assert sub_resp.max_interval == 120
+    end
+
+    test "the cap never pushes max_interval below the requested min_interval", %{
+      client: client,
+      port: port
+    } do
+      # A controller whose floor is already above the cap. Capping to 120 here
+      # would report a MaxInterval below the MinIntervalFloor it asked for —
+      # outside the negotiated window, and enough to defeat the throttle:
+      # check_subscriptions/1 tests max_interval_elapsed? before throttled?, so
+      # the keep-alive would fire every 120s on a subscription that asked to be
+      # reported to no more often than every 300s.
+      sub_resp = subscribe(client, port, min_interval: 300, max_interval: 600)
+
+      assert sub_resp.max_interval == 300
     end
   end
 

@@ -816,7 +816,15 @@ defmodule MatterEx.MessageHandler do
         # Cap the ceiling the controller asked for: a shorter max_interval means
         # a shorter controller liveness timeout, so a rebooted device is
         # re-subscribed promptly rather than after the full requested interval.
-        max_interval = min(req.max_interval, max_cap)
+        #
+        # The floor still wins. The selected MaxInterval has to stay inside the
+        # window the controller asked for, and dropping it below MinIntervalFloor
+        # would also defeat the throttle: `check_subscriptions/1` tests
+        # max_interval_elapsed? before throttled?, so a keep-alive fires straight
+        # through the floor. That ordering is deliberate — a keep-alive must
+        # outrank the throttle or it'd be suppressed exactly when it's needed —
+        # so the invariant has to hold here instead.
+        max_interval = req.max_interval |> min(max_cap) |> max(req.min_interval)
 
         {sub_id, sub_mgr} =
           SubscriptionManager.subscribe(
