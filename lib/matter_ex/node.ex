@@ -169,10 +169,21 @@ defmodule MatterEx.Node do
     # The acceptor handed us a passive socket; as the new owner we enable
     # active mode so data arrives as {:tcp, socket, data} messages.
     :inet.setopts(tcp_socket, [{:active, true}])
-    {:ok, {ip, port}} = :inet.peername(tcp_socket)
-    Logger.info("TCP connection accepted from #{:inet.ntoa(ip)}:#{port}")
-    tcp_buffers = Map.put(state.tcp_buffers, tcp_socket, <<>>)
-    {:noreply, %{state | tcp_buffers: tcp_buffers}}
+
+    # A peer that connects and resets immediately is already gone by the time we
+    # get here, so peername/1 returns an error. Matching {:ok, _} on it would
+    # raise and take the node down — UDP and every session with it — which is
+    # exactly the failure this change exists to prevent, one process further up.
+    case :inet.peername(tcp_socket) do
+      {:ok, {ip, port}} ->
+        Logger.info("TCP connection accepted from #{:inet.ntoa(ip)}:#{port}")
+        {:noreply, %{state | tcp_buffers: Map.put(state.tcp_buffers, tcp_socket, <<>>)}}
+
+      {:error, reason} ->
+        Logger.debug("TCP peer gone before it could be registered: #{inspect(reason)}")
+        :gen_tcp.close(tcp_socket)
+        {:noreply, state}
+    end
   end
 
   # ── TCP data ─────────────────────────────────────────────────────

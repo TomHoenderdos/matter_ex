@@ -608,8 +608,31 @@ defmodule MatterEx.NodeTest do
       assert eventually(fn -> tcp_acceptor(node) not in [nil, acceptor] end)
 
       assert eventually(fn ->
-               match?({:ok, _}, :gen_tcp.connect(~c"127.0.0.1", port, [:binary]))
+               case :gen_tcp.connect(~c"127.0.0.1", port, [:binary], 100) do
+                 {:ok, socket} -> :gen_tcp.close(socket) == :ok
+                 {:error, _} -> false
+               end
              end)
+    end
+
+    test "a peer that vanishes before it is registered does not crash the node", %{node: node} do
+      # peername/1 fails for a socket whose peer has already gone. Handing the
+      # node an already-closed socket reproduces that deterministically, where
+      # racing a real connect-then-reset would not.
+      {:ok, listen} = :gen_tcp.listen(0, [:binary, {:active, false}])
+      {:ok, {_addr, listen_port}} = :inet.sockname(listen)
+      {:ok, client} = :gen_tcp.connect(~c"127.0.0.1", listen_port, [:binary])
+      {:ok, accepted} = :gen_tcp.accept(listen)
+      :gen_tcp.close(client)
+      :gen_tcp.close(accepted)
+
+      send(node, {:tcp_accepted, accepted})
+
+      # A round-trip call confirms the message was processed, not merely queued.
+      assert MatterEx.Node.port(node) > 0
+      assert Process.alive?(node)
+
+      :gen_tcp.close(listen)
     end
   end
 

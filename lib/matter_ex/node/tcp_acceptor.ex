@@ -4,11 +4,20 @@ defmodule MatterEx.Node.TCPAcceptor do
 
   Owns the TCP listen socket and accepts connections in a self-driven loop,
   handing each accepted socket to the owning node process. Runs in its own
-  crash domain: an accept error restarts only this acceptor (via its
-  supervisor), never the node, and it can never silently stop accepting.
+  crash domain: an accept error restarts only this acceptor, via its supervisor,
+  and it can never silently stop accepting.
+
+  That isolation has a deliberate limit. The supervisor is *linked* to the node,
+  which does not trap exits, so exhausting its restart intensity (10 restarts in
+  5 seconds) brings the node down too. A wire failing that persistently is not
+  something to keep restarting through — the escalation is the point — but it
+  does mean "an acceptor crash never touches the node" holds for isolated
+  failures, not for a sustained one.
 
   Matter TCP is optional. If the listen socket can't be opened the acceptor
-  declines to start (`:ignore`) and the node continues on UDP only.
+  declines to start (`:ignore`) and the node continues on UDP only. Note this is
+  permanent for the life of the node: a transient bind failure at boot leaves TCP
+  off until restart.
 
   ## Options
 
@@ -72,7 +81,7 @@ defmodule MatterEx.Node.TCPAcceptor do
     end
   end
 
-  @impl true
-  def terminate(_reason, %{listen: listen}), do: :gen_tcp.close(listen)
-  def terminate(_reason, _state), do: :ok
+  # No terminate/2: without trap_exit it wouldn't run on the paths that matter,
+  # and the listen socket is a port owned by this process — it closes when the
+  # process dies, however it dies.
 end
