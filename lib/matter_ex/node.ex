@@ -41,6 +41,12 @@ defmodule MatterEx.Node do
   # Cap on how many queued attribute-change messages one notification drains.
   @max_drained_changes 32
 
+  # Re-registering on the reporting registry has to wait for its supervisor to
+  # restart it: at :DOWN time the name never resolves yet (measured: nil on every
+  # trial, name back after ~2ms). Retry rather than give up on the first miss.
+  @reporting_retry_ms 50
+  @reporting_retry_limit 20
+
   # Re-announcement backoff while no controller is connected. RFC 6762 §6 forbids
   # multicasting the same record more than once a second, and §8.3 wants
   # announcement intervals to at least double; a fixed 1 Hz would sit exactly on
@@ -128,7 +134,9 @@ defmodule MatterEx.Node do
 
     # Subscribe to the device's reporting bus for push-based reporting. Best
     # effort: the poll still runs if the device has no reporting registry.
-    subscribe_to_reporting(device)
+    if subscribe_to_reporting(device) == :unavailable do
+      Process.send_after(self(), {:resubscribe_reporting, 1}, @reporting_retry_ms)
+    end
 
     case open_udp_sockets(udp_port) do
       {:ok, socket, socket6, assigned_port} ->
@@ -340,18 +348,37 @@ defmodule MatterEx.Node do
 
   # ── Push-based reporting ────────────────────────────────────────
 
+  # Retry registering on the device's reporting bus.
+  #
+  # Only reachable for a node started before its device supervisor: once
+  # registered we are *linked* to the registry partition (see
+  # subscribe_to_reporting/2), so registry death takes this node with it and our
+  # own supervisor restarts us — init/1 registers again. There is no surviving-
+  # the-registry case to handle here.
+  def handle_info({:resubscribe_reporting, attempt}, state) do
+    case subscribe_to_reporting(state.handler.device, quiet: true) do
+      :ok ->
+        Logger.info("Registered for reporting after #{attempt} attempt(s)")
+        {:noreply, state}
+
+      :unavailable when attempt >= @reporting_retry_limit ->
+        Logger.warning(
+          "Reporting registry still unavailable after " <>
+            "#{@reporting_retry_limit * @reporting_retry_ms}ms; reports will fall back to " <>
+            "polling every #{state.sub_check_interval}ms"
+        )
+
+        {:noreply, state}
+
+      :unavailable ->
+        Process.send_after(self(), {:resubscribe_reporting, attempt + 1}, @reporting_retry_ms)
+        {:noreply, state}
+    end
+  end
+
   # A cluster attribute changed. Report the affected subscriptions immediately
   # rather than waiting for the next poll. Coalesce a same-tick burst (e.g. a
   # command that touches several clusters) into one pass.
-  # The device's reporting registry went down (e.g. a :one_for_one restart of the
-  # device supervisor). Without re-registering, push reporting is dead for the
-  # life of this node and the only symptom is slower reports.
-  def handle_info({:DOWN, _ref, :process, _pid, reason}, state) do
-    Logger.warning("Reporting registry went down (#{inspect(reason)}); re-registering")
-    subscribe_to_reporting(state.handler.device)
-    {:noreply, state}
-  end
-
   def handle_info({:attribute_changed, endpoint, cluster}, state) do
     targets = drain_attribute_changes([{endpoint, cluster}])
     {actions, handler} = MessageHandler.report_targets(state.handler, targets)
@@ -426,31 +453,30 @@ defmodule MatterEx.Node do
   # this replaced. Two ways it bites — a node started before its device
   # supervisor, and a :one_for_one restart of that supervisor leaving the registry
   # empty while the node keeps running.
-  defp subscribe_to_reporting(device) do
-    registry = :"#{device}.Reporting"
-
-    case Process.whereis(registry) do
-      nil ->
-        Logger.warning(
-          "#{inspect(registry)} is not running — subscription reports will fall back to " <>
-            "polling every #{@sub_check_interval}ms. Start the device supervisor before the node."
-        )
-
-        nil
-
-      pid ->
-        Registry.register(registry, :changes, nil)
-        # Re-register if the registry restarts; otherwise push is dead for good
-        # and nothing says so.
-        Process.monitor(pid)
-    end
+  # Register on the device's reporting bus.
+  #
+  # `Registry.register/3` **links** the caller to the registry partition, so this
+  # node dies with the registry and is restarted by its own supervisor, which
+  # registers again through init/1. That is the recovery path — a monitor would
+  # never get to run, because the exit signal arrives first.
+  #
+  # The case worth handling is a node started *before* its device supervisor:
+  # nothing to register with, no link, and reports silently fall back to polling
+  # at an interval slower than the poll this replaced. So it warns and retries.
+  defp subscribe_to_reporting(device, opts \\ []) do
+    Registry.register(:"#{device}.Reporting", :changes, nil)
+    :ok
   rescue
     ArgumentError ->
-      Logger.warning(
-        "Failed to register for reporting on #{inspect(device)}; falling back to polling"
-      )
+      unless opts[:quiet] do
+        Logger.warning(
+          "#{inspect(:"#{device}.Reporting")} is not running — subscription reports will fall " <>
+            "back to polling every #{@sub_check_interval}ms until it starts. Start the device " <>
+            "supervisor before the node."
+        )
+      end
 
-      nil
+      :unavailable
   end
 
   # Pull other queued attribute-changed messages so a burst reports once.

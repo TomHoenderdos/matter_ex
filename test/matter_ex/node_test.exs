@@ -23,6 +23,30 @@ defmodule MatterEx.NodeTest do
     end
   end
 
+  defmodule LateLight do
+    use MatterEx.Device,
+      vendor_name: "TestCo",
+      product_name: "LateLight",
+      vendor_id: 0xFFF1,
+      product_id: 0x8002
+
+    endpoint 1, device_type: 0x0100 do
+      cluster(MatterEx.Cluster.OnOff)
+    end
+  end
+
+  defmodule LinkLight do
+    use MatterEx.Device,
+      vendor_name: "TestCo",
+      product_name: "LinkLight",
+      vendor_id: 0xFFF1,
+      product_id: 0x8003
+
+    endpoint 1, device_type: 0x0100 do
+      cluster(MatterEx.Cluster.OnOff)
+    end
+  end
+
   setup do
     start_supervised!(TestLight)
 
@@ -127,7 +151,8 @@ defmodule MatterEx.NodeTest do
   end
 
   # Run a full subscribe handshake (PASE → SubscribeRequest → priming ReportData
-  # → StatusResponse) and return the decoded SubscribeResponse.
+  # → StatusResponse), returning the decoded SubscribeResponse and the live
+  # session so callers can decrypt reports that arrive afterwards.
   defp subscribe(client, port, opts) do
     comm_session = run_pase_over_udp(client, port)
     exchange_id = Keyword.get(opts, :exchange_id, 10)
@@ -169,7 +194,14 @@ defmodule MatterEx.NodeTest do
       SecureChannel.open(comm_session, send_and_receive(client, port, status_frame))
 
     {:ok, sub_resp} = IM.decode(:subscribe_response, sub_msg.proto.payload)
-    sub_resp
+    {sub_resp, comm_session}
+  end
+
+  defp registered?(registry, pid) do
+    case Process.whereis(registry) do
+      nil -> false
+      _ -> Enum.any?(Registry.lookup(registry, :changes), fn {p, _} -> p == pid end)
+    end
   end
 
   # Drive one subscription tick and wait for it to be processed — a round-trip
@@ -673,7 +705,7 @@ defmodule MatterEx.NodeTest do
       # check_subscriptions/1 tests max_interval_elapsed? before throttled?, so
       # the keep-alive would fire every 120s on a subscription that asked to be
       # reported to no more often than every 300s.
-      sub_resp = subscribe(client, port, min_interval: 300, max_interval: 600)
+      {sub_resp, _session} = subscribe(client, port, min_interval: 300, max_interval: 600)
 
       assert sub_resp.max_interval == 300
     end
@@ -812,6 +844,70 @@ defmodule MatterEx.NodeTest do
 
       assert [{:data, %{path: %{endpoint: 1, cluster: 6, attribute: 0}, value: true}}] =
                report.attribute_reports
+    end
+
+    test "a node started before its device registers once the registry appears" do
+      # Registry.register/3 raises when the registry isn't running, so a node
+      # started first would otherwise fall back to polling forever. The retry is
+      # the only path that can recover it — once registered we're linked to the
+      # registry, so registry death takes the node down instead.
+      node =
+        start_supervised!(
+          {MatterEx.Node,
+           device: LateLight,
+           passcode: @passcode,
+           salt: @salt,
+           iterations: @iterations,
+           port: 0,
+           sub_check_interval: 60_000},
+          id: :late_node
+        )
+
+      registry = :"#{LateLight}.Reporting"
+      refute Process.whereis(registry)
+
+      start_supervised!(LateLight, id: :late_device)
+
+      # The node retries on a timer and picks the registry up when it appears.
+      assert eventually(fn -> registered?(registry, node) end, 3_000)
+    end
+
+    test "registry death takes the node with it, and supervision restores push" do
+      # Registry.register/3 links the caller to the registry partition, so this
+      # node cannot outlive its registry — which is why re-registration belongs in
+      # init/1 and a monitor would never get to run.
+      start_supervised!(LinkLight, id: :link_device)
+
+      node =
+        start_supervised!(
+          {MatterEx.Node,
+           device: LinkLight,
+           passcode: @passcode,
+           salt: @salt,
+           iterations: @iterations,
+           port: 0,
+           sub_check_interval: 60_000},
+          id: :link_node
+        )
+
+      registry = :"#{LinkLight}.Reporting"
+      assert registered?(registry, node)
+
+      ref = Process.monitor(node)
+      Process.exit(Process.whereis(registry), :kill)
+
+      assert_receive {:DOWN, ^ref, :process, ^node, _reason}, 1_000
+
+      # The supervisor brings both back, and the fresh node registers in init/1.
+      assert eventually(
+               fn ->
+                 case Process.whereis(registry) do
+                   nil -> false
+                   _ -> Registry.lookup(registry, :changes) != []
+                 end
+               end,
+               3_000
+             )
     end
   end
 
