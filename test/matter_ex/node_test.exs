@@ -165,6 +165,13 @@ defmodule MatterEx.NodeTest do
     sub_resp
   end
 
+  # Drive one subscription tick and wait for it to be processed — a round-trip
+  # call is enough, since the GenServer handles messages in order.
+  defp tick(node) do
+    send(node, :check_subscriptions)
+    MatterEx.Node.port(node)
+  end
+
   # TCP helpers
 
   defp tcp_connect(port) do
@@ -662,6 +669,73 @@ defmodule MatterEx.NodeTest do
       sub_resp = subscribe(client, port, min_interval: 300, max_interval: 600)
 
       assert sub_resp.max_interval == 300
+    end
+  end
+
+  # ── mDNS re-announcement ────────────────────────────────────────
+
+  describe "mDNS re-announcement while disconnected" do
+    setup do
+      mdns = start_supervised!({MatterEx.MDNS, port: 0, hostname: "reann"}, id: :reann_mdns)
+
+      node =
+        start_supervised!(
+          {MatterEx.Node,
+           device: TestLight,
+           passcode: @passcode,
+           salt: @salt,
+           iterations: @iterations,
+           port: 0,
+           mdns: mdns},
+          id: :reann_node
+        )
+
+      {:ok, client} = :gen_udp.open(0, [:binary, {:active, true}])
+      on_exit(fn -> :gen_udp.close(client) end)
+
+      %{reann_node: node, reann_port: MatterEx.Node.port(node), reann_client: client}
+    end
+
+    test "several ticks in quick succession produce one announcement, not one each",
+         %{reann_node: node} do
+      # The behaviour this replaces announced on every 1s tick, forever. RFC 6762
+      # §6 forbids multicasting the same record more than once a second, so a
+      # fixed 1 Hz sat exactly on the limit with no headroom and no backoff.
+      for _ <- 1..5, do: tick(node)
+
+      # One announcement went out; the interval doubled once, to 2s.
+      assert :sys.get_state(node).reannounce_in == 2_000
+    end
+
+    test "the interval doubles on each announcement", %{reann_node: node} do
+      tick(node)
+      assert :sys.get_state(node).reannounce_in == 2_000
+
+      # Past the scheduled time, so the next tick actually announces.
+      Process.sleep(1_100)
+      tick(node)
+      assert :sys.get_state(node).reannounce_in == 4_000
+    end
+
+    test "a connected controller resets the schedule", %{
+      reann_node: node,
+      reann_port: port,
+      reann_client: client
+    } do
+      tick(node)
+      assert :sys.get_state(node).reannounce_in == 2_000
+
+      # A real session, not a stand-in — check_subscriptions/1 walks sessions, so
+      # a placeholder would just crash the node rather than exercise the branch.
+      run_pase_over_udp(client, port)
+      assert map_size(:sys.get_state(node).handler.sessions) > 0
+
+      # With a controller present there is nothing to advertise for, and the next
+      # disconnect should start a fresh burst rather than resume at the slow rate.
+      tick(node)
+      state = :sys.get_state(node)
+      assert state.reannounce_in == nil
+      assert state.reannounce_at == nil
     end
   end
 

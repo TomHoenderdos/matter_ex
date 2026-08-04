@@ -35,6 +35,13 @@ defmodule MatterEx.Node do
   alias MatterEx.Transport.TCP, as: TCPFraming
 
   @sub_check_interval 1000
+
+  # Re-announcement backoff while no controller is connected. RFC 6762 §6 forbids
+  # multicasting the same record more than once a second, and §8.3 wants
+  # announcement intervals to at least double; a fixed 1 Hz would sit exactly on
+  # that limit forever. 1s → 2s → 4s … capped at half the record TTL.
+  @reannounce_base_ms 1_000
+  @reannounce_max_ms 60_000
   @sol_socket 1
   @so_bindtodevice 25
 
@@ -55,7 +62,10 @@ defmodule MatterEx.Node do
       # Per-session transport: session_id => {:udp, {ip, port}} | {:tcp, tcp_socket}
       session_transports: %{},
       # TCP per-connection buffers: tcp_socket => binary
-      tcp_buffers: %{}
+      tcp_buffers: %{},
+      # Backoff schedule for re-announcing mDNS while no controller is connected
+      reannounce_in: nil,
+      reannounce_at: nil
     ]
   end
 
@@ -318,7 +328,7 @@ defmodule MatterEx.Node do
     handler = maybe_update_group_keys(handler)
     state = %{state | handler: handler}
     state = process_subscription_actions(actions, state)
-    maybe_reannounce_while_disconnected(state)
+    state = maybe_reannounce_while_disconnected(state)
     Process.send_after(self(), :check_subscriptions, @sub_check_interval)
     {:noreply, state}
   end
@@ -332,12 +342,33 @@ defmodule MatterEx.Node do
   # controller re-resolves the device after a new DHCP address or a missed
   # announcement burst. Stops the moment a session exists, so it costs nothing in
   # steady state. Rides the always-on subscription tick rather than adding a timer.
-  defp maybe_reannounce_while_disconnected(state) do
-    if state.mdns && map_size(state.handler.sessions) == 0 do
-      MatterEx.MDNS.reannounce_all(state.mdns)
-    end
+  defp maybe_reannounce_while_disconnected(%{mdns: nil} = state), do: state
 
-    :ok
+  defp maybe_reannounce_while_disconnected(state) do
+    if map_size(state.handler.sessions) > 0 do
+      # A controller is here; nothing to advertise for. Reset so the next
+      # disconnect starts a fresh burst rather than resuming at the slow rate.
+      %{state | reannounce_in: nil, reannounce_at: nil}
+    else
+      reannounce_with_backoff(state)
+    end
+  end
+
+  defp reannounce_with_backoff(state) do
+    now = System.monotonic_time(:millisecond)
+    interval = state.reannounce_in || @reannounce_base_ms
+
+    if now >= (state.reannounce_at || now) do
+      MatterEx.MDNS.reannounce_all(state.mdns)
+
+      %{
+        state
+        | reannounce_at: now + interval,
+          reannounce_in: min(interval * 2, @reannounce_max_ms)
+      }
+    else
+      state
+    end
   end
 
   defp refresh_runtime_state(state) do

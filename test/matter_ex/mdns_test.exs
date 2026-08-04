@@ -186,17 +186,49 @@ defmodule MatterEx.MDNSTest do
       assert :sys.get_state(listed).addresses == :sys.get_state(every).addresses
     end
 
-    test "a single interface name still selects only that interface" do
+    test "a single interface name selects only that interface" do
+      # Pick an interface that actually yields advertisable addresses, then
+      # assert selecting it gives exactly those — not merely "a list", which
+      # every implementation satisfies.
       {:ok, ifaddrs} = :inet.getifaddrs()
-      [{first, _} | _] = ifaddrs
+      every = start_supervised!({MDNS, port: 0, hostname: "every"}, id: :every)
+      all_addresses = :sys.get_state(every).addresses
 
-      one =
-        start_supervised!(
-          {MDNS, port: 0, hostname: "one", interface: to_string(first)},
-          id: :one
-        )
+      named =
+        Enum.find_value(ifaddrs, fn {name, _opts} ->
+          server =
+            start_supervised!(
+              {MDNS, port: 0, hostname: "named-#{name}", interface: to_string(name)},
+              id: {:named, name}
+            )
 
-      assert is_list(:sys.get_state(one).addresses)
+          case :sys.get_state(server).addresses do
+            [] -> nil
+            addresses -> {to_string(name), addresses}
+          end
+        end)
+
+      case named do
+        nil ->
+          # No interface on this host has an advertisable address; nothing to assert.
+          assert all_addresses == []
+
+        {_name, addresses} ->
+          # A single interface's addresses must be a strict subset of every
+          # interface's, and must not be empty.
+          assert addresses != []
+          assert Enum.all?(addresses, &(&1 in all_addresses))
+      end
+    end
+
+    test "an invalid :interface advertises nothing instead of crashing" do
+      # detect_addresses/1 runs from refresh_network_state/1, which runs on every
+      # inbound packet — a raise here would be a crash loop, not a clear error.
+      bad =
+        start_supervised!({MDNS, port: 0, hostname: "bad", interface: :wlan0}, id: :bad)
+
+      assert :sys.get_state(bad).addresses == []
+      assert Process.alive?(bad)
     end
 
     test "a whitelist matching nothing detects no addresses" do
@@ -254,6 +286,41 @@ defmodule MatterEx.MDNSTest do
     test "reannounce_all is a safe no-op with nothing advertised", %{mdns: mdns} do
       :ok = MDNS.reannounce_all(mdns)
       assert Process.alive?(mdns)
+    end
+
+    test "re-advertising an instance replaces the pending burst instead of stacking it",
+         %{mdns: mdns} do
+      advertise_test_service(mdns)
+      [first, second] = :sys.get_state(mdns).burst_timers["TEST-INST"]
+
+      advertise_test_service(mdns)
+      replacement = :sys.get_state(mdns).burst_timers["TEST-INST"]
+
+      # The originals are cancelled, and exactly one burst is pending.
+      assert Process.read_timer(first) == false
+      assert Process.read_timer(second) == false
+      assert length(replacement) == 2
+    end
+
+    test "a removed address is withdrawn with a TTL-zero record" do
+      # RFC 6762 §10.1: a record that is no longer valid gets a TTL of zero.
+      # Without it a controller keeps trying a dead address until the TTL
+      # expires (2 minutes) — the exact failure this module exists to avoid.
+      records =
+        MDNS.address_goodbye_records("test-device", [
+          {192, 168, 1, 250},
+          {0xFE80, 0, 0, 0, 0, 0, 0, 1}
+        ])
+
+      assert [a, aaaa] = records
+
+      assert a.type == :a
+      assert a.ttl == 0
+      assert a.data == {192, 168, 1, 250}
+      assert a.name == "test-device.local"
+
+      assert aaaa.type == :aaaa
+      assert aaaa.ttl == 0
     end
 
     test "withdraw removes service", %{mdns: mdns, client: client, port: port} do

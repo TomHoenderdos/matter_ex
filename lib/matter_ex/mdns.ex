@@ -58,7 +58,9 @@ defmodule MatterEx.MDNS do
       :dynamic_addresses,
       :interface,
       services: %{},
-      addresses: []
+      addresses: [],
+      # instance => pending {:reannounce, instance} timer refs
+      burst_timers: %{}
     ]
   end
 
@@ -346,7 +348,8 @@ defmodule MatterEx.MDNS do
   end
 
   def handle_call({:advertise, opts}, _from, state) do
-    state = refresh_network_state(state)
+    {state, changes} = refresh_network_state(state)
+    state = announce_address_change(state, changes)
 
     service_config = %{
       service: Keyword.fetch!(opts, :service),
@@ -371,12 +374,13 @@ defmodule MatterEx.MDNS do
       socket6: state.socket6 != nil
     })
 
-    # Send a small announcement burst (this one plus two follow-ups ~1s apart,
-    # per DNS-SD convention) so a controller reliably catches at least one after
-    # a device reboot.
+    # RFC 6762 §8.3: at least two unsolicited responses a second apart, and if
+    # more, "the interval between unsolicited responses increases by at least a
+    # factor of two with every response sent" — so t+1s then t+3s, not t+2s.
+    # Re-advertising the same instance cancels the pending burst rather than
+    # stacking a second one on top of it.
     send_announcement(state, service_config, @default_ttl)
-    Process.send_after(self(), {:reannounce, instance}, 1000)
-    Process.send_after(self(), {:reannounce, instance}, 2000)
+    state = schedule_burst(state, instance)
 
     Logger.info("mDNS: advertising #{instance}.#{service_config.service}")
     {:reply, :ok, state}
@@ -413,18 +417,24 @@ defmodule MatterEx.MDNS do
 
   @impl true
   def handle_cast(:reannounce_all, state) do
-    state = refresh_network_state(state)
+    {state, changes} = refresh_network_state(state)
 
-    Enum.each(state.services, fn {_instance, config} ->
-      send_announcement(state, config, @default_ttl)
-    end)
+    # An address change is itself a reason to announce, and
+    # announce_address_change/2 already does it — sending again here would put
+    # two identical copies of every record on the wire in the same tick.
+    if changed?(changes) do
+      announce_address_change(state, changes)
+    else
+      announce_all_services(state)
+    end
 
     {:noreply, state}
   end
 
   @impl true
   def handle_info({:udp, socket, ip, port, data}, state) do
-    state = refresh_network_state(state)
+    {state, changes} = refresh_network_state(state)
+    state = announce_address_change(state, changes)
 
     case DNS.decode_message(data) do
       {:ok, %{qr: :query} = msg} ->
@@ -443,7 +453,8 @@ defmodule MatterEx.MDNS do
 
   # Follow-up announcement in the burst; also re-sent when addresses change.
   def handle_info({:reannounce, instance}, state) do
-    state = refresh_network_state(state)
+    {state, changes} = refresh_network_state(state)
+    state = announce_address_change(state, changes)
 
     case Map.get(state.services, instance) do
       nil -> :ok
@@ -750,12 +761,17 @@ defmodule MatterEx.MDNS do
         %{name: sub, type: :ptr, class: :in, ttl: ttl, data: fqn}
       end)
 
+    send_records(state, records ++ subtype_records)
+  end
+
+  # Multicast an unsolicited response carrying `records`.
+  defp send_records(state, records) do
     response = %{
       id: 0,
       qr: :response,
       aa: true,
       questions: [],
-      answers: records ++ subtype_records
+      answers: records
     }
 
     # Send to multicast if on standard port, otherwise unicast not needed
@@ -775,28 +791,97 @@ defmodule MatterEx.MDNS do
     :gen_udp.send(socket, ip, port, binary)
   end
 
-  defp refresh_network_state(%State{dynamic_addresses: false} = state), do: state
+  # Re-detect addresses and re-join multicast, reporting what changed.
+  #
+  # This deliberately sends nothing. It runs on every inbound packet, and having
+  # announcements fall out of query handling as a side effect made them both hard
+  # to reason about and easy to duplicate. Callers decide what to send, via
+  # `announce_address_change/2`.
+  @spec refresh_network_state(State.t()) :: {State.t(), %{added: list(), removed: list()}}
+  defp refresh_network_state(%State{dynamic_addresses: false} = state), do: {state, no_change()}
 
   defp refresh_network_state(%State{} = state) do
     addresses = detect_addresses(state.interface)
-    new_addresses = addresses -- state.addresses
 
-    if addresses != state.addresses do
-      join_multicast_interfaces(state.socket, state.socket6, state.port, new_addresses)
-      state = %{state | addresses: addresses}
-
-      # A fresh address just appeared (e.g. the interface came up after boot) —
-      # re-announce so controllers relearn where to reach us.
-      if new_addresses != [] do
-        Enum.each(state.services, fn {_instance, config} ->
-          send_announcement(state, config, @default_ttl)
-        end)
-      end
-
-      state
+    if addresses == state.addresses do
+      {state, no_change()}
     else
-      state
+      added = addresses -- state.addresses
+      removed = state.addresses -- addresses
+      join_multicast_interfaces(state.socket, state.socket6, state.port, added)
+      {%{state | addresses: addresses}, %{added: added, removed: removed}}
     end
+  end
+
+  # Announcement burst for one instance, replacing any burst already pending for
+  # it. Intervals double per RFC 6762 §8.3.
+  defp schedule_burst(state, instance) do
+    state
+    |> cancel_burst(instance)
+    |> put_in([Access.key!(:burst_timers), instance], [
+      Process.send_after(self(), {:reannounce, instance}, 1_000),
+      Process.send_after(self(), {:reannounce, instance}, 3_000)
+    ])
+  end
+
+  defp cancel_burst(state, instance) do
+    state.burst_timers
+    |> Map.get(instance, [])
+    |> Enum.each(&Process.cancel_timer/1)
+
+    %{state | burst_timers: Map.delete(state.burst_timers, instance)}
+  end
+
+  defp no_change, do: %{added: [], removed: []}
+
+  defp changed?(%{added: [], removed: []}), do: false
+  defp changed?(_), do: true
+
+  # React to an address change: withdraw what's gone, announce what's arrived.
+  defp announce_address_change(state, %{added: added, removed: removed}) do
+    # RFC 6762 §10.1 — a record that is no longer valid must be withdrawn with a
+    # TTL of zero. Without this a controller keeps a dead address in its cache
+    # for the full TTL (2 minutes here) and keeps trying it first, which is
+    # precisely the stale-address problem this module is trying to avoid.
+    if removed != [], do: send_address_goodbye(state, removed)
+
+    # A fresh address appeared (e.g. the interface came up after boot) —
+    # re-announce so controllers learn where to reach us.
+    if added != [], do: announce_all_services(state)
+
+    state
+  end
+
+  defp announce_all_services(state) do
+    Enum.each(state.services, fn {_instance, config} ->
+      send_announcement(state, config, @default_ttl)
+    end)
+  end
+
+  defp send_address_goodbye(state, removed) do
+    case address_goodbye_records(state.hostname, removed) do
+      [] -> :ok
+      records -> send_records(state, records)
+    end
+  end
+
+  # Records that withdraw `addresses`, per RFC 6762 §10.1 — the same record with
+  # an RR TTL of zero. Only the address records are withdrawn, not the whole
+  # service: the service is still there, it just lost an address.
+  #
+  # Public only so this is directly testable. The responder multicasts nothing
+  # unless it is on the standard mDNS port, so the send path itself can't be
+  # observed from a test.
+  @doc false
+  @spec address_goodbye_records(String.t(), [tuple()]) :: [map()]
+  def address_goodbye_records(hostname, addresses) do
+    hostname_local = hostname <> ".local"
+
+    Enum.flat_map(addresses, fn
+      {_, _, _, _} = addr -> [%{address_record(hostname_local, :a, addr) | ttl: 0}]
+      {_, _, _, _, _, _, _, _} = addr -> [%{address_record(hostname_local, :aaaa, addr) | ttl: 0}]
+      _other -> []
+    end)
   end
 
   defp open_ipv6_socket(port, reuseport) do
@@ -944,4 +1029,16 @@ defmodule MatterEx.MDNS do
   defp interface_selected?(nil, _name), do: true
   defp interface_selected?(interface, name) when is_binary(interface), do: interface == name
   defp interface_selected?(interfaces, name) when is_list(interfaces), do: name in interfaces
+
+  # Anything else is a misconfiguration. Raising here would be a crash loop, not
+  # a clear error: detect_addresses/1 runs from refresh_network_state/1, which
+  # runs on every inbound packet. Warn once per detection pass and advertise
+  # nothing rather than take the responder down.
+  defp interface_selected?(other, _name) do
+    Logger.warning(
+      "mDNS: ignoring invalid :interface #{inspect(other)}; expected nil, a name, or a list of names"
+    )
+
+    false
+  end
 end
