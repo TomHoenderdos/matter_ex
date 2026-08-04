@@ -197,6 +197,38 @@ defmodule MatterEx.NodeTest do
     {sub_resp, comm_session}
   end
 
+  # Distinct message counters of frames arriving within `window` ms.
+  #
+  # Read from the cleartext message header rather than by decrypting: a second
+  # Report transaction advances counters in ways the client session hasn't
+  # followed, so decryption would fail and the frame would go uncounted — which
+  # is exactly the frame this is looking for.
+  defp collect_counters(client, window) do
+    deadline = System.monotonic_time(:millisecond) + window
+    collect_counters(client, deadline, [])
+  end
+
+  defp collect_counters(client, deadline, acc) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining <= 0 do
+      Enum.uniq(Enum.reverse(acc))
+    else
+      receive do
+        {:udp, ^client, _ip, _port, data} ->
+          acc =
+            case Header.decode(data) do
+              {:ok, header, _rest} -> [header.message_counter | acc]
+              _ -> acc
+            end
+
+          collect_counters(client, deadline, acc)
+      after
+        remaining -> Enum.uniq(Enum.reverse(acc))
+      end
+    end
+  end
+
   defp registered?(registry, pid) do
     case Process.whereis(registry) do
       nil -> false
@@ -843,6 +875,106 @@ defmodule MatterEx.NodeTest do
       {:ok, report} = IM.decode(:report_data, msg.proto.payload)
 
       assert [{:data, %{path: %{endpoint: 1, cluster: 6, attribute: 0}, value: true}}] =
+               report.attribute_reports
+    end
+
+    test "a second change while a report is un-acked does not start a second transaction", %{
+      client: client,
+      port: port
+    } do
+      # Core spec §8.5: "Each Report transaction initiated by the publisher SHALL
+      # complete successfully before another Report transaction is initiated by
+      # the publisher." With min_interval: 0 nothing throttles, so before the
+      # in-flight guard three quick writes put three Report transactions on the
+      # wire back to back, none waiting on the previous Status Response.
+      {_sub_resp, comm_session} = subscribe(client, port, min_interval: 0, max_interval: 60)
+
+      on_off = TestLight.__process_name__(1, :on_off)
+
+      # First change: a report goes out and is deliberately left un-acked.
+      :ok = GenServer.call(on_off, {:write_attribute, :on_off, true})
+
+      first =
+        receive do
+          {:udp, ^client, _ip, _port, data} -> data
+        after
+          250 -> flunk("no first report")
+        end
+
+      {:ok, first_msg, comm_session} = SecureChannel.open(comm_session, first)
+      assert first_msg.proto.opcode == ProtocolID.opcode(:interaction_model, :report_data)
+
+      # Further changes while that report is outstanding must not produce more
+      # Report transactions. Anything arriving now is either an MRP retransmit of
+      # the same counter or a violation.
+      # One follow-up write, not two: two writes can coalesce back to the value
+      # already reported, and then nothing is owed for an unrelated reason.
+      :ok = GenServer.call(on_off, {:write_attribute, :on_off, false})
+
+      extra = collect_counters(client, 250)
+
+      # Retransmits of the same un-acked report are fine; a *new* counter means a
+      # second Report transaction was initiated before the first completed.
+      new_transactions = Enum.reject(extra, &(&1 == first_msg.header.message_counter))
+
+      assert new_transactions == [],
+             "a second Report transaction started while one was un-acked: #{inspect(new_transactions)}"
+    end
+
+    test "the change suppressed while a report was in flight is sent once it is acked", %{
+      client: client,
+      port: port
+    } do
+      {_sub_resp, comm_session} = subscribe(client, port, min_interval: 0, max_interval: 60)
+      on_off = TestLight.__process_name__(1, :on_off)
+
+      :ok = GenServer.call(on_off, {:write_attribute, :on_off, true})
+
+      first =
+        receive do
+          {:udp, ^client, _ip, _port, data} -> data
+        after
+          250 -> flunk("no first report")
+        end
+
+      {:ok, first_msg, comm_session} = SecureChannel.open(comm_session, first)
+
+      # Change again while the first report is still outstanding — suppressed.
+      :ok = GenServer.call(on_off, {:write_attribute, :on_off, false})
+
+      # Drain first: if the change was *not* suppressed its report lands here, and
+      # then nothing would follow the ack. Without this the test passes either way.
+      assert collect_counters(client, 250)
+             |> Enum.reject(&(&1 == first_msg.header.message_counter)) == [],
+             "the change was reported before the outstanding report was acked"
+
+      # Ack the first report. The owed change must follow.
+      ack =
+        %ProtoHeader{
+          initiator: true,
+          needs_ack: false,
+          ack_counter: first_msg.header.message_counter,
+          opcode: ProtocolID.opcode(:interaction_model, :status_response),
+          exchange_id: first_msg.proto.exchange_id,
+          protocol_id: ProtocolID.protocol_id(:interaction_model),
+          payload: IM.encode(%IM.StatusResponse{status: 0})
+        }
+
+      {ack_frame, comm_session} = SecureChannel.seal(comm_session, ack)
+      :ok = :gen_udp.send(client, ~c"127.0.0.1", port, ack_frame)
+
+      followup =
+        receive do
+          {:udp, ^client, _ip, _port, data} -> data
+        after
+          500 -> flunk("suppressed change was never sent after the ack")
+        end
+
+      {:ok, msg, _} = SecureChannel.open(comm_session, followup)
+      assert msg.proto.opcode == ProtocolID.opcode(:interaction_model, :report_data)
+      {:ok, report} = IM.decode(:report_data, msg.proto.payload)
+
+      assert [{:data, %{path: %{endpoint: 1, cluster: 6, attribute: 0}, value: false}}] =
                report.attribute_reports
     end
 

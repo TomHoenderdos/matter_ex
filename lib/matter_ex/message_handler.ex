@@ -744,7 +744,12 @@ defmodule MatterEx.MessageHandler do
               %{state | sessions: sessions}
               |> maybe_unsubscribe_removed_fabric(removed_fabric_index)
 
-            {actions, state}
+            # This message may have carried the Status Response completing a
+            # report we sent. Release the in-flight guard and flush anything that
+            # changed while it was outstanding.
+            {release_actions, state} = complete_acked_reports(state, session_id)
+
+            {actions ++ release_actions, state}
 
           {:error, reason} ->
             Logger.warning(
@@ -804,6 +809,71 @@ defmodule MatterEx.MessageHandler do
       end)
 
     {actions, session, mgr}
+  end
+
+  # Remember that a change arrived for a subscription whose report is still in
+  # flight, so it can be sent as soon as the Status Response lands.
+  defp mark_subscription_dirty(state, session_id, sub_id) do
+    case Map.get(state.sessions, session_id) do
+      nil ->
+        state
+
+      entry ->
+        sub_mgr = SubscriptionManager.mark_dirty(entry.subscription_mgr, sub_id)
+        entry = %{entry | subscription_mgr: sub_mgr}
+        %{state | sessions: Map.put(state.sessions, session_id, entry)}
+    end
+  end
+
+  @doc """
+  Release subscription reports whose Status Response has arrived, sending any
+  change that was suppressed while they were outstanding.
+
+  Also the only place `exchange_to_sub` is pruned on the success path: before
+  this it was popped solely on MRP give-up, so an entry accumulated for every
+  acknowledged report and stayed for the life of the session.
+  """
+  @spec complete_acked_reports(t(), non_neg_integer()) :: {[action()], t()}
+  def complete_acked_reports(%__MODULE__{} = state, session_id) do
+    case Map.get(state.sessions, session_id) do
+      nil ->
+        {[], state}
+
+      entry ->
+        {acked, mgr} = ExchangeManager.take_acked(entry.exchange_mgr)
+        entry = %{entry | exchange_mgr: mgr}
+        state = %{state | sessions: Map.put(state.sessions, session_id, entry)}
+
+        Enum.flat_map_reduce(acked, state, fn counter, state ->
+          release_acked_report(state, session_id, counter)
+        end)
+    end
+  end
+
+  defp release_acked_report(state, session_id, counter) do
+    entry = state.sessions[session_id]
+
+    case Map.pop(Map.get(entry, :exchange_to_sub, %{}), counter) do
+      {nil, _} ->
+        # Not one of our subscription reports.
+        {[], state}
+
+      {sub_id, exchange_to_sub} ->
+        {owed, sub_mgr} = SubscriptionManager.complete_report(entry.subscription_mgr, sub_id)
+
+        entry = %{entry | exchange_to_sub: exchange_to_sub, subscription_mgr: sub_mgr}
+        state = %{state | sessions: Map.put(state.sessions, session_id, entry)}
+
+        case owed do
+          :idle ->
+            {[], state}
+
+          :owed ->
+            sub = SubscriptionManager.get(sub_mgr, sub_id)
+            now = System.monotonic_time(:second)
+            process_due_subscription(state, session_id, sub_id, sub.paths, now)
+        end
+    end
   end
 
   # ── Private helpers ────────────────────────────────────────────────
@@ -1087,13 +1157,30 @@ defmodule MatterEx.MessageHandler do
     now = System.monotonic_time(:second)
 
     Enum.flat_map_reduce(state.sessions, state, fn {session_id, entry}, state ->
-      due =
+      covering =
         entry.subscription_mgr
         |> SubscriptionManager.subscriptions()
         |> Enum.filter(fn sub ->
           Enum.any?(targets, &Router.covers?(state.device, sub.paths, &1))
         end)
-        |> Enum.map(fn sub -> {sub.id, sub.paths} end)
+
+      # §8.5 — "Each Report transaction initiated by the publisher SHALL complete
+      # successfully before another Report transaction is initiated". A change
+      # arriving while a report is awaiting its Status Response is remembered, and
+      # sent when the ack lands (see complete_acked_reports/2). Without this a
+      # cluster written several times in quick succession puts that many Report
+      # transactions on the wire back to back.
+      {ready, blocked} =
+        Enum.split_with(covering, fn sub ->
+          not SubscriptionManager.in_flight?(entry.subscription_mgr, sub.id)
+        end)
+
+      state =
+        Enum.reduce(blocked, state, fn sub, state ->
+          mark_subscription_dirty(state, session_id, sub.id)
+        end)
+
+      due = Enum.map(ready, fn sub -> {sub.id, sub.paths} end)
 
       Enum.flat_map_reduce(due, state, fn {sub_id, paths}, state ->
         process_due_subscription(state, session_id, sub_id, paths, now)
@@ -1224,13 +1311,10 @@ defmodule MatterEx.MessageHandler do
     exchange_to_sub = entry |> Map.get(:exchange_to_sub, %{}) |> Map.put(message_counter, sub_id)
 
     sub_mgr =
-      SubscriptionManager.record_sent(
-        entry.subscription_mgr,
-        sub_id,
-        report.values,
-        now,
-        versions
-      )
+      entry.subscription_mgr
+      |> SubscriptionManager.record_sent(sub_id, report.values, now, versions)
+      # §8.5: no second Report transaction until this one completes.
+      |> SubscriptionManager.mark_in_flight(sub_id)
 
     entry = %{
       entry

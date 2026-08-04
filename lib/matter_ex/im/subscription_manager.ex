@@ -30,7 +30,9 @@ defmodule MatterEx.IM.SubscriptionManager do
           last_report_at: integer(),
           last_sent_at: integer() | nil,
           last_values: map(),
-          last_versions: map()
+          last_versions: map(),
+          in_flight: boolean(),
+          dirty: boolean()
         }
 
   @type t :: %__MODULE__{
@@ -66,7 +68,11 @@ defmodule MatterEx.IM.SubscriptionManager do
       last_report_at: now,
       last_sent_at: nil,
       last_values: %{},
-      last_versions: %{}
+      last_versions: %{},
+      # A Report transaction is outstanding, awaiting its Status Response.
+      in_flight: false,
+      # A change arrived while one was outstanding, so a report is owed.
+      dirty: false
     }
 
     subscriptions = Map.put(state.subscriptions, sub_id, subscription)
@@ -150,6 +156,59 @@ defmodule MatterEx.IM.SubscriptionManager do
        do: now - sent >= max(div(max_interval * 4, 5), min_interval)
 
   defp heartbeat_due?(_sub, _now), do: false
+
+  @doc """
+  Whether a Report transaction is outstanding for `sub_id`.
+
+  Core spec §8.5: "Each Report transaction initiated by the publisher SHALL
+  complete successfully before another Report transaction is initiated by the
+  publisher." A change arriving while one is outstanding must be remembered
+  rather than sent — see `mark_dirty/2`.
+  """
+  @spec in_flight?(t(), non_neg_integer()) :: boolean()
+  def in_flight?(%__MODULE__{} = state, sub_id) do
+    case Map.get(state.subscriptions, sub_id) do
+      nil -> false
+      sub -> Map.get(sub, :in_flight, false)
+    end
+  end
+
+  @doc "Record that a Report transaction is now outstanding for `sub_id`."
+  @spec mark_in_flight(t(), non_neg_integer()) :: t()
+  def mark_in_flight(%__MODULE__{} = state, sub_id),
+    do: put_sub(state, sub_id, %{in_flight: true})
+
+  @doc "Record that a change was suppressed because a report was outstanding."
+  @spec mark_dirty(t(), non_neg_integer()) :: t()
+  def mark_dirty(%__MODULE__{} = state, sub_id), do: put_sub(state, sub_id, %{dirty: true})
+
+  @doc """
+  Clear the outstanding report for `sub_id`, returning whether one is owed.
+
+  `{:owed, state}` when a change arrived while the report was in flight, so the
+  caller should report now; `{:idle, state}` otherwise.
+  """
+  @spec complete_report(t(), non_neg_integer()) :: {:owed | :idle, t()}
+  def complete_report(%__MODULE__{} = state, sub_id) do
+    case Map.get(state.subscriptions, sub_id) do
+      nil ->
+        {:idle, state}
+
+      sub ->
+        owed = if Map.get(sub, :dirty, false), do: :owed, else: :idle
+        {owed, put_sub(state, sub_id, %{in_flight: false, dirty: false})}
+    end
+  end
+
+  defp put_sub(%__MODULE__{} = state, sub_id, changes) do
+    case Map.get(state.subscriptions, sub_id) do
+      nil ->
+        state
+
+      sub ->
+        %{state | subscriptions: Map.put(state.subscriptions, sub_id, Map.merge(sub, changes))}
+    end
+  end
 
   @doc """
   Check if a subscription is throttled by `min_interval`.
