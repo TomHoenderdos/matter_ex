@@ -112,6 +112,19 @@ defmodule MatterEx.IM.Router do
     end)
   end
 
+  @doc """
+  Whether any of `attribute_paths` covers the given `{endpoint, cluster}`.
+
+  Pure (no attribute reads) — used to route a push change notification to the
+  subscriptions that care about the changed cluster.
+  """
+  @spec covers?(module() | nil, [map()], {non_neg_integer(), non_neg_integer()}) :: boolean()
+  def covers?(nil, _paths, _target), do: false
+
+  def covers?(device, paths, {_ep, _cl} = target) do
+    Enum.any?(paths, fn path -> target in covered_clusters(device, path) end)
+  end
+
   defp covered_clusters(device, path) do
     endpoints =
       case path[:endpoint] do

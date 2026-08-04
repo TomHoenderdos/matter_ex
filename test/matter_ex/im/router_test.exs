@@ -279,4 +279,22 @@ defmodule MatterEx.IM.RouterTest do
       assert Router.cluster_versions(nil, [%{}]) == %{}
     end
   end
+
+  describe "covers?/3" do
+    test "a wildcard covers any cluster on any endpoint" do
+      assert Router.covers?(FabricDevice, [%{}], {1, 0x0006})
+      assert Router.covers?(FabricDevice, [%{}], {0, 0x001D})
+    end
+
+    test "a concrete path covers only its own cluster" do
+      paths = [%{endpoint: 1, cluster: 0x0006, attribute: 0}]
+      assert Router.covers?(FabricDevice, paths, {1, 0x0006})
+      refute Router.covers?(FabricDevice, paths, {1, 0x001D})
+      refute Router.covers?(FabricDevice, paths, {0, 0x0006})
+    end
+
+    test "nil device covers nothing" do
+      refute Router.covers?(nil, [%{}], {1, 0x0006})
+    end
+  end
 end

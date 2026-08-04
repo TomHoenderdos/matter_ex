@@ -9,7 +9,32 @@ defmodule MatterEx.Node do
   TCP uses 4-byte little-endian length-prefixed framing. MRP retransmits are
   skipped for TCP sessions since TCP provides reliable delivery.
 
-  The Device supervisor must already be running before starting the node.
+  ## The node's lifetime is coupled to the device tree
+
+  Push-based reporting registers this node on the device's reporting `Registry`,
+  and `Registry.register/3` **links** the caller to the registry partition. The
+  coupling is one-way and deliberate:
+
+    * the registry dying takes this node with it — its supervisor restarts the
+      node, and `init/1` registers again
+    * this node crashing does *not* touch the registry: the partition traps exits
+      and simply drops the registration
+
+  So a cluster crash storm that trips the device's supervisor now restarts the
+  node too, and **every controller session, CASE state and MRP window goes with
+  it**; controllers re-establish. Before push-based reporting the node held no
+  link into the device tree and survived that.
+
+  That is the intended trade rather than an oversight: a device tree that just
+  restarted has stale cluster state, and subscriptions pointing at it are worth
+  tearing down. If sessions ever need to survive a device restart, the decoupled
+  shape is a small relay process registered on the bus in the node's place,
+  started under the node and monitored by it — one extra process and one hop per
+  change.
+
+  The Device supervisor must already be running before starting the node. If it
+  isn't, reporting falls back to the poll and the node keeps retrying its
+  registration until the registry appears.
 
   ## Example
 
@@ -34,7 +59,18 @@ defmodule MatterEx.Node do
   alias MatterEx.Protocol.MessageCodec.Header
   alias MatterEx.Transport.TCP, as: TCPFraming
 
-  @sub_check_interval 1000
+  # Fallback poll interval. Reporting is push-driven; this only backstops the
+  # max-interval report and min_interval-throttled flushes, so it can be slow.
+  @sub_check_interval 10_000
+
+  # Cap on how many queued attribute-change messages one notification drains.
+  @max_drained_changes 32
+
+  # Re-registering on the reporting registry has to wait for its supervisor to
+  # restart it: at :DOWN time the name never resolves yet (measured: nil on every
+  # trial, name back after ~2ms). Retry rather than give up on the first miss.
+  @reporting_retry_ms 50
+  @reporting_retry_max_ms 5_000
 
   # Re-announcement backoff while no controller is connected. RFC 6762 §6 forbids
   # multicasting the same record more than once a second, and §8.3 wants
@@ -57,6 +93,9 @@ defmodule MatterEx.Node do
       :commissioning_service,
       :commissioning_instance,
       :operational_instance,
+      # Periodic subscription poll interval (ms); the push path is primary
+      # Set from @sub_check_interval in init/1; nil only if constructed directly.
+      sub_check_interval: nil,
       # Current transport for the frame being processed
       current_transport: nil,
       # Per-session transport: session_id => {:udp, {ip, port}} | {:tcp, tcp_socket}
@@ -84,6 +123,9 @@ defmodule MatterEx.Node do
   - `:port` — UDP/TCP port (default 5540, use 0 for OS-assigned)
   - `:name` — GenServer name
   - `:tcp` — enable TCP listener (default true)
+  - `:sub_check_interval` — fallback poll interval in ms (default 10_000). The
+    push path reports changes immediately; this is the fallback for keep-alives
+    and `min_interval`-throttled changes.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -107,10 +149,22 @@ defmodule MatterEx.Node do
   def init(opts) do
     udp_port = Keyword.get(opts, :port, 5540)
     tcp_enabled = Keyword.get(opts, :tcp, true)
+    device = Keyword.fetch!(opts, :device)
+    sub_check_interval = Keyword.get(opts, :sub_check_interval, @sub_check_interval)
 
     # Start commissioning agent if not already running
     if !Process.whereis(Commissioning) do
       Commissioning.start_link()
+    end
+
+    # Subscribe to the device's reporting bus for push-based reporting. Best
+    # effort: the poll still runs if the device has no reporting registry.
+    if subscribe_to_reporting(device, fallback_interval: sub_check_interval) == :unavailable do
+      Process.send_after(
+        self(),
+        {:resubscribe_reporting, @reporting_retry_ms},
+        @reporting_retry_ms
+      )
     end
 
     case open_udp_sockets(udp_port) do
@@ -125,7 +179,7 @@ defmodule MatterEx.Node do
 
         handler =
           MessageHandler.new(
-            device: Keyword.fetch!(opts, :device),
+            device: device,
             passcode: Keyword.fetch!(opts, :passcode),
             salt: Keyword.fetch!(opts, :salt),
             iterations: Keyword.fetch!(opts, :iterations),
@@ -133,7 +187,7 @@ defmodule MatterEx.Node do
           )
 
         Logger.info("Matter node listening on UDP port #{assigned_port}")
-        Process.send_after(self(), :check_subscriptions, @sub_check_interval)
+        Process.send_after(self(), :check_subscriptions, sub_check_interval)
 
         {:ok,
          %State{
@@ -142,6 +196,7 @@ defmodule MatterEx.Node do
            socket6: socket6,
            port: assigned_port,
            tcp_sup: tcp_sup,
+           sub_check_interval: sub_check_interval,
            mdns: Keyword.get(opts, :mdns),
            commissioning_service: Keyword.get(opts, :commissioning_service),
            commissioning_instance: Keyword.get(opts, :commissioning_instance)
@@ -320,6 +375,43 @@ defmodule MatterEx.Node do
     {:noreply, state}
   end
 
+  # ── Push-based reporting ────────────────────────────────────────
+
+  # Retry registering on the device's reporting bus.
+  #
+  # Only reachable for a node started before its device supervisor: once
+  # registered we are *linked* to the registry partition (see
+  # subscribe_to_reporting/2), so registry death takes this node with it and our
+  # own supervisor restarts us — init/1 registers again. There is no surviving-
+  # the-registry case to handle here.
+  def handle_info({:resubscribe_reporting, delay}, state) do
+    case subscribe_to_reporting(state.handler.device, quiet: true) do
+      :ok ->
+        Logger.info("Registered for reporting")
+        {:noreply, state}
+
+      :unavailable ->
+        # Back off, but never stop. A device supervisor with many endpoints on
+        # constrained hardware can take well over a second to come up, and a
+        # retry that has given up leaves the node polling forever off a single
+        # warning. Retrying costs nothing while it keeps failing.
+        next = min(delay * 2, @reporting_retry_max_ms)
+        Process.send_after(self(), {:resubscribe_reporting, next}, next)
+        {:noreply, state}
+    end
+  end
+
+  # A cluster attribute changed. Report the affected subscriptions immediately
+  # rather than waiting for the next poll. Coalesce a same-tick burst (e.g. a
+  # command that touches several clusters) into one pass.
+  def handle_info({:attribute_changed, endpoint, cluster}, state) do
+    targets = drain_attribute_changes([{endpoint, cluster}])
+    {actions, handler} = MessageHandler.report_targets(state.handler, targets)
+    state = %{state | handler: handler}
+    state = process_subscription_actions(actions, state)
+    {:noreply, state}
+  end
+
   # ── Subscription check ──────────────────────────────────────────
 
   def handle_info(:check_subscriptions, state) do
@@ -329,7 +421,7 @@ defmodule MatterEx.Node do
     state = %{state | handler: handler}
     state = process_subscription_actions(actions, state)
     state = maybe_reannounce_while_disconnected(state)
-    Process.send_after(self(), :check_subscriptions, @sub_check_interval)
+    Process.send_after(self(), :check_subscriptions, state.sub_check_interval)
     {:noreply, state}
   end
 
@@ -375,6 +467,64 @@ defmodule MatterEx.Node do
     {handler, state} = maybe_update_case(state.handler, state)
     handler = maybe_update_group_keys(handler)
     %{state | handler: handler}
+  end
+
+  # Register on the device's reporting bus, and watch it so registration survives
+  # a restart of the device supervisor.
+  #
+  # Falling back to the poll is correct when a device has no reporting registry,
+  # but it must not be silent: the only symptom is "reports got slower", and since
+  # the fallback interval is #{@sub_check_interval}ms that is slower than the poll
+  # this replaced. Two ways it bites — a node started before its device
+  # supervisor, and a :one_for_one restart of that supervisor leaving the registry
+  # empty while the node keeps running.
+  # Register on the device's reporting bus.
+  #
+  # `Registry.register/3` **links** the caller to the registry partition, so this
+  # node dies with the registry and is restarted by its own supervisor, which
+  # registers again through init/1. That is the recovery path — a monitor would
+  # never get to run, because the exit signal arrives first.
+  #
+  # The case worth handling is a node started *before* its device supervisor:
+  # nothing to register with, no link, and reports silently fall back to polling
+  # at an interval slower than the poll this replaced. So it warns and retries.
+  defp subscribe_to_reporting(device, opts) do
+    Registry.register(:"#{device}.Reporting", :changes, nil)
+    :ok
+  rescue
+    ArgumentError ->
+      unless opts[:quiet] do
+        # The configured interval, not the default — this is the number someone
+        # reads when deciding whether the fallback is acceptable.
+        interval = Keyword.get(opts, :fallback_interval, @sub_check_interval)
+
+        Logger.warning(
+          "#{inspect(:"#{device}.Reporting")} is not running — subscription reports will fall " <>
+            "back to polling every #{interval}ms until it starts. Start the device supervisor " <>
+            "before the node."
+        )
+      end
+
+      :unavailable
+  end
+
+  # Pull other queued attribute-changed messages so a burst reports once.
+  #
+  # Bounded: this is a selective receive with no ref, so each drained message
+  # rescans the mailbox from the front. Unbounded that is O(n·m) under UDP load,
+  # and it keeps jumping ahead of queued packets. Anything past the cap is picked
+  # up on the next notification or the fallback poll.
+  defp drain_attribute_changes(acc), do: drain_attribute_changes(acc, @max_drained_changes)
+
+  defp drain_attribute_changes(acc, 0), do: Enum.uniq(acc)
+
+  defp drain_attribute_changes(acc, remaining) do
+    receive do
+      {:attribute_changed, endpoint, cluster} ->
+        drain_attribute_changes([{endpoint, cluster} | acc], remaining - 1)
+    after
+      0 -> Enum.uniq(acc)
+    end
   end
 
   @impl true
