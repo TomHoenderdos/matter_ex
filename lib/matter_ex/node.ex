@@ -9,7 +9,32 @@ defmodule MatterEx.Node do
   TCP uses 4-byte little-endian length-prefixed framing. MRP retransmits are
   skipped for TCP sessions since TCP provides reliable delivery.
 
-  The Device supervisor must already be running before starting the node.
+  ## The node's lifetime is coupled to the device tree
+
+  Push-based reporting registers this node on the device's reporting `Registry`,
+  and `Registry.register/3` **links** the caller to the registry partition. The
+  coupling is one-way and deliberate:
+
+    * the registry dying takes this node with it — its supervisor restarts the
+      node, and `init/1` registers again
+    * this node crashing does *not* touch the registry: the partition traps exits
+      and simply drops the registration
+
+  So a cluster crash storm that trips the device's supervisor now restarts the
+  node too, and **every controller session, CASE state and MRP window goes with
+  it**; controllers re-establish. Before push-based reporting the node held no
+  link into the device tree and survived that.
+
+  That is the intended trade rather than an oversight: a device tree that just
+  restarted has stale cluster state, and subscriptions pointing at it are worth
+  tearing down. If sessions ever need to survive a device restart, the decoupled
+  shape is a small relay process registered on the bus in the node's place,
+  started under the node and monitored by it — one extra process and one hop per
+  change.
+
+  The Device supervisor must already be running before starting the node. If it
+  isn't, reporting falls back to the poll and the node keeps retrying its
+  registration until the registry appears.
 
   ## Example
 
@@ -45,7 +70,7 @@ defmodule MatterEx.Node do
   # restart it: at :DOWN time the name never resolves yet (measured: nil on every
   # trial, name back after ~2ms). Retry rather than give up on the first miss.
   @reporting_retry_ms 50
-  @reporting_retry_limit 20
+  @reporting_retry_max_ms 5_000
 
   # Re-announcement backoff while no controller is connected. RFC 6762 §6 forbids
   # multicasting the same record more than once a second, and §8.3 wants
@@ -134,8 +159,12 @@ defmodule MatterEx.Node do
 
     # Subscribe to the device's reporting bus for push-based reporting. Best
     # effort: the poll still runs if the device has no reporting registry.
-    if subscribe_to_reporting(device) == :unavailable do
-      Process.send_after(self(), {:resubscribe_reporting, 1}, @reporting_retry_ms)
+    if subscribe_to_reporting(device, fallback_interval: sub_check_interval) == :unavailable do
+      Process.send_after(
+        self(),
+        {:resubscribe_reporting, @reporting_retry_ms},
+        @reporting_retry_ms
+      )
     end
 
     case open_udp_sockets(udp_port) do
@@ -355,23 +384,19 @@ defmodule MatterEx.Node do
   # subscribe_to_reporting/2), so registry death takes this node with it and our
   # own supervisor restarts us — init/1 registers again. There is no surviving-
   # the-registry case to handle here.
-  def handle_info({:resubscribe_reporting, attempt}, state) do
+  def handle_info({:resubscribe_reporting, delay}, state) do
     case subscribe_to_reporting(state.handler.device, quiet: true) do
       :ok ->
-        Logger.info("Registered for reporting after #{attempt} attempt(s)")
-        {:noreply, state}
-
-      :unavailable when attempt >= @reporting_retry_limit ->
-        Logger.warning(
-          "Reporting registry still unavailable after " <>
-            "#{@reporting_retry_limit * @reporting_retry_ms}ms; reports will fall back to " <>
-            "polling every #{state.sub_check_interval}ms"
-        )
-
+        Logger.info("Registered for reporting")
         {:noreply, state}
 
       :unavailable ->
-        Process.send_after(self(), {:resubscribe_reporting, attempt + 1}, @reporting_retry_ms)
+        # Back off, but never stop. A device supervisor with many endpoints on
+        # constrained hardware can take well over a second to come up, and a
+        # retry that has given up leaves the node polling forever off a single
+        # warning. Retrying costs nothing while it keeps failing.
+        next = min(delay * 2, @reporting_retry_max_ms)
+        Process.send_after(self(), {:resubscribe_reporting, next}, next)
         {:noreply, state}
     end
   end
@@ -463,16 +488,20 @@ defmodule MatterEx.Node do
   # The case worth handling is a node started *before* its device supervisor:
   # nothing to register with, no link, and reports silently fall back to polling
   # at an interval slower than the poll this replaced. So it warns and retries.
-  defp subscribe_to_reporting(device, opts \\ []) do
+  defp subscribe_to_reporting(device, opts) do
     Registry.register(:"#{device}.Reporting", :changes, nil)
     :ok
   rescue
     ArgumentError ->
       unless opts[:quiet] do
+        # The configured interval, not the default — this is the number someone
+        # reads when deciding whether the fallback is acceptable.
+        interval = Keyword.get(opts, :fallback_interval, @sub_check_interval)
+
         Logger.warning(
           "#{inspect(:"#{device}.Reporting")} is not running — subscription reports will fall " <>
-            "back to polling every #{@sub_check_interval}ms until it starts. Start the device " <>
-            "supervisor before the node."
+            "back to polling every #{interval}ms until it starts. Start the device supervisor " <>
+            "before the node."
         )
       end
 
