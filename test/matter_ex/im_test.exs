@@ -623,6 +623,84 @@ defmodule MatterEx.IMTest do
     end
   end
 
+  # ── chunk_report_data_by_size (MTU-aware) ─────────────────────
+
+  defp data_reports(n) do
+    for i <- 1..n do
+      {:data,
+       %{version: 1, path: %{endpoint: 1, cluster: 0x0006, attribute: i}, value: {:uint, i}}}
+    end
+  end
+
+  describe "chunk_report_data_by_size/2" do
+    test "returns a single chunk when the whole report fits the budget" do
+      msg = %IM.ReportData{subscription_id: 1, attribute_reports: data_reports(3)}
+      assert [only] = IM.chunk_report_data_by_size(msg, 1150)
+      assert only.more_chunked_messages == false
+    end
+
+    test "empty report returns a single chunk" do
+      assert [_] = IM.chunk_report_data_by_size(%IM.ReportData{attribute_reports: []}, 1150)
+    end
+
+    test "every chunk of a large wildcard-sized report stays within the MTU budget" do
+      budget = 1150
+      msg = %IM.ReportData{subscription_id: 7, attribute_reports: data_reports(300)}
+
+      chunks = IM.chunk_report_data_by_size(msg, budget)
+
+      assert length(chunks) > 1
+
+      for chunk <- chunks do
+        assert byte_size(IM.encode(chunk)) <= budget
+      end
+    end
+
+    test "packs into far fewer chunks than the fixed-count splitter" do
+      msg = %IM.ReportData{subscription_id: 7, attribute_reports: data_reports(300)}
+
+      size_chunks = IM.chunk_report_data_by_size(msg, 1150)
+      count_chunks = IM.chunk_report_data(msg, 4)
+
+      # Fixed-4 makes ~75 messages; size-based should be a small fraction of that.
+      assert length(size_chunks) < div(length(count_chunks), 3)
+    end
+
+    test "is lossless, ordered, and flags all-but-last as more_chunked" do
+      msg = %IM.ReportData{subscription_id: 7, attribute_reports: data_reports(300)}
+      chunks = IM.chunk_report_data_by_size(msg, 1150)
+
+      {init, [last]} = Enum.split(chunks, -1)
+      assert Enum.all?(init, &(&1.more_chunked_messages == true))
+      assert last.more_chunked_messages == false
+
+      # Concatenated reports equal the original, in order; subscription_id preserved.
+      assert Enum.flat_map(chunks, & &1.attribute_reports) == msg.attribute_reports
+      assert Enum.all?(chunks, &(&1.subscription_id == 7))
+    end
+
+    test "a single report larger than the budget is emitted as its own chunk" do
+      big =
+        {:data,
+         %{
+           version: 1,
+           path: %{endpoint: 1, cluster: 0x0006, attribute: 0},
+           value: {:bytes, :binary.copy(<<0xAB>>, 2000)}
+         }}
+
+      small =
+        {:data,
+         %{version: 1, path: %{endpoint: 1, cluster: 0x0006, attribute: 1}, value: {:uint, 1}}}
+
+      chunks = IM.chunk_report_data_by_size(%IM.ReportData{attribute_reports: [big, small]}, 1150)
+
+      # Progress is guaranteed: the oversized report is isolated in its own chunk.
+      assert length(chunks) == 2
+      assert hd(chunks).attribute_reports == [big]
+      assert List.last(chunks).attribute_reports == [small]
+    end
+  end
+
   # ── Error handling ────────────────────────────────────────────
 
   describe "error handling" do

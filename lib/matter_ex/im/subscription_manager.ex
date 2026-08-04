@@ -29,7 +29,8 @@ defmodule MatterEx.IM.SubscriptionManager do
           max_interval: non_neg_integer(),
           last_report_at: integer(),
           last_sent_at: integer() | nil,
-          last_values: map()
+          last_values: map(),
+          last_versions: map()
         }
 
   @type t :: %__MODULE__{
@@ -64,7 +65,8 @@ defmodule MatterEx.IM.SubscriptionManager do
       max_interval: max_interval,
       last_report_at: now,
       last_sent_at: nil,
-      last_values: %{}
+      last_values: %{},
+      last_versions: %{}
     }
 
     subscriptions = Map.put(state.subscriptions, sub_id, subscription)
@@ -101,13 +103,37 @@ defmodule MatterEx.IM.SubscriptionManager do
       elapsed = now - sub.last_report_at
       check_interval = max(sub.min_interval, 1)
 
-      if elapsed >= check_interval or elapsed >= sub.max_interval do
+      if elapsed >= check_interval or elapsed >= sub.max_interval or heartbeat_due?(sub, now) do
         [{sub_id, sub.paths}]
       else
         []
       end
     end)
   end
+
+  @doc """
+  Check whether the `max_interval` keep-alive is due for a subscription.
+
+  Returns `true` when a report was previously sent (`last_sent_at` set) and at
+  least `max_interval` seconds have elapsed since — so a report must be sent even
+  if nothing changed. Anchored on the last *sent* report, not the last poll.
+
+  A `max_interval` of 0 disables the heartbeat; it is only used in tests as an
+  "always due" value, and real subscriptions negotiate a positive ceiling.
+  """
+  @spec max_interval_elapsed?(t(), non_neg_integer(), integer()) :: boolean()
+  def max_interval_elapsed?(%__MODULE__{} = state, sub_id, now) do
+    case Map.get(state.subscriptions, sub_id) do
+      nil -> false
+      sub -> heartbeat_due?(sub, now)
+    end
+  end
+
+  defp heartbeat_due?(%{last_sent_at: sent, max_interval: max}, now)
+       when is_integer(sent) and max > 0,
+       do: now - sent >= max
+
+  defp heartbeat_due?(_sub, _now), do: false
 
   @doc """
   Check if a subscription is throttled by `min_interval`.
@@ -128,17 +154,17 @@ defmodule MatterEx.IM.SubscriptionManager do
   @doc """
   Record that a report was checked for a subscription.
 
-  Updates `last_report_at` and `last_values` for change detection.
-  Does NOT update `last_sent_at` — use `record_sent/3` for that.
+  Updates `last_report_at`, `last_values`, and the per-cluster `last_versions`
+  used to gate polling. Does NOT update `last_sent_at` — use `record_sent/5`.
   """
-  @spec record_report(t(), non_neg_integer(), map(), integer()) :: t()
-  def record_report(%__MODULE__{} = state, sub_id, values, now) do
+  @spec record_report(t(), non_neg_integer(), map(), integer(), map()) :: t()
+  def record_report(%__MODULE__{} = state, sub_id, values, now, versions \\ %{}) do
     case Map.get(state.subscriptions, sub_id) do
       nil ->
         state
 
       sub ->
-        sub = %{sub | last_report_at: now, last_values: values}
+        sub = %{sub | last_report_at: now, last_values: values, last_versions: versions}
         %{state | subscriptions: Map.put(state.subscriptions, sub_id, sub)}
     end
   end
@@ -146,16 +172,23 @@ defmodule MatterEx.IM.SubscriptionManager do
   @doc """
   Record that a report was actually sent for a subscription.
 
-  Updates `last_sent_at`, `last_report_at`, and `last_values`.
+  Updates `last_sent_at`, `last_report_at`, `last_values`, and `last_versions`.
   """
-  @spec record_sent(t(), non_neg_integer(), map(), integer()) :: t()
-  def record_sent(%__MODULE__{} = state, sub_id, values, now) do
+  @spec record_sent(t(), non_neg_integer(), map(), integer(), map()) :: t()
+  def record_sent(%__MODULE__{} = state, sub_id, values, now, versions \\ %{}) do
     case Map.get(state.subscriptions, sub_id) do
       nil ->
         state
 
       sub ->
-        sub = %{sub | last_sent_at: now, last_report_at: now, last_values: values}
+        sub = %{
+          sub
+          | last_sent_at: now,
+            last_report_at: now,
+            last_values: values,
+            last_versions: versions
+        }
+
         %{state | subscriptions: Map.put(state.subscriptions, sub_id, sub)}
     end
   end

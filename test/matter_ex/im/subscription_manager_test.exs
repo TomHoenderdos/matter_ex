@@ -255,6 +255,83 @@ defmodule MatterEx.IM.SubscriptionManagerTest do
     end
   end
 
+  describe "max_interval_elapsed?/3 (keep-alive)" do
+    test "false before a report has ever been sent" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
+      # last_sent_at is nil until the first report is recorded
+      refute SubscriptionManager.max_interval_elapsed?(mgr, sub_id, 10_000)
+    end
+
+    test "false before max_interval, true once it elapses since the last send" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
+      mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, 100)
+
+      refute SubscriptionManager.max_interval_elapsed?(mgr, sub_id, 159)
+      assert SubscriptionManager.max_interval_elapsed?(mgr, sub_id, 160)
+    end
+
+    test "max_interval 0 disables the heartbeat" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 0)
+      mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, 100)
+
+      refute SubscriptionManager.max_interval_elapsed?(mgr, sub_id, 100_000)
+    end
+
+    test "non-existent subscription is not due" do
+      refute SubscriptionManager.max_interval_elapsed?(SubscriptionManager.new(), 999, 0)
+    end
+
+    test "due_reports surfaces a subscription when only the keep-alive is due" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 30, 45)
+      mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, 100)
+      # A later poll advanced last_report_at without sending (record_report keeps
+      # last_sent_at), so the ordinary min-cadence check is NOT due at 145...
+      mgr = SubscriptionManager.record_report(mgr, sub_id, %{}, 140)
+
+      # ...but 45s after the last *send*, the keep-alive surfaces the subscription.
+      assert SubscriptionManager.due_reports(mgr, 144) == []
+      assert SubscriptionManager.due_reports(mgr, 145) == [{sub_id, @paths}]
+    end
+  end
+
+  describe "last_versions (poll gate)" do
+    test "subscribe/4 starts with empty last_versions" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
+      assert SubscriptionManager.get(mgr, sub_id).last_versions == %{}
+    end
+
+    test "record_report stores last_versions" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
+
+      versions = %{{1, 6} => 3}
+      mgr = SubscriptionManager.record_report(mgr, sub_id, %{}, 100, versions)
+      assert SubscriptionManager.get(mgr, sub_id).last_versions == versions
+    end
+
+    test "record_sent stores last_versions" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
+
+      versions = %{{1, 6} => 7}
+      mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, 100, versions)
+      assert SubscriptionManager.get(mgr, sub_id).last_versions == versions
+    end
+
+    test "versions arg is optional and defaults to empty" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
+
+      mgr = SubscriptionManager.record_report(mgr, sub_id, %{}, 100)
+      assert SubscriptionManager.get(mgr, sub_id).last_versions == %{}
+    end
+  end
+
   describe "unsubscribe_all/1" do
     test "removes all subscriptions" do
       mgr = SubscriptionManager.new()

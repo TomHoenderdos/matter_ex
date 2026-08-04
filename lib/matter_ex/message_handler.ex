@@ -66,7 +66,8 @@ defmodule MatterEx.MessageHandler do
           case_states: %{non_neg_integer() => CASE.t()},
           sessions: %{non_neg_integer() => session_entry()},
           group_keys: %{non_neg_integer() => group_key_entry()},
-          plaintext_counter: Counter.t()
+          plaintext_counter: Counter.t(),
+          max_interval_cap: non_neg_integer()
         }
 
   defstruct device: nil,
@@ -74,7 +75,8 @@ defmodule MatterEx.MessageHandler do
             case_states: %{},
             sessions: %{},
             group_keys: %{},
-            plaintext_counter: Counter.new()
+            plaintext_counter: Counter.new(),
+            max_interval_cap: 120
 
   @doc """
   Create a new MessageHandler.
@@ -92,6 +94,9 @@ defmodule MatterEx.MessageHandler do
   - `:ipk` — Identity Protection Key (binary, for CASE)
   - `:node_id` — node ID (integer, for CASE)
   - `:fabric_id` — fabric ID (integer, for CASE)
+  - `:max_interval_cap` — upper bound (seconds) on the subscription `max_interval`
+    reported to controllers (default 120). Bounds the controller's liveness
+    timeout so a rebooted device is re-subscribed to promptly.
   """
   @spec new(keyword()) :: t()
   def new(opts) do
@@ -109,7 +114,8 @@ defmodule MatterEx.MessageHandler do
       device: Keyword.get(opts, :device),
       pase: pase,
       case_states: case_states,
-      plaintext_counter: Counter.new(0)
+      plaintext_counter: Counter.new(0),
+      max_interval_cap: Keyword.get(opts, :max_interval_cap, 120)
     }
   end
 
@@ -695,7 +701,15 @@ defmodule MatterEx.MessageHandler do
 
             # Pre-process subscribe_request: register subscription, build priming report, inject temp handler
             {mgr, sub_mgr} =
-              maybe_setup_subscription(mgr, sub_mgr, opcode, message.proto, state.device, session)
+              maybe_setup_subscription(
+                mgr,
+                sub_mgr,
+                opcode,
+                message.proto,
+                state.device,
+                session,
+                state.max_interval_cap
+              )
 
             {em_actions, mgr} =
               ExchangeManager.handle_message(
@@ -794,17 +808,30 @@ defmodule MatterEx.MessageHandler do
 
   # ── Private helpers ────────────────────────────────────────────────
 
-  defp maybe_setup_subscription(mgr, sub_mgr, :subscribe_request, proto, device, session) do
+  defp maybe_setup_subscription(mgr, sub_mgr, :subscribe_request, proto, device, session, max_cap) do
     case IM.decode(:subscribe_request, proto.payload) do
       {:ok, %IM.SubscribeRequest{} = req} ->
         attribute_paths = subscribe_attribute_paths(req.attribute_paths)
+
+        # Cap the ceiling the controller asked for: a shorter max_interval means
+        # a shorter controller liveness timeout, so a rebooted device is
+        # re-subscribed promptly rather than after the full requested interval.
+        #
+        # The floor still wins. The selected MaxInterval has to stay inside the
+        # window the controller asked for, and dropping it below MinIntervalFloor
+        # would also defeat the throttle: `check_subscriptions/1` tests
+        # max_interval_elapsed? before throttled?, so a keep-alive fires straight
+        # through the floor. That ordering is deliberate — a keep-alive must
+        # outrank the throttle or it'd be suppressed exactly when it's needed —
+        # so the invariant has to hold here instead.
+        max_interval = req.max_interval |> min(max_cap) |> max(req.min_interval)
 
         {sub_id, sub_mgr} =
           SubscriptionManager.subscribe(
             sub_mgr,
             attribute_paths,
             req.min_interval,
-            req.max_interval
+            max_interval
           )
 
         # Build priming ReportData with initial attribute values
@@ -837,7 +864,8 @@ defmodule MatterEx.MessageHandler do
             sub_mgr,
             sub_id,
             report_values(priming_report.attribute_reports),
-            now
+            now,
+            Router.cluster_versions(device, attribute_paths)
           )
 
         MatterEx.DebugTrace.record(%{
@@ -847,7 +875,7 @@ defmodule MatterEx.MessageHandler do
           requested_paths: summarize_paths(req.attribute_paths),
           stored_paths: summarize_paths(attribute_paths),
           min_interval: req.min_interval,
-          max_interval: req.max_interval,
+          max_interval: max_interval,
           priming_attribute_count: length(priming_report.attribute_reports),
           priming_event_count: length(priming_report.event_reports),
           priming_payload_size: byte_size(priming_payload),
@@ -860,7 +888,7 @@ defmodule MatterEx.MessageHandler do
         # Store the encoded SubscribeResponse for phase 2 (sent after client ACKs priming report)
         sub_response = %IM.SubscribeResponse{
           subscription_id: sub_id,
-          max_interval: req.max_interval
+          max_interval: max_interval
         }
 
         encoded_sub_response = IM.encode(sub_response)
@@ -875,7 +903,7 @@ defmodule MatterEx.MessageHandler do
     end
   end
 
-  defp maybe_setup_subscription(mgr, sub_mgr, _opcode, _proto, _device, _session),
+  defp maybe_setup_subscription(mgr, sub_mgr, _opcode, _proto, _device, _session, _max_cap),
     do: {mgr, sub_mgr}
 
   defp removed_fabric_index_from_successful_response(
@@ -1046,56 +1074,76 @@ defmodule MatterEx.MessageHandler do
   defp process_due_subscription(state, session_id, sub_id, paths, now) do
     entry = state.sessions[session_id]
     sub = SubscriptionManager.get(entry.subscription_mgr, sub_id)
+    versions = Router.cluster_versions(state.device, paths)
+    heartbeat? = SubscriptionManager.max_interval_elapsed?(entry.subscription_mgr, sub_id, now)
 
-    case build_subscription_report(state.device, sub_id, paths, entry.session) do
-      nil ->
-        update_subscription_report_time(state, session_id, entry, sub_id, %{}, now)
+    # Fast path: skip the full attribute read only when nothing changed *and* no
+    # max_interval keep-alive is due. Every attribute change bumps its cluster's
+    # DataVersion, so an unchanged version map means nothing the subscription
+    # reports on has changed.
+    if not heartbeat? and versions != %{} and versions == sub.last_versions do
+      update_subscription_report_time(
+        state,
+        session_id,
+        entry,
+        sub_id,
+        sub.last_values,
+        versions,
+        now
+      )
+    else
+      case build_subscription_report(state.device, sub_id, paths, entry.session) do
+        nil ->
+          update_subscription_report_time(state, session_id, entry, sub_id, %{}, versions, now)
 
-      {report_data, current_values} ->
-        changed_reports = changed_subscription_reports(report_data.attribute_reports, sub)
+        {report_data, current_values} ->
+          report = %{
+            data: report_data,
+            values: current_values,
+            changed: changed_subscription_reports(report_data.attribute_reports, sub)
+          }
 
-        process_subscription_report(
-          state,
-          session_id,
-          entry,
-          sub,
-          report_data,
-          current_values,
-          changed_reports,
-          now
-        )
+          process_subscription_report(state, session_id, entry, sub, report, versions, now)
+      end
     end
   end
 
-  defp process_subscription_report(
-         state,
-         session_id,
-         entry,
-         sub,
-         report_data,
-         current_values,
-         changed_reports,
-         now
-       ) do
+  # `report` bundles the freshly-read `%{data:, values:, changed:}` for this poll.
+  defp process_subscription_report(state, session_id, entry, sub, report, versions, now) do
     cond do
-      current_values == sub.last_values ->
-        update_subscription_report_time(state, session_id, entry, sub.id, current_values, now)
+      # max_interval keep-alive: send even when nothing changed. `report.changed`
+      # may be [] — an empty ReportData is a valid liveness report — and this
+      # resets the interval via record_sent.
+      SubscriptionManager.max_interval_elapsed?(entry.subscription_mgr, sub.id, now) ->
+        send_subscription_report(state, session_id, entry, sub.id, report, versions, now)
 
-      SubscriptionManager.throttled?(entry.subscription_mgr, sub.id, now) ->
-        Logger.debug("Subscription #{sub.id}: suppressed report (min_interval throttle)")
-        update_subscription_report_time(state, session_id, entry, sub.id, sub.last_values, now)
-
-      true ->
-        send_subscription_report(
+      report.values == sub.last_values ->
+        update_subscription_report_time(
           state,
           session_id,
           entry,
           sub.id,
-          report_data,
-          current_values,
-          changed_reports,
+          report.values,
+          versions,
           now
         )
+
+      SubscriptionManager.throttled?(entry.subscription_mgr, sub.id, now) ->
+        Logger.debug("Subscription #{sub.id}: suppressed report (min_interval throttle)")
+        # Keep the OLD values and versions so the throttled change is re-read and
+        # sent once min_interval elapses — the version gate must not skip it.
+        update_subscription_report_time(
+          state,
+          session_id,
+          entry,
+          sub.id,
+          sub.last_values,
+          sub.last_versions,
+          now
+        )
+
+      true ->
+        send_subscription_report(state, session_id, entry, sub.id, report, versions, now)
     end
   end
 
@@ -1110,24 +1158,17 @@ defmodule MatterEx.MessageHandler do
     end)
   end
 
-  defp update_subscription_report_time(state, session_id, entry, sub_id, values, now) do
-    sub_mgr = SubscriptionManager.record_report(entry.subscription_mgr, sub_id, values, now)
+  defp update_subscription_report_time(state, session_id, entry, sub_id, values, versions, now) do
+    sub_mgr =
+      SubscriptionManager.record_report(entry.subscription_mgr, sub_id, values, now, versions)
+
     entry = %{entry | subscription_mgr: sub_mgr}
     sessions = Map.put(state.sessions, session_id, entry)
     {[], %{state | sessions: sessions}}
   end
 
-  defp send_subscription_report(
-         state,
-         session_id,
-         entry,
-         sub_id,
-         report_data,
-         current_values,
-         changed_reports,
-         now
-       ) do
-    report_data = %{report_data | attribute_reports: changed_reports}
+  defp send_subscription_report(state, session_id, entry, sub_id, report, versions, now) do
+    report_data = %{report.data | attribute_reports: report.changed}
     payload = IM.encode(report_data)
     im_protocol_id = ProtocolID.protocol_id(:interaction_model)
 
@@ -1142,15 +1183,23 @@ defmodule MatterEx.MessageHandler do
       subscription_id: sub_id,
       exchange_id: proto.exchange_id,
       message_counter: message_counter,
-      attribute_count: length(changed_reports),
+      attribute_count: length(report.changed),
       payload_size: byte_size(payload),
-      paths: summarize_report_paths(changed_reports),
+      paths: summarize_report_paths(report.changed),
       needs_ack: proto.needs_ack
     })
 
     mgr = maybe_record_mrp_send(mgr, proto, frame, message_counter)
     exchange_to_sub = entry |> Map.get(:exchange_to_sub, %{}) |> Map.put(message_counter, sub_id)
-    sub_mgr = SubscriptionManager.record_sent(entry.subscription_mgr, sub_id, current_values, now)
+
+    sub_mgr =
+      SubscriptionManager.record_sent(
+        entry.subscription_mgr,
+        sub_id,
+        report.values,
+        now,
+        versions
+      )
 
     entry = %{
       entry

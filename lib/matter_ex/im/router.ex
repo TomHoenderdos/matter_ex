@@ -89,6 +89,39 @@ defmodule MatterEx.IM.Router do
     %IM.ReportData{attribute_reports: reports, event_reports: event_reports}
   end
 
+  @doc """
+  Return `%{{endpoint, cluster} => data_version}` for every cluster covered by
+  the given attribute paths (wildcard-aware).
+
+  One DataVersion read per covered cluster — much cheaper than reading every
+  attribute value. Used to gate subscription polling: since every attribute
+  change bumps its cluster's DataVersion, an unchanged version map means nothing
+  the subscription covers has changed, so the full attribute read can be skipped.
+  """
+  @spec cluster_versions(module() | nil, [map()]) ::
+          %{{non_neg_integer(), non_neg_integer()} => non_neg_integer()}
+  def cluster_versions(nil, _paths), do: %{}
+
+  def cluster_versions(device, paths) do
+    paths
+    |> Enum.flat_map(&covered_clusters(device, &1))
+    |> Enum.uniq()
+    |> Map.new(fn {ep, cl} = key ->
+      gen_name = device.__process_name__(ep, device.__cluster_module__(ep, cl).cluster_name())
+      {key, GenServer.call(gen_name, :read_data_version)}
+    end)
+  end
+
+  defp covered_clusters(device, path) do
+    endpoints =
+      case path[:endpoint] do
+        nil -> MapSet.to_list(device.__endpoint_ids__())
+        ep -> if MapSet.member?(device.__endpoint_ids__(), ep), do: [ep], else: []
+      end
+
+    for ep <- endpoints, cl <- expand_clusters(device, ep, path[:cluster]), do: {ep, cl}
+  end
+
   defp read_one_attribute(device, path, context) do
     case resolve_attribute(device, path) do
       {:ok, gen_name, attr_name, attr_type, attr_def} ->
