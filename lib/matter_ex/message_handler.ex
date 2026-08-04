@@ -826,8 +826,14 @@ defmodule MatterEx.MessageHandler do
   end
 
   @doc """
-  Release subscription reports whose Status Response has arrived, sending any
-  change that was suppressed while they were outstanding.
+  Release subscription reports the subscriber has acknowledged, sending any change
+  that was suppressed while they were outstanding.
+
+  The completion event is the **MRP acknowledgement**, not a Status Response:
+  ongoing reports are built with `suppress_response: true`, which tells the
+  subscriber not to send one. (The priming report uses `suppress_response: false`
+  — if that inconsistency is ever resolved the completion event becomes a Status
+  Response carrying the ack, which lands here just the same.)
 
   Also the only place `exchange_to_sub` is pruned on the success path: before
   this it was popped solely on MRP give-up, so an entry accumulated for every
@@ -1157,30 +1163,15 @@ defmodule MatterEx.MessageHandler do
     now = System.monotonic_time(:second)
 
     Enum.flat_map_reduce(state.sessions, state, fn {session_id, entry}, state ->
-      covering =
+      # In-flight subscriptions are held back by process_due_subscription/5, which
+      # every path to a report goes through.
+      due =
         entry.subscription_mgr
         |> SubscriptionManager.subscriptions()
         |> Enum.filter(fn sub ->
           Enum.any?(targets, &Router.covers?(state.device, sub.paths, &1))
         end)
-
-      # §8.5 — "Each Report transaction initiated by the publisher SHALL complete
-      # successfully before another Report transaction is initiated". A change
-      # arriving while a report is awaiting its Status Response is remembered, and
-      # sent when the ack lands (see complete_acked_reports/2). Without this a
-      # cluster written several times in quick succession puts that many Report
-      # transactions on the wire back to back.
-      {ready, blocked} =
-        Enum.split_with(covering, fn sub ->
-          not SubscriptionManager.in_flight?(entry.subscription_mgr, sub.id)
-        end)
-
-      state =
-        Enum.reduce(blocked, state, fn sub, state ->
-          mark_subscription_dirty(state, session_id, sub.id)
-        end)
-
-      due = Enum.map(ready, fn sub -> {sub.id, sub.paths} end)
+        |> Enum.map(fn sub -> {sub.id, sub.paths} end)
 
       Enum.flat_map_reduce(due, state, fn {sub_id, paths}, state ->
         process_due_subscription(state, session_id, sub_id, paths, now)
@@ -1190,6 +1181,24 @@ defmodule MatterEx.MessageHandler do
 
   defp process_due_subscription(state, session_id, sub_id, paths, now) do
     entry = state.sessions[session_id]
+
+    # §8.5 — "Each Report transaction initiated by the publisher SHALL complete
+    # successfully before another Report transaction is initiated by the
+    # publisher." The guard belongs here because every path to a report goes
+    # through it: a change (report_targets/2), and the fallback sweep or the
+    # max_interval report (check_subscriptions/1). Filtering in one caller left
+    # the other reachable, and would leave every future caller to remember.
+    #
+    # A suppressed report isn't lost — the subscription is marked dirty, and
+    # completing the outstanding one flushes it (complete_acked_reports/2).
+    if SubscriptionManager.in_flight?(entry.subscription_mgr, sub_id) do
+      {[], mark_subscription_dirty(state, session_id, sub_id)}
+    else
+      dispatch_due_subscription(state, session_id, entry, sub_id, paths, now)
+    end
+  end
+
+  defp dispatch_due_subscription(state, session_id, entry, sub_id, paths, now) do
     sub = SubscriptionManager.get(entry.subscription_mgr, sub_id)
     versions = Router.cluster_versions(state.device, paths)
     interval_due? = SubscriptionManager.max_interval_elapsed?(entry.subscription_mgr, sub_id, now)
@@ -1290,6 +1299,10 @@ defmodule MatterEx.MessageHandler do
     payload = IM.encode(report_data)
     im_protocol_id = ProtocolID.protocol_id(:interaction_model)
 
+    # Relies on ExchangeManager.initiate/5 defaulting to reliable: true. The
+    # in-flight guard is released by the MRP acknowledgement, so a non-reliable
+    # report would record no pending counter, never ack, and leave the
+    # subscription silent for good.
     {proto, mrp_actions, mgr} =
       ExchangeManager.initiate(entry.exchange_mgr, im_protocol_id, :report_data, payload)
 

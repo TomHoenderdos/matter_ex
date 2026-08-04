@@ -202,6 +202,71 @@ defmodule MatterEx.MessageHandlerTest do
     %{handler | sessions: Map.put(handler.sessions, session_id, %{entry | subscription_mgr: mgr})}
   end
 
+  # Subscribe and complete the two-phase handshake, returning the live session.
+  defp subscribed(comm_session, handler, opts) do
+    sub_req =
+      IM.encode(%IM.SubscribeRequest{
+        attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+        min_interval: Keyword.get(opts, :min_interval, 0),
+        max_interval: Keyword.get(opts, :max_interval, 60)
+      })
+
+    proto = %ProtoHeader{
+      initiator: true,
+      needs_ack: true,
+      opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+      exchange_id: 1,
+      protocol_id: ProtocolID.protocol_id(:interaction_model),
+      payload: sub_req
+    }
+
+    {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+    {actions, handler} = MessageHandler.handle_frame(handler, frame)
+    [{:send, resp} | _] = actions
+    {:ok, msg, comm_session} = SecureChannel.open(comm_session, resp)
+    complete_subscribe(comm_session, handler, msg, 1)
+  end
+
+  # ── Report serialization ────────────────────────────────────────
+
+  describe "report serialization (§8.5)" do
+    setup do
+      start_supervised!(TestLight)
+
+      handler = new_handler(device: TestLight)
+      {comm_session, handler} = run_pase_handshake(handler)
+      {_comm_session, handler} = subscribed(comm_session, handler, min_interval: 0)
+      %{handler: handler}
+    end
+
+    test "check_subscriptions must not start a report while one is in flight", %{
+      handler: handler
+    } do
+      # The push path filtered on in_flight? before dispatching; the poll path did
+      # not. Reachable in production: change → push report → ack lost or slow →
+      # second change → poll tick while MRP is still retrying → second Report
+      # transaction. The max_interval report routes through here too.
+      on_off = TestLight.__process_name__(1, :on_off)
+      GenServer.call(on_off, {:write_attribute, :on_off, true})
+      {actions, handler} = MessageHandler.report_targets(handler, [{1, 6}])
+      assert Enum.any?(actions, &match?({:send, _, _}, &1)), "expected a pushed report"
+
+      assert MatterEx.IM.SubscriptionManager.in_flight?(
+               handler.sessions[1].subscription_mgr,
+               1
+             )
+
+      GenServer.call(on_off, {:write_attribute, :on_off, false})
+      handler = force_due(handler, 1, 1)
+      {poll_actions, _handler} = MessageHandler.check_subscriptions(handler)
+
+      sends = Enum.filter(poll_actions, &match?({:send, _, _}, &1))
+
+      assert sends == [],
+             "check_subscriptions started #{length(sends)} Report transaction(s) while one was in flight"
+    end
+  end
+
   # ── PASE via MessageHandler ─────────────────────────────────────
 
   describe "PASE via MessageHandler" do
