@@ -38,6 +38,9 @@ defmodule MatterEx.Node do
   # max-interval report and min_interval-throttled flushes, so it can be slow.
   @sub_check_interval 10_000
 
+  # Cap on how many queued attribute-change messages one notification drains.
+  @max_drained_changes 32
+
   # Re-announcement backoff while no controller is connected. RFC 6762 §6 forbids
   # multicasting the same record more than once a second, and §8.3 wants
   # announcement intervals to at least double; a fixed 1 Hz would sit exactly on
@@ -60,7 +63,8 @@ defmodule MatterEx.Node do
       :commissioning_instance,
       :operational_instance,
       # Periodic subscription poll interval (ms); the push path is primary
-      sub_check_interval: 10_000,
+      # Set from @sub_check_interval in init/1; nil only if constructed directly.
+      sub_check_interval: nil,
       # Current transport for the frame being processed
       current_transport: nil,
       # Per-session transport: session_id => {:udp, {ip, port}} | {:tcp, tcp_socket}
@@ -88,7 +92,7 @@ defmodule MatterEx.Node do
   - `:port` — UDP/TCP port (default 5540, use 0 for OS-assigned)
   - `:name` — GenServer name
   - `:tcp` — enable TCP listener (default true)
-  - `:sub_check_interval` — subscription poll interval in ms (default 1000). The
+  - `:sub_check_interval` — fallback poll interval in ms (default 10_000). The
     push path reports changes immediately; this is the fallback for keep-alives
     and `min_interval`-throttled changes.
   """
@@ -339,6 +343,15 @@ defmodule MatterEx.Node do
   # A cluster attribute changed. Report the affected subscriptions immediately
   # rather than waiting for the next poll. Coalesce a same-tick burst (e.g. a
   # command that touches several clusters) into one pass.
+  # The device's reporting registry went down (e.g. a :one_for_one restart of the
+  # device supervisor). Without re-registering, push reporting is dead for the
+  # life of this node and the only symptom is slower reports.
+  def handle_info({:DOWN, _ref, :process, _pid, reason}, state) do
+    Logger.warning("Reporting registry went down (#{inspect(reason)}); re-registering")
+    subscribe_to_reporting(state.handler.device)
+    {:noreply, state}
+  end
+
   def handle_info({:attribute_changed, endpoint, cluster}, state) do
     targets = drain_attribute_changes([{endpoint, cluster}])
     {actions, handler} = MessageHandler.report_targets(state.handler, targets)
@@ -404,21 +417,56 @@ defmodule MatterEx.Node do
     %{state | handler: handler}
   end
 
-  # Register on the device's reporting bus. The registry is started by the device
-  # supervisor; if it isn't running (device without reporting), fall back to the
-  # poll rather than crashing.
+  # Register on the device's reporting bus, and watch it so registration survives
+  # a restart of the device supervisor.
+  #
+  # Falling back to the poll is correct when a device has no reporting registry,
+  # but it must not be silent: the only symptom is "reports got slower", and since
+  # the fallback interval is #{@sub_check_interval}ms that is slower than the poll
+  # this replaced. Two ways it bites — a node started before its device
+  # supervisor, and a :one_for_one restart of that supervisor leaving the registry
+  # empty while the node keeps running.
   defp subscribe_to_reporting(device) do
-    Registry.register(:"#{device}.Reporting", :changes, nil)
-    :ok
+    registry = :"#{device}.Reporting"
+
+    case Process.whereis(registry) do
+      nil ->
+        Logger.warning(
+          "#{inspect(registry)} is not running — subscription reports will fall back to " <>
+            "polling every #{@sub_check_interval}ms. Start the device supervisor before the node."
+        )
+
+        nil
+
+      pid ->
+        Registry.register(registry, :changes, nil)
+        # Re-register if the registry restarts; otherwise push is dead for good
+        # and nothing says so.
+        Process.monitor(pid)
+    end
   rescue
-    ArgumentError -> :ok
+    ArgumentError ->
+      Logger.warning(
+        "Failed to register for reporting on #{inspect(device)}; falling back to polling"
+      )
+
+      nil
   end
 
-  # Pull any other queued attribute-changed messages so a burst is reported once.
-  defp drain_attribute_changes(acc) do
+  # Pull other queued attribute-changed messages so a burst reports once.
+  #
+  # Bounded: this is a selective receive with no ref, so each drained message
+  # rescans the mailbox from the front. Unbounded that is O(n·m) under UDP load,
+  # and it keeps jumping ahead of queued packets. Anything past the cap is picked
+  # up on the next notification or the fallback poll.
+  defp drain_attribute_changes(acc), do: drain_attribute_changes(acc, @max_drained_changes)
+
+  defp drain_attribute_changes(acc, 0), do: Enum.uniq(acc)
+
+  defp drain_attribute_changes(acc, remaining) do
     receive do
       {:attribute_changed, endpoint, cluster} ->
-        drain_attribute_changes([{endpoint, cluster} | acc])
+        drain_attribute_changes([{endpoint, cluster} | acc], remaining - 1)
     after
       0 -> Enum.uniq(acc)
     end

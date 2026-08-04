@@ -132,9 +132,22 @@ defmodule MatterEx.IM.SubscriptionManager do
     end
   end
 
-  defp heartbeat_due?(%{last_sent_at: sent, max_interval: max}, now)
-       when is_integer(sent) and max > 0,
-       do: now - sent >= div(max * 4, 5)
+  # Report at 80% of max_interval rather than on it: the subscriber SHALL tear the
+  # subscription down if no report arrives within max_interval (Core spec §8.5),
+  # so the margin absorbs poll granularity and MRP retransmits.
+  #
+  # Never earlier than min_interval, though — "Each Report transaction SHALL NOT be
+  # initiated by the publisher until the minimum interval has expired since the
+  # last Report transaction in the subscription" (§8.5). At 100% that floor held
+  # implicitly, because the negotiated max_interval is clamped to at least
+  # min_interval. At 80% it doesn't: `min_interval: 50, max_interval: 60` is a
+  # legal negotiation whose 80% mark lands 2s inside the floor.
+  defp heartbeat_due?(
+         %{last_sent_at: sent, max_interval: max_interval, min_interval: min_interval},
+         now
+       )
+       when is_integer(sent) and max_interval > 0,
+       do: now - sent >= max(div(max_interval * 4, 5), min_interval)
 
   defp heartbeat_due?(_sub, _now), do: false
 

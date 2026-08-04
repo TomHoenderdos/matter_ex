@@ -274,6 +274,24 @@ defmodule MatterEx.IM.SubscriptionManagerTest do
       assert SubscriptionManager.max_interval_elapsed?(mgr, sub_id, 80)
     end
 
+    test "never fires before min_interval, even when 80% lands inside it" do
+      # A legal negotiation whose 80% mark is inside the floor: 80% of 60 is 48,
+      # two seconds before min_interval. Core spec §8.5 — "Each Report transaction
+      # SHALL NOT be initiated by the publisher until the minimum interval has
+      # expired since the last Report transaction in the subscription."
+      #
+      # This matters beyond conformance: max_interval_elapsed? is checked ahead of
+      # throttled?, so a heartbeat that comes due early reports straight through
+      # the throttle.
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 50, 60)
+      mgr = SubscriptionManager.record_sent(mgr, sub_id, %{}, 0)
+
+      refute SubscriptionManager.max_interval_elapsed?(mgr, sub_id, 48)
+      refute SubscriptionManager.max_interval_elapsed?(mgr, sub_id, 49)
+      assert SubscriptionManager.max_interval_elapsed?(mgr, sub_id, 50)
+    end
+
     test "max_interval 0 disables the interval report" do
       mgr = SubscriptionManager.new()
       {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 0)
