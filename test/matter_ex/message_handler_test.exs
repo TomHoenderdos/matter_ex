@@ -147,6 +147,42 @@ defmodule MatterEx.MessageHandlerTest do
     {comm_session, handler}
   end
 
+  # Subscribe and complete both phases: the priming ReportData, then the
+  # StatusResponse that releases the SubscribeResponse.
+  #
+  # A subscription is not established until phase 2 — the publisher only sends
+  # the SubscribeResponse once the priming report is acknowledged — so a test
+  # that reports on a subscription has to get it into that state first. Stopping
+  # after phase 1 leaves the priming report outstanding, which is a state no real
+  # controller reaches.
+  defp subscribe_and_complete(comm_session, handler, opts) do
+    exchange_id = Keyword.get(opts, :exchange_id, 1)
+
+    sub_req =
+      IM.encode(%IM.SubscribeRequest{
+        attribute_paths: Keyword.fetch!(opts, :attribute_paths),
+        min_interval: Keyword.fetch!(opts, :min_interval),
+        max_interval: Keyword.fetch!(opts, :max_interval)
+      })
+
+    proto = %ProtoHeader{
+      initiator: true,
+      needs_ack: true,
+      opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+      exchange_id: exchange_id,
+      protocol_id: ProtocolID.protocol_id(:interaction_model),
+      payload: sub_req
+    }
+
+    {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+    {actions, handler} = MessageHandler.handle_frame(handler, frame)
+    [{:send, priming_frame} | _] = actions
+    {:ok, priming_msg, comm_session} = SecureChannel.open(comm_session, priming_frame)
+    {comm_session, handler} = complete_subscribe(comm_session, handler, priming_msg, exchange_id)
+
+    {priming_msg, comm_session, handler}
+  end
+
   defp ack_until_subscribe_response(comm_session, handler, msg, exchange_id, limit \\ 100)
 
   defp ack_until_subscribe_response(_comm_session, _handler, _msg, _exchange_id, 0) do
@@ -613,25 +649,12 @@ defmodule MatterEx.MessageHandlerTest do
 
     test "check_subscriptions sends report when values change",
          %{handler: handler, comm_session: comm_session} do
-      # Subscribe
-      sub_req =
-        IM.encode(%IM.SubscribeRequest{
+      {_priming_msg, comm_session, handler} =
+        subscribe_and_complete(comm_session, handler,
           attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
           min_interval: 0,
           max_interval: 60
-        })
-
-      proto = %ProtoHeader{
-        initiator: true,
-        needs_ack: true,
-        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
-        exchange_id: 1,
-        protocol_id: ProtocolID.protocol_id(:interaction_model),
-        payload: sub_req
-      }
-
-      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
-      {_actions, handler} = MessageHandler.handle_frame(handler, frame)
+        )
 
       # First check after priming — no duplicate report for already-sent values.
       handler = force_due(handler, 1, 1)
@@ -662,27 +685,13 @@ defmodule MatterEx.MessageHandlerTest do
 
     test "wildcard subscription reports include only changed attributes",
          %{handler: handler, comm_session: comm_session} do
-      sub_req =
-        IM.encode(%IM.SubscribeRequest{
+      {priming_msg, comm_session, handler} =
+        subscribe_and_complete(comm_session, handler,
           attribute_paths: [%{}],
           min_interval: 0,
           max_interval: 60
-        })
+        )
 
-      proto = %ProtoHeader{
-        initiator: true,
-        needs_ack: true,
-        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
-        exchange_id: 1,
-        protocol_id: ProtocolID.protocol_id(:interaction_model),
-        payload: sub_req
-      }
-
-      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
-      {actions, handler} = MessageHandler.handle_frame(handler, frame)
-
-      [{:send, priming_frame}] = Enum.filter(actions, &match?({:send, _}, &1))
-      {:ok, priming_msg, comm_session} = SecureChannel.open(comm_session, priming_frame)
       {:ok, priming_report} = IM.decode(:report_data, priming_msg.proto.payload)
 
       assert priming_report.subscription_id == 1
@@ -717,24 +726,12 @@ defmodule MatterEx.MessageHandlerTest do
 
     test "check_subscriptions sends a report on max_interval when nothing changed",
          %{handler: handler, comm_session: comm_session} do
-      sub_req =
-        IM.encode(%IM.SubscribeRequest{
+      {_priming_msg, comm_session, handler} =
+        subscribe_and_complete(comm_session, handler,
           attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
           min_interval: 0,
           max_interval: 60
-        })
-
-      proto = %ProtoHeader{
-        initiator: true,
-        needs_ack: true,
-        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
-        exchange_id: 1,
-        protocol_id: ProtocolID.protocol_id(:interaction_model),
-        payload: sub_req
-      }
-
-      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
-      {_actions, handler} = MessageHandler.handle_frame(handler, frame)
+        )
 
       # Nothing changed and the keep-alive is not yet due → no report.
       {actions, handler} = MessageHandler.check_subscriptions(handler)
@@ -1004,24 +1001,12 @@ defmodule MatterEx.MessageHandlerTest do
     test "min_interval throttle suppresses early reports",
          %{handler: handler, comm_session: comm_session} do
       # min_interval=60s: a change within 60s of the last send is throttled.
-      sub_req =
-        IM.encode(%IM.SubscribeRequest{
+      {_priming_msg, _comm_session, handler} =
+        subscribe_and_complete(comm_session, handler,
           attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
           min_interval: 60,
           max_interval: 120
-        })
-
-      proto = %ProtoHeader{
-        initiator: true,
-        needs_ack: true,
-        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
-        exchange_id: 1,
-        protocol_id: ProtocolID.protocol_id(:interaction_model),
-        payload: sub_req
-      }
-
-      {frame, _comm_session} = SecureChannel.seal(comm_session, proto)
-      {_actions, handler} = MessageHandler.handle_frame(handler, frame)
+        )
 
       # First check after priming — no duplicate report for already-sent values.
       handler = force_due(handler, 1, 1)
@@ -1041,24 +1026,12 @@ defmodule MatterEx.MessageHandlerTest do
 
     test "min_interval=0 allows immediate reports",
          %{handler: handler, comm_session: comm_session} do
-      sub_req =
-        IM.encode(%IM.SubscribeRequest{
+      {_priming_msg, _comm_session, handler} =
+        subscribe_and_complete(comm_session, handler,
           attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
           min_interval: 0,
           max_interval: 60
-        })
-
-      proto = %ProtoHeader{
-        initiator: true,
-        needs_ack: true,
-        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
-        exchange_id: 1,
-        protocol_id: ProtocolID.protocol_id(:interaction_model),
-        payload: sub_req
-      }
-
-      {frame, _comm_session} = SecureChannel.seal(comm_session, proto)
-      {_actions, handler} = MessageHandler.handle_frame(handler, frame)
+        )
 
       # First check after priming — no duplicate report for already-sent values.
       handler = force_due(handler, 1, 1)
