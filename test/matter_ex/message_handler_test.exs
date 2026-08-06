@@ -178,7 +178,12 @@ defmodule MatterEx.MessageHandlerTest do
     {actions, handler} = MessageHandler.handle_frame(handler, frame)
     [{:send, priming_frame} | _] = actions
     {:ok, priming_msg, comm_session} = SecureChannel.open(comm_session, priming_frame)
-    {comm_session, handler} = complete_subscribe(comm_session, handler, priming_msg, exchange_id)
+
+    # Acks until the SubscribeResponse rather than once: a wildcard priming report
+    # chunks, and the transaction isn't complete — nor the serialization guard
+    # released — until the last chunk is acknowledged.
+    {_sub_resp, comm_session, handler} =
+      ack_until_subscribe_response(comm_session, handler, priming_msg, exchange_id)
 
     {priming_msg, comm_session, handler}
   end
@@ -328,8 +333,63 @@ defmodule MatterEx.MessageHandlerTest do
       {status_frame, _comm_session} = SecureChannel.seal(comm_session, status_proto)
       {ack_actions, _handler} = MessageHandler.handle_frame(handler, status_frame)
 
+      # The three-tuple shape is load-bearing: a released report is
+      # `{:send, session_id, frame}` while the SubscribeResponse phase 2 emits is
+      # `{:send, frame}`. Filtering shape-agnostically here would match the
+      # SubscribeResponse and pass unconditionally.
       assert Enum.filter(ack_actions, &match?({:send, _, _}, &1)) != [],
              "the change held during the priming round trip was never sent"
+    end
+
+    test "a chunked priming report holds the guard past its first chunk", %{
+      handler: handler,
+      comm_session: comm_session
+    } do
+      # A wildcard subscription chunks, and a chunked report is one Report
+      # transaction spread over several messages. Releasing on the first chunk's
+      # ack would drop the guard mid-sequence — and flush any change held during
+      # chunk 1 into the middle of the remaining chunks.
+      sub_req =
+        IM.encode(%IM.SubscribeRequest{
+          attribute_paths: [%{}],
+          min_interval: 0,
+          max_interval: 60
+        })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: sub_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
+      [{:send, priming_frame} | _] = actions
+      {:ok, chunk1, comm_session} = SecureChannel.open(comm_session, priming_frame)
+
+      {:ok, chunk1_report} = IM.decode(:report_data, chunk1.proto.payload)
+      assert chunk1_report.more_chunked_messages, "expected a chunked priming report"
+
+      # Ack chunk 1 only.
+      status_proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        ack_counter: chunk1.header.message_counter,
+        opcode: ProtocolID.opcode(:interaction_model, :status_response),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: IM.encode(%IM.StatusResponse{status: 0})
+      }
+
+      {status_frame, _comm_session} = SecureChannel.seal(comm_session, status_proto)
+      {_actions, handler} = MessageHandler.handle_frame(handler, status_frame)
+
+      assert MatterEx.IM.SubscriptionManager.in_flight?(handler.sessions[1].subscription_mgr, 1),
+             "guard released mid-chunk-sequence: a change now would interleave a new " <>
+               "Report transaction with the remaining priming chunks"
     end
 
     test "check_subscriptions must not start a report while one is in flight", %{

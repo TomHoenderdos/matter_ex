@@ -742,7 +742,13 @@ defmodule MatterEx.MessageHandler do
             # Map the priming report's counter to its subscription, so its
             # acknowledgement releases the guard and prunes the entry. Marking it
             # in flight without this would block the subscription permanently.
-            entry = associate_priming_report(entry, primed_sub_id, last_reliable)
+            entry =
+              associate_priming_report(
+                entry,
+                primed_sub_id,
+                last_reliable,
+                message.proto.exchange_id
+              )
 
             sessions = Map.put(state.sessions, session_id, entry)
 
@@ -753,7 +759,7 @@ defmodule MatterEx.MessageHandler do
             # This message may have carried the Status Response completing a
             # report we sent. Release the in-flight guard and flush anything that
             # changed while it was outstanding.
-            {release_actions, state} = complete_acked_reports(state, session_id)
+            {release_actions, state} = complete_acked_reports(state, session_id, last_reliable)
 
             {actions ++ release_actions, state}
 
@@ -848,8 +854,13 @@ defmodule MatterEx.MessageHandler do
   this it was popped solely on MRP give-up, so an entry accumulated for every
   acknowledged report and stayed for the life of the session.
   """
-  @spec complete_acked_reports(t(), non_neg_integer()) :: {[action()], t()}
-  def complete_acked_reports(%__MODULE__{} = state, session_id) do
+  @spec complete_acked_reports(
+          t(),
+          non_neg_integer(),
+          {non_neg_integer(), non_neg_integer()} | nil
+        ) ::
+          {[action()], t()}
+  def complete_acked_reports(%__MODULE__{} = state, session_id, last_reliable \\ nil) do
     case Map.get(state.sessions, session_id) do
       nil ->
         {[], state}
@@ -860,12 +871,12 @@ defmodule MatterEx.MessageHandler do
         state = %{state | sessions: Map.put(state.sessions, session_id, entry)}
 
         Enum.flat_map_reduce(acked, state, fn counter, state ->
-          release_acked_report(state, session_id, counter)
+          release_acked_report(state, session_id, counter, last_reliable)
         end)
     end
   end
 
-  defp release_acked_report(state, session_id, counter) do
+  defp release_acked_report(state, session_id, counter, last_reliable) do
     entry = state.sessions[session_id]
 
     case Map.pop(Map.get(entry, :exchange_to_sub, %{}), counter) do
@@ -874,6 +885,26 @@ defmodule MatterEx.MessageHandler do
         {[], state}
 
       {sub_id, exchange_to_sub} ->
+        release_or_carry(state, session_id, entry, sub_id, exchange_to_sub, last_reliable)
+    end
+  end
+
+  # A chunked report is one Report transaction spread over several messages, so
+  # acknowledging the first chunk does not complete it. Releasing there would
+  # drop the guard while chunks 2..N are still going out — and worse, would flush
+  # any change held during chunk 1 straight into the middle of the sequence.
+  #
+  # The ack that continues a chunked report is the same one that sends the next
+  # chunk, so `last_reliable` is that chunk. Carry the subscription onto its
+  # counter and keep the guard; the sequence releases when the exchange's
+  # pending_chunks entry is gone, which happens on the final StatusResponse.
+  defp release_or_carry(state, session_id, entry, sub_id, exchange_to_sub, last_reliable) do
+    case chunk_continuation(entry, last_reliable) do
+      {:continues, next_counter} ->
+        entry = %{entry | exchange_to_sub: Map.put(exchange_to_sub, next_counter, sub_id)}
+        {[], %{state | sessions: Map.put(state.sessions, session_id, entry)}}
+
+      :complete ->
         {owed, sub_mgr} = SubscriptionManager.complete_report(entry.subscription_mgr, sub_id)
 
         entry = %{entry | exchange_to_sub: exchange_to_sub, subscription_mgr: sub_mgr}
@@ -891,10 +922,35 @@ defmodule MatterEx.MessageHandler do
     end
   end
 
-  defp associate_priming_report(entry, nil, _last_reliable), do: entry
-  defp associate_priming_report(entry, _sub_id, nil), do: entry
+  # `pending_chunks` holds the exchange while chunks remain, and keeps a :done
+  # marker until the closing StatusResponse — so any entry means the transaction
+  # is still running.
+  defp chunk_continuation(_entry, nil), do: :complete
 
-  defp associate_priming_report(entry, sub_id, {_exchange_id, message_counter}) do
+  defp chunk_continuation(entry, {exchange_id, next_counter}) do
+    case Map.get(entry.exchange_mgr.pending_chunks, exchange_id) do
+      nil -> :complete
+      _remaining_or_done -> {:continues, next_counter}
+    end
+  end
+
+  # Bind the priming report's counter by matching the subscribe exchange rather
+  # than trusting position. `last_reliable` is whatever the last reliable send
+  # happened to be, which is the priming report today only because the
+  # SubscribeResponse is deferred into pending_subscribe_responses. If that ever
+  # changes, binding positionally would silently attach the guard to the wrong
+  # counter — and nothing would release it, leaving the subscription dead with no
+  # symptom but silence.
+  defp associate_priming_report(entry, nil, _last_reliable, _exchange_id), do: entry
+  defp associate_priming_report(entry, _sub_id, nil, _exchange_id), do: entry
+
+  defp associate_priming_report(entry, sub_id, {exchange_id, message_counter}, exchange_id) do
+    map_report_counter(entry, message_counter, sub_id)
+  end
+
+  defp associate_priming_report(entry, _sub_id, _last_reliable, _exchange_id), do: entry
+
+  defp map_report_counter(entry, message_counter, sub_id) do
     exchange_to_sub = entry |> Map.get(:exchange_to_sub, %{}) |> Map.put(message_counter, sub_id)
     %{entry | exchange_to_sub: exchange_to_sub}
   end
