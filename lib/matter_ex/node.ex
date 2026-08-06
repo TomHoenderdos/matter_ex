@@ -837,13 +837,27 @@ defmodule MatterEx.Node do
 
   # Re-persist when a fabric-scoped cluster changes (AddNOC/ACL write/group key
   # write/RemoveFabric all land here via the reporting bus). Idempotent.
+  # Incremental path: a fabric-scoped cluster changed (an ACL or group write
+  # after commissioning). Durability does not rest on this — see the
+  # commissioning-complete persist in maybe_update_case/2 — but it keeps later
+  # edits current without waiting for another commissioning event.
   defp maybe_persist_fabrics(%State{storage: nil}, _targets), do: :ok
 
   defp maybe_persist_fabrics(%State{storage: storage, handler: handler}, targets) do
     if Enum.any?(targets, fn {ep, cl} -> ep == 0 and cl in @fabric_scoped_clusters end) do
-      FabricStore.persist(handler.device, storage)
+      persist_fabrics(%State{storage: storage}, handler.device)
     end
 
+    :ok
+  end
+
+  defp persist_fabrics(%State{storage: nil}, _device), do: :ok
+  defp persist_fabrics(_state, nil), do: :ok
+
+  defp persist_fabrics(%State{storage: storage}, device) do
+    # persist/3 logs its own failures; the node carries on either way, since a
+    # storage problem must not stop it serving the controller in front of it.
+    _ = FabricStore.persist(device, storage)
     :ok
   end
 
@@ -889,6 +903,13 @@ defmodule MatterEx.Node do
           end
 
           state = transition_mdns(state, creds)
+
+          # Persist here, not only from the reporting bus. This is the moment
+          # operational key material first exists, and it is reached on the
+          # message path — so it does not depend on the push-reporting Registry
+          # having been registered with, which retries with backoff and may not
+          # have succeeded yet on a slow boot.
+          persist_fabrics(state, handler.device)
 
           {handler, state}
         else

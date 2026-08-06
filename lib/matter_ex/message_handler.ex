@@ -291,6 +291,10 @@ defmodule MatterEx.MessageHandler do
   Clears CASE credentials, live sessions (and their subscriptions), and group
   keys, while keeping the PASE responder, device, plaintext counter, and
   `max_interval_cap` so the node can be re-commissioned without a restart.
+
+  Dropping the sessions is also what lets the cluster `:restore_state` call skip
+  its DataVersion bump: with no session left there is no subscriber holding a
+  matching version that could miss the clusters being reset underneath it.
   """
   @spec reset_operational(t()) :: t()
   def reset_operational(%__MODULE__{} = state) do

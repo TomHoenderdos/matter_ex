@@ -8,21 +8,35 @@ defmodule MatterEx.FabricStore do
 
   ## What is persisted
 
-  Two kinds of value, all under the `matter/` prefix:
+  One key, `matter/state`, holding the whole snapshot:
 
-    * `matter/fabric/<index>` — the per-fabric operational identity from
-      `MatterEx.Commissioning` (NOC/ICAC/root cert, **operational private key**,
-      IPK, node/fabric ids, admin subject), plus `matter/fabrics` listing the
-      live indices.
-    * `matter/opcreds`, `matter/acl`, `matter/groups` — snapshots of the
-      fabric-scoped cluster attribute lists (OperationalCredentials,
-      AccessControl, GroupKeyManagement), which span all fabrics.
+    * the per-fabric operational identities from `MatterEx.Commissioning`
+      (NOC/ICAC/root cert, **operational private key**, IPK, node/fabric ids,
+      admin subject)
+    * snapshots of the fabric-scoped cluster attribute lists
+      (OperationalCredentials, AccessControl, GroupKeyManagement), which span all
+      fabrics
 
-  `persist/2` reconciles the whole set (writing current fabrics, deleting removed
-  ones); `load/2` reads it back into the commissioning agent and the clusters and
-  returns the loaded fabric credentials for the node to bring CASE back up.
-  `clear/3` is the inverse of both — it resets the clusters and wipes storage for
-  a factory reset.
+  ## Why one key
+
+  These values are only meaningful together. Split across several keys there is
+  no commit point: an interruption between writing the fabrics and writing the
+  cluster snapshots leaves a device that restores fabrics and answers CASE while
+  OperationalCredentials reports `commissioned_fabrics: 0` — so it looks paired
+  but tells a controller it has no fabrics, inviting a re-commission.
+
+  A single value makes the storage adapter's atomic write the commit point: the
+  snapshot is replaced whole or not at all. It also removes any need to reconcile
+  removed fabrics, since the snapshot *is* the fabric set.
+
+  `persist/3` writes it, `load/2` reads it back into the commissioning agent and
+  the clusters and returns the credentials for the node to bring CASE back up,
+  and `clear/2` is the inverse — resetting clusters and wiping storage for a
+  factory reset.
+
+  Both `persist/3` and `clear/2` report storage failures rather than swallowing
+  them: this is a durability feature, and a write that silently did nothing is
+  only discovered at the next reboot.
   """
 
   require Logger
@@ -31,11 +45,7 @@ defmodule MatterEx.FabricStore do
 
   @format_version 1
 
-  @index_key "matter/fabrics"
-  @fabric_prefix "matter/fabric/"
-  @opcreds_key "matter/opcreds"
-  @acl_key "matter/acl"
-  @groups_key "matter/groups"
+  @state_key "matter/state"
 
   # Which pieces of each fabric-scoped cluster's state to snapshot. Attributes
   # plus the internal fields the cluster needs (e.g. group key sets), excluding
@@ -76,34 +86,36 @@ defmodule MatterEx.FabricStore do
   `:commissioning` overrides the commissioning agent name (defaults to
   `MatterEx.Commissioning`); mainly for testing.
   """
-  @spec persist(module(), Storage.backend(), keyword()) :: :ok
+  @spec persist(module(), Storage.backend(), keyword()) :: :ok | {:error, term()}
   def persist(device, backend, opts \\ []) do
     comm = Keyword.get(opts, :commissioning, Commissioning)
     indices = Commissioning.get_fabric_indices(comm)
 
-    # Write current fabric identities, delete blobs for fabrics that are gone.
-    for index <- indices, creds = Commissioning.get_credentials(index, comm), creds != nil do
-      Storage.put(backend, fabric_key(index), serialize(creds))
+    fabrics =
+      for index <- indices,
+          creds = Commissioning.get_credentials(index, comm),
+          creds != nil,
+          into: %{},
+          do: {index, creds}
+
+    clusters =
+      for {cluster, keys} <- @cluster_snapshot,
+          into: %{},
+          do: {cluster, cluster_snapshot(device, cluster, keys)}
+
+    snapshot = %{fabrics: fabrics, clusters: clusters}
+
+    case Storage.put(backend, @state_key, serialize(snapshot)) do
+      :ok ->
+        Logger.debug("FabricStore: persisted #{map_size(fabrics)} fabric(s)")
+        :ok
+
+      {:error, reason} = error ->
+        # A read-only or full /data would otherwise no-op in silence, and the
+        # device would look commissioned right up until it rebooted.
+        Logger.error("FabricStore: failed to persist fabric state: #{inspect(reason)}")
+        error
     end
-
-    current = MapSet.new(indices, &fabric_key/1)
-
-    for key <- Storage.keys(backend, @fabric_prefix), not MapSet.member?(current, key) do
-      Storage.delete(backend, key)
-    end
-
-    Storage.put(backend, @index_key, serialize(indices))
-
-    for {cluster, keys} <- @cluster_snapshot do
-      Storage.put(
-        backend,
-        cluster_key(cluster),
-        serialize(cluster_snapshot(device, cluster, keys))
-      )
-    end
-
-    Logger.debug("FabricStore: persisted #{length(indices)} fabric(s)")
-    :ok
   end
 
   @doc """
@@ -116,21 +128,37 @@ defmodule MatterEx.FabricStore do
   def load(device, backend, opts \\ []) do
     comm = Keyword.get(opts, :commissioning, Commissioning)
 
-    with {:ok, indices} when indices != [] <- fetch(backend, @index_key) do
-      creds =
-        for index <- indices, {:ok, entry} <- [fetch(backend, fabric_key(index))] do
-          Commissioning.restore_fabric(entry, comm)
-          entry
+    case fetch(backend, @state_key) do
+      {:ok, %{fabrics: fabrics, clusters: clusters}} ->
+        for {cluster, snapshot} <- clusters, do: restore_cluster(device, cluster, {:ok, snapshot})
+
+        creds =
+          for {_index, entry} <- fabrics do
+            Commissioning.restore_fabric(entry, comm)
+            entry
+          end
+
+        Logger.info("FabricStore: restored #{length(creds)} fabric(s) from storage")
+        creds
+
+      :error ->
+        # Distinguish "nothing stored yet" from "stored and unreadable". The
+        # second means a device silently came back uncommissioned, which is the
+        # failure this module exists to prevent — it must not be inferred from an
+        # empty log.
+        case Storage.get(backend, @state_key) do
+          {:ok, _binary} ->
+            Logger.warning(
+              "FabricStore: persisted state at #{@state_key} could not be read " <>
+                "(corrupt, or written by a different format version). The device will " <>
+                "start uncommissioned."
+            )
+
+          :error ->
+            Logger.debug("FabricStore: no persisted state; starting uncommissioned")
         end
 
-      for {cluster, _keys} <- @cluster_snapshot do
-        restore_cluster(device, cluster, fetch(backend, cluster_key(cluster)))
-      end
-
-      Logger.info("FabricStore: restored #{length(creds)} fabric(s) from storage")
-      creds
-    else
-      _ -> []
+        []
     end
   end
 
@@ -152,12 +180,35 @@ defmodule MatterEx.FabricStore do
       end
     end
 
-    if backend do
-      for key <- Storage.keys(backend, "matter/"), do: Storage.delete(backend, key)
-    end
+    case wipe(backend) do
+      :ok ->
+        Logger.info("FabricStore: cleared all persisted fabric state")
+        :ok
 
-    Logger.info("FabricStore: cleared all persisted fabric state")
-    :ok
+      {:error, reason} = error ->
+        # "Factory reset" is a claim someone acts on when they resell or
+        # redeploy hardware. Reporting success while operational private keys
+        # remain on disk is the wrong kind of wrong.
+        Logger.error(
+          "FabricStore: factory reset did NOT fully wipe storage (#{inspect(reason)}); " <>
+            "operational key material may remain on disk"
+        )
+
+        error
+    end
+  end
+
+  defp wipe(nil), do: :ok
+
+  defp wipe(backend) do
+    backend
+    |> Storage.keys("matter/")
+    |> Enum.reduce(:ok, fn key, acc ->
+      case {Storage.delete(backend, key), acc} do
+        {:ok, acc} -> acc
+        {{:error, reason}, _} -> {:error, reason}
+      end
+    end)
   end
 
   # ── Private ─────────────────────────────────────────────────────
@@ -183,11 +234,6 @@ defmodule MatterEx.FabricStore do
     name = device.__process_name__(0, cluster)
     if name && Process.whereis(name), do: name
   end
-
-  defp fabric_key(index), do: @fabric_prefix <> Integer.to_string(index)
-  defp cluster_key(:operational_credentials), do: @opcreds_key
-  defp cluster_key(:access_control), do: @acl_key
-  defp cluster_key(:group_key_management), do: @groups_key
 
   defp serialize(term), do: :erlang.term_to_binary({@format_version, term})
 

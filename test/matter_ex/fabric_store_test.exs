@@ -119,16 +119,51 @@ defmodule MatterEx.FabricStoreTest do
     assert FabricStore.load(Device, backend, commissioning: comm) == []
   end
 
-  test "persist reconciles a removed fabric by deleting its blob", %{backend: backend, comm: comm} do
+  test "a removed fabric is gone from the next snapshot", %{backend: backend, comm: comm} do
+    # The snapshot is the fabric set, so removal needs no reconciliation — the
+    # next write simply doesn't contain it.
     Commissioning.restore_fabric(@fabric, comm)
     Commissioning.restore_fabric(%{@fabric | fabric_index: 2, node_id: 0x63}, comm)
-    FabricStore.persist(Device, backend, commissioning: comm)
-    assert {:ok, _} = MatterEx.Storage.get(backend, "matter/fabric/2")
+    :ok = FabricStore.persist(Device, backend, commissioning: comm)
+
+    assert [1, 2] = loaded_indices(backend, comm)
 
     Commissioning.remove_fabric(2, comm)
-    FabricStore.persist(Device, backend, commissioning: comm)
-    assert :error = MatterEx.Storage.get(backend, "matter/fabric/2")
-    assert {:ok, _} = MatterEx.Storage.get(backend, "matter/fabric/1")
+    :ok = FabricStore.persist(Device, backend, commissioning: comm)
+
+    assert [1] = loaded_indices(backend, comm)
+  end
+
+  defp loaded_indices(backend, comm) do
+    Device
+    |> FabricStore.load(backend, commissioning: comm)
+    |> Enum.map(& &1.fabric_index)
+    |> Enum.sort()
+  end
+
+  test "persist reports a storage failure instead of swallowing it", %{comm: comm} do
+    # A read-only or full /data must not no-op in silence: the device would look
+    # commissioned right up until it rebooted uncommissioned.
+    Commissioning.restore_fabric(@fabric, comm)
+    unwritable = {MatterEx.Storage.FileSystem, dir: "/proc/matter_ex_should_not_be_writable"}
+
+    assert {:error, _reason} = FabricStore.persist(Device, unwritable, commissioning: comm)
+  end
+
+  test "load warns rather than silently returning nothing when state is unreadable",
+       %{backend: backend, comm: comm} do
+    Commissioning.restore_fabric(@fabric, comm)
+    :ok = FabricStore.persist(Device, backend, commissioning: comm)
+
+    # Corrupt the stored snapshot the way a truncated write would.
+    :ok = MatterEx.Storage.put(backend, "matter/state", <<0, 1, 2, 3>>)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert [] = FabricStore.load(Device, backend, commissioning: comm)
+      end)
+
+    assert log =~ "could not be read"
   end
 
   test "clear resets clusters to defaults and wipes storage", %{backend: backend, comm: comm} do

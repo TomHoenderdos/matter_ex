@@ -78,9 +78,29 @@ defmodule MatterEx.NodePersistenceTest do
     Commissioning.restore_fabric(@fabric)
     write_acl()
 
-    # The Node persists in response to the reporting-bus notification.
-    wait_until(fn -> match?({:ok, _}, Storage.get(storage, "matter/fabric/1")) end)
-    assert {:ok, _} = Storage.get(storage, "matter/acl")
+    # The whole snapshot lands as one key, so there is no window where fabrics
+    # are stored but the cluster state that describes them is not.
+    wait_until(fn -> match?({:ok, _}, Storage.get(storage, "matter/state")) end)
+    assert [%{fabric_index: 1}] = FabricStore.load(Device, storage)
+  end
+
+  test "persists on commissioning completion, not only via the reporting bus",
+       %{storage: storage} do
+    node = start_node(storage)
+
+    # store_noc/6 is what CASE commissioning calls: it sets last_added_fabric and
+    # leaves case_admin_subject nil, so maybe_update_case/2 skips write_initial_acl.
+    # Nothing here touches a fabric-scoped cluster, so the reporting bus stays
+    # silent and only the commissioning-complete persist can explain a stored blob.
+    Commissioning.store_keypair({"PUB", "PRIV"})
+    Commissioning.store_noc(1, "NOC", nil, :binary.copy(<<7>>, 16), 0x2A, 0x1234)
+    refute match?({:ok, _}, Storage.get(storage, "matter/state"))
+
+    # Drive the message path the way an inbound datagram does.
+    send(node, {:udp, nil, {127, 0, 0, 1}, 5540, <<0xFF, 0xFF, 0xFF, 0xFF>>})
+
+    wait_until(fn -> match?({:ok, _}, Storage.get(storage, "matter/state")) end)
+    assert [%{fabric_index: 1, node_id: 0x2A}] = FabricStore.load(Device, storage)
   end
 
   test "restores fabrics from storage on start", %{storage: storage} do
@@ -116,7 +136,7 @@ defmodule MatterEx.NodePersistenceTest do
 
     Commissioning.restore_fabric(@fabric)
     write_acl()
-    wait_until(fn -> match?({:ok, _}, Storage.get(storage, "matter/fabric/1")) end)
+    wait_until(fn -> match?({:ok, _}, Storage.get(storage, "matter/state")) end)
     assert Commissioning.commissioned?()
 
     assert :ok = MatterEx.Node.factory_reset(node)

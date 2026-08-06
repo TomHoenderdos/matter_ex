@@ -25,14 +25,50 @@ defmodule MatterEx.Storage.FileSystem do
   end
 
   @impl true
+  # Write to a temp file in the same directory, then rename over the target.
+  #
+  # Both properties matter here. A plain File.write/2 truncates in place, so a
+  # power cut mid-write leaves a partial blob — and losing commissioning to a
+  # power cut is the exact failure this storage exists to prevent. Rename within
+  # a filesystem is atomic, so a reader sees either the old contents or the new,
+  # never half of one.
+  #
+  # It also closes a permissions window: the temp file is created 0600 before any
+  # bytes are written, where writing first and chmod-ing after left an operational
+  # private key briefly readable by anything the umask allowed.
   def put(config, key, value) when is_binary(value) do
     dir = base_dir(config)
     path = path(config, key)
+    tmp = path <> ".tmp"
 
     with :ok <- ensure_dir(dir),
          :ok <- File.mkdir_p(Path.dirname(path)),
-         :ok <- File.write(path, value) do
-      File.chmod(path, 0o600)
+         :ok <- write_private(tmp, value) do
+      case File.rename(tmp, path) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          File.rm(tmp)
+          {:error, reason}
+      end
+    end
+  end
+
+  defp write_private(path, value) do
+    with {:ok, file} <- File.open(path, [:write, :binary]),
+         :ok <- File.chmod(path, 0o600),
+         :ok <- IO.binwrite(file, value),
+         :ok <- File.close(file) do
+      :ok
+    else
+      {:error, reason} ->
+        File.rm(path)
+        {:error, reason}
+
+      other ->
+        File.rm(path)
+        {:error, other}
     end
   end
 
