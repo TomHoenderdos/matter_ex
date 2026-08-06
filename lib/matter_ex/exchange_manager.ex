@@ -48,7 +48,12 @@ defmodule MatterEx.ExchangeManager do
             pending_acks: [],
             timed_exchanges: %{},
             pending_subscribe_responses: %{},
-            pending_chunks: %{}
+            pending_chunks: %{},
+            # Message counters acknowledged since the last take_acked/1. Lets a
+            # caller find out which of its outstanding messages were confirmed —
+            # MRP.on_ack/2 already distinguishes "was pending, now cleared" from
+            # "not ours", but every call site discarded that.
+            acked: []
 
   @doc """
   Create a new ExchangeManager.
@@ -92,6 +97,23 @@ defmodule MatterEx.ExchangeManager do
         Logger.debug("Unsupported protocol/opcode: #{inspect(other)}")
         {[{:error, :unsupported_protocol}], state}
     end
+  end
+
+  @doc """
+  Take the message counters acknowledged since the last call, clearing them.
+
+  `MRP.on_ack/2` already distinguishes "this counter was pending and is now
+  cleared" from "not one of ours"; this surfaces that so a caller can tell which
+  of its outstanding messages the peer actually confirmed. Used to serialise
+  subscription reports, which may not overlap (Core spec §8.5), and to release
+  the per-report bookkeeping that would otherwise accumulate for the life of a
+  session.
+
+  Returns `{counters, state}` with the counters in acknowledgement order.
+  """
+  @spec take_acked(t()) :: {[non_neg_integer()], t()}
+  def take_acked(%__MODULE__{acked: acked} = state) do
+    {Enum.reverse(acked), %{state | acked: []}}
   end
 
   @doc """
@@ -206,7 +228,7 @@ defmodule MatterEx.ExchangeManager do
               opcode: opcode
             })
 
-            %{state | mrp: mrp}
+            %{state | mrp: mrp, acked: [proto.ack_counter | state.acked]}
 
           {:error, :not_found} ->
             MatterEx.DebugTrace.record(%{
@@ -480,7 +502,7 @@ defmodule MatterEx.ExchangeManager do
     state =
       if proto.ack_counter do
         case MRP.on_ack(state.mrp, proto.ack_counter) do
-          {:ok, mrp} -> %{state | mrp: mrp}
+          {:ok, mrp} -> %{state | mrp: mrp, acked: [proto.ack_counter | state.acked]}
           {:error, :not_found} -> state
         end
       else
@@ -576,7 +598,7 @@ defmodule MatterEx.ExchangeManager do
         })
 
         exchanges = Map.delete(state.exchanges, exchange_id)
-        {[], %{state | mrp: mrp, exchanges: exchanges}}
+        {[], %{state | mrp: mrp, exchanges: exchanges, acked: [ack_counter | state.acked]}}
 
       {:error, :not_found} ->
         MatterEx.DebugTrace.record(%{
@@ -594,7 +616,7 @@ defmodule MatterEx.ExchangeManager do
   defp ack_and_clear_mrp(state, proto) do
     if proto.ack_counter do
       case MRP.on_ack(state.mrp, proto.ack_counter) do
-        {:ok, mrp} -> %{state | mrp: mrp}
+        {:ok, mrp} -> %{state | mrp: mrp, acked: [proto.ack_counter | state.acked]}
         {:error, :not_found} -> state
       end
     else

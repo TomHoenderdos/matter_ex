@@ -744,7 +744,12 @@ defmodule MatterEx.MessageHandler do
               %{state | sessions: sessions}
               |> maybe_unsubscribe_removed_fabric(removed_fabric_index)
 
-            {actions, state}
+            # This message may have carried the Status Response completing a
+            # report we sent. Release the in-flight guard and flush anything that
+            # changed while it was outstanding.
+            {release_actions, state} = complete_acked_reports(state, session_id)
+
+            {actions ++ release_actions, state}
 
           {:error, reason} ->
             Logger.warning(
@@ -804,6 +809,77 @@ defmodule MatterEx.MessageHandler do
       end)
 
     {actions, session, mgr}
+  end
+
+  # Remember that a change arrived for a subscription whose report is still in
+  # flight, so it can be sent as soon as the Status Response lands.
+  defp mark_subscription_dirty(state, session_id, sub_id) do
+    case Map.get(state.sessions, session_id) do
+      nil ->
+        state
+
+      entry ->
+        sub_mgr = SubscriptionManager.mark_dirty(entry.subscription_mgr, sub_id)
+        entry = %{entry | subscription_mgr: sub_mgr}
+        %{state | sessions: Map.put(state.sessions, session_id, entry)}
+    end
+  end
+
+  @doc """
+  Release subscription reports the subscriber has acknowledged, sending any change
+  that was suppressed while they were outstanding.
+
+  The completion event is the **MRP acknowledgement**, not a Status Response:
+  ongoing reports are built with `suppress_response: true`, which tells the
+  subscriber not to send one. (The priming report uses `suppress_response: false`
+  — if that inconsistency is ever resolved the completion event becomes a Status
+  Response carrying the ack, which lands here just the same.)
+
+  Also the only place `exchange_to_sub` is pruned on the success path: before
+  this it was popped solely on MRP give-up, so an entry accumulated for every
+  acknowledged report and stayed for the life of the session.
+  """
+  @spec complete_acked_reports(t(), non_neg_integer()) :: {[action()], t()}
+  def complete_acked_reports(%__MODULE__{} = state, session_id) do
+    case Map.get(state.sessions, session_id) do
+      nil ->
+        {[], state}
+
+      entry ->
+        {acked, mgr} = ExchangeManager.take_acked(entry.exchange_mgr)
+        entry = %{entry | exchange_mgr: mgr}
+        state = %{state | sessions: Map.put(state.sessions, session_id, entry)}
+
+        Enum.flat_map_reduce(acked, state, fn counter, state ->
+          release_acked_report(state, session_id, counter)
+        end)
+    end
+  end
+
+  defp release_acked_report(state, session_id, counter) do
+    entry = state.sessions[session_id]
+
+    case Map.pop(Map.get(entry, :exchange_to_sub, %{}), counter) do
+      {nil, _} ->
+        # Not one of our subscription reports.
+        {[], state}
+
+      {sub_id, exchange_to_sub} ->
+        {owed, sub_mgr} = SubscriptionManager.complete_report(entry.subscription_mgr, sub_id)
+
+        entry = %{entry | exchange_to_sub: exchange_to_sub, subscription_mgr: sub_mgr}
+        state = %{state | sessions: Map.put(state.sessions, session_id, entry)}
+
+        case owed do
+          :idle ->
+            {[], state}
+
+          :owed ->
+            sub = SubscriptionManager.get(sub_mgr, sub_id)
+            now = System.monotonic_time(:second)
+            process_due_subscription(state, session_id, sub_id, sub.paths, now)
+        end
+    end
   end
 
   # ── Private helpers ────────────────────────────────────────────────
@@ -1087,6 +1163,8 @@ defmodule MatterEx.MessageHandler do
     now = System.monotonic_time(:second)
 
     Enum.flat_map_reduce(state.sessions, state, fn {session_id, entry}, state ->
+      # In-flight subscriptions are held back by process_due_subscription/5, which
+      # every path to a report goes through.
       due =
         entry.subscription_mgr
         |> SubscriptionManager.subscriptions()
@@ -1103,6 +1181,24 @@ defmodule MatterEx.MessageHandler do
 
   defp process_due_subscription(state, session_id, sub_id, paths, now) do
     entry = state.sessions[session_id]
+
+    # §8.5 — "Each Report transaction initiated by the publisher SHALL complete
+    # successfully before another Report transaction is initiated by the
+    # publisher." The guard belongs here because every path to a report goes
+    # through it: a change (report_targets/2), and the fallback sweep or the
+    # max_interval report (check_subscriptions/1). Filtering in one caller left
+    # the other reachable, and would leave every future caller to remember.
+    #
+    # A suppressed report isn't lost — the subscription is marked dirty, and
+    # completing the outstanding one flushes it (complete_acked_reports/2).
+    if SubscriptionManager.in_flight?(entry.subscription_mgr, sub_id) do
+      {[], mark_subscription_dirty(state, session_id, sub_id)}
+    else
+      dispatch_due_subscription(state, session_id, entry, sub_id, paths, now)
+    end
+  end
+
+  defp dispatch_due_subscription(state, session_id, entry, sub_id, paths, now) do
     sub = SubscriptionManager.get(entry.subscription_mgr, sub_id)
     versions = Router.cluster_versions(state.device, paths)
     interval_due? = SubscriptionManager.max_interval_elapsed?(entry.subscription_mgr, sub_id, now)
@@ -1203,6 +1299,10 @@ defmodule MatterEx.MessageHandler do
     payload = IM.encode(report_data)
     im_protocol_id = ProtocolID.protocol_id(:interaction_model)
 
+    # Relies on ExchangeManager.initiate/5 defaulting to reliable: true. The
+    # in-flight guard is released by the MRP acknowledgement, so a non-reliable
+    # report would record no pending counter, never ack, and leave the
+    # subscription silent for good.
     {proto, mrp_actions, mgr} =
       ExchangeManager.initiate(entry.exchange_mgr, im_protocol_id, :report_data, payload)
 
@@ -1224,13 +1324,10 @@ defmodule MatterEx.MessageHandler do
     exchange_to_sub = entry |> Map.get(:exchange_to_sub, %{}) |> Map.put(message_counter, sub_id)
 
     sub_mgr =
-      SubscriptionManager.record_sent(
-        entry.subscription_mgr,
-        sub_id,
-        report.values,
-        now,
-        versions
-      )
+      entry.subscription_mgr
+      |> SubscriptionManager.record_sent(sub_id, report.values, now, versions)
+      # §8.5: no second Report transaction until this one completes.
+      |> SubscriptionManager.mark_in_flight(sub_id)
 
     entry = %{
       entry
