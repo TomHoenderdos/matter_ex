@@ -89,7 +89,7 @@ defmodule MatterEx.Transport.BTP do
 
     # Split the message
     first_size = min(first_payload_max, total_len)
-    <<first_chunk::binary-size(first_size), remaining::binary>> = message
+    <<first_chunk::binary-size(^first_size), remaining::binary>> = message
     rest_chunks = chunk_binary(remaining, rest_payload_max)
 
     all_chunks = [first_chunk | rest_chunks]
@@ -290,7 +290,7 @@ defmodule MatterEx.Transport.BTP do
   end
 
   defp chunk_binary(binary, size) do
-    <<chunk::binary-size(size), rest::binary>> = binary
+    <<chunk::binary-size(^size), rest::binary>> = binary
     [chunk | chunk_binary(rest, size)]
   end
 end

@@ -57,7 +57,7 @@ defmodule MatterEx.Protocol.MessageCodec do
       if payload_size < 0 do
         {:error, :truncated_mic}
       else
-        <<ciphertext::binary-size(payload_size), tag::binary-size(@mic_size)>> = rest
+        <<ciphertext::binary-size(^payload_size), tag::binary-size(@mic_size)>> = rest
         aad = IO.iodata_to_binary(Header.encode(header))
 
         case Session.decrypt(ciphertext, tag, key, nonce, aad) do

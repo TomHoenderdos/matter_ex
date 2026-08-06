@@ -27,7 +27,7 @@ defmodule MatterEx.Transport.TCP do
   end
 
   defp parse_messages(<<len::little-32, rest::binary>>, acc) when byte_size(rest) >= len do
-    <<message::binary-size(len), remaining::binary>> = rest
+    <<message::binary-size(^len), remaining::binary>> = rest
     parse_messages(remaining, [message | acc])
   end
 

@@ -88,7 +88,7 @@ defmodule MatterEx.MDNS.DNS do
 
       byte when byte >= 0xC0 ->
         # Pointer compression: 2 bytes form a 14-bit offset
-        <<_::binary-size(offset), 0b11::2, ptr_offset::14, _::binary>> = message
+        <<_::binary-size(^offset), 0b11::2, ptr_offset::14, _::binary>> = message
         new_consumed = if followed_pointer, do: consumed, else: consumed + 2
         decode_labels(message, ptr_offset, labels, new_consumed, true)
 
@@ -327,7 +327,7 @@ defmodule MatterEx.MDNS.DNS do
     {questions, final_offset} =
       Enum.reduce(1..count, {[], offset}, fn _i, {acc, off} ->
         {name, consumed} = decode_name(message, off)
-        <<_::binary-size(off + consumed), type_code::16, _class::16, _::binary>> = message
+        <<_::binary-size(^off + ^consumed), type_code::16, _class::16, _::binary>> = message
         question = %{name: name, type: code_to_type(type_code), class: :in}
         {[question | acc], off + consumed + 4}
       end)
@@ -343,7 +343,7 @@ defmodule MatterEx.MDNS.DNS do
         {name, consumed} = decode_name(message, off)
         data_start = off + consumed
 
-        <<_::binary-size(data_start), type_code::16, class_raw::16, ttl::32, rdlength::16,
+        <<_::binary-size(^data_start), type_code::16, class_raw::16, ttl::32, rdlength::16,
           _::binary>> = message
 
         rdata_offset = data_start + 10

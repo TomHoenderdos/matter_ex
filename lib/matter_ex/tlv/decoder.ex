@@ -147,7 +147,7 @@ defmodule MatterEx.TLV.Decoder do
   ## Shared helpers
 
   defp read_bytes(len, binary) do
-    <<data::binary-size(len), rest::binary>> = binary
+    <<data::binary-size(^len), rest::binary>> = binary
     {data, rest}
   end
 end

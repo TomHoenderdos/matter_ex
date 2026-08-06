@@ -143,8 +143,6 @@ defmodule MatterEx.ACL do
     |> Enum.reject(&is_nil/1)
   end
 
-  defp matches_target?(entry, _target) when not is_map(entry), do: false
-
   defp matches_target?(entry, {endpoint_id, cluster_id}) do
     targets = get_field(entry, :targets, 4)
 

@@ -51,8 +51,8 @@ defmodule MatterEx.Crypto.Certificate do
   """
   @spec der_signature_to_raw(binary()) :: binary()
   def der_signature_to_raw(<<0x30, _len, 0x02, r_len, rest::binary>>) do
-    <<r_bytes::binary-size(r_len), 0x02, s_len, s_rest::binary>> = rest
-    <<s_bytes::binary-size(s_len), _::binary>> = s_rest
+    <<r_bytes::binary-size(^r_len), 0x02, s_len, s_rest::binary>> = rest
+    <<s_bytes::binary-size(^s_len), _::binary>> = s_rest
     normalize_low_s(pad_to_32(r_bytes) <> pad_to_32(s_bytes))
   end
 
@@ -166,19 +166,19 @@ defmodule MatterEx.Crypto.Certificate do
 
   defp der_parse_element(<<tag, rest::binary>>) when tag in [0x30, 0x31] do
     {len, content_start} = der_read_length(rest)
-    <<content::binary-size(len), remaining::binary>> = content_start
+    <<content::binary-size(^len), remaining::binary>> = content_start
     {content, remaining}
   end
 
   defp der_parse_element(<<_tag, rest::binary>>) do
     {len, content_start} = der_read_length(rest)
-    <<content::binary-size(len), remaining::binary>> = content_start
+    <<content::binary-size(^len), remaining::binary>> = content_start
     {content, remaining}
   end
 
   defp der_skip_element(<<_tag, rest::binary>>) do
     {len, content_start} = der_read_length(rest)
-    <<_content::binary-size(len), remaining::binary>> = content_start
+    <<_content::binary-size(^len), remaining::binary>> = content_start
     {nil, remaining}
   end
 
