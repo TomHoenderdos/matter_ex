@@ -700,7 +700,7 @@ defmodule MatterEx.MessageHandler do
             })
 
             # Pre-process subscribe_request: register subscription, build priming report, inject temp handler
-            {mgr, sub_mgr} =
+            {mgr, sub_mgr, primed_sub_id} =
               maybe_setup_subscription(
                 mgr,
                 sub_mgr,
@@ -726,7 +726,7 @@ defmodule MatterEx.MessageHandler do
                 mgr
               end
 
-            {actions, session, mgr} =
+            {actions, session, mgr, last_reliable} =
               process_exchange_actions(em_actions, session, session_id, mgr)
 
             removed_fabric_index =
@@ -738,6 +738,12 @@ defmodule MatterEx.MessageHandler do
               )
 
             entry = %{entry | session: session, exchange_mgr: mgr, subscription_mgr: sub_mgr}
+
+            # Map the priming report's counter to its subscription, so its
+            # acknowledgement releases the guard and prunes the entry. Marking it
+            # in flight without this would block the subscription permanently.
+            entry = associate_priming_report(entry, primed_sub_id, last_reliable)
+
             sessions = Map.put(state.sessions, session_id, entry)
 
             state =
@@ -761,8 +767,11 @@ defmodule MatterEx.MessageHandler do
     end
   end
 
+  # Also returns the counter of the last reliably-sent message, so a caller can
+  # associate it with what it was carrying — the priming report needs that to be
+  # releasable by its acknowledgement.
   defp process_exchange_actions(em_actions, session, session_id, mgr) do
-    {actions, {session, mgr, _last_reliable}} =
+    {actions, {session, mgr, last_reliable}} =
       Enum.flat_map_reduce(em_actions, {session, mgr, nil}, fn action,
                                                                {session, mgr, last_reliable} ->
         case action do
@@ -808,7 +817,7 @@ defmodule MatterEx.MessageHandler do
         end
       end)
 
-    {actions, session, mgr}
+    {actions, session, mgr, last_reliable}
   end
 
   # Remember that a change arrived for a subscription whose report is still in
@@ -882,6 +891,14 @@ defmodule MatterEx.MessageHandler do
     end
   end
 
+  defp associate_priming_report(entry, nil, _last_reliable), do: entry
+  defp associate_priming_report(entry, _sub_id, nil), do: entry
+
+  defp associate_priming_report(entry, sub_id, {_exchange_id, message_counter}) do
+    exchange_to_sub = entry |> Map.get(:exchange_to_sub, %{}) |> Map.put(message_counter, sub_id)
+    %{entry | exchange_to_sub: exchange_to_sub}
+  end
+
   # ── Private helpers ────────────────────────────────────────────────
 
   defp maybe_setup_subscription(mgr, sub_mgr, :subscribe_request, proto, device, session, max_cap) do
@@ -935,14 +952,18 @@ defmodule MatterEx.MessageHandler do
         priming_payload = IM.encode(priming_report)
         now = System.monotonic_time(:second)
 
+        # The priming report is a Report transaction like any other, so it holds
+        # the guard until acknowledged. Without it a change arriving inside that
+        # round trip starts a second transaction (§8.5).
         sub_mgr =
-          SubscriptionManager.record_sent(
-            sub_mgr,
+          sub_mgr
+          |> SubscriptionManager.record_sent(
             sub_id,
             report_values(priming_report.attribute_reports),
             now,
             Router.cluster_versions(device, attribute_paths)
           )
+          |> SubscriptionManager.mark_in_flight(sub_id)
 
         MatterEx.DebugTrace.record(%{
           type: :subscribe_setup,
@@ -972,15 +993,15 @@ defmodule MatterEx.MessageHandler do
         pending =
           Map.put(mgr.pending_subscribe_responses, proto.exchange_id, encoded_sub_response)
 
-        {%{mgr | handler: temp_handler, pending_subscribe_responses: pending}, sub_mgr}
+        {%{mgr | handler: temp_handler, pending_subscribe_responses: pending}, sub_mgr, sub_id}
 
       _ ->
-        {mgr, sub_mgr}
+        {mgr, sub_mgr, nil}
     end
   end
 
   defp maybe_setup_subscription(mgr, sub_mgr, _opcode, _proto, _device, _session, _max_cap),
-    do: {mgr, sub_mgr}
+    do: {mgr, sub_mgr, nil}
 
   defp removed_fabric_index_from_successful_response(
          :invoke_request,
