@@ -55,7 +55,7 @@ defmodule MatterEx.Node do
 
   require Logger
 
-  alias MatterEx.{Commissioning, MessageHandler}
+  alias MatterEx.{Commissioning, FabricStore, MessageHandler}
   alias MatterEx.Protocol.MessageCodec.Header
   alias MatterEx.Transport.TCP, as: TCPFraming
 
@@ -78,6 +78,17 @@ defmodule MatterEx.Node do
   # that limit forever. 1s → 2s → 4s … capped at half the record TTL.
   @reannounce_base_ms 1_000
   @reannounce_max_ms 60_000
+
+  # Endpoint-0 fabric-scoped clusters whose changes must be re-persisted.
+  @fabric_scoped_clusters [
+    # OperationalCredentials
+    0x003E,
+    # AccessControl
+    0x001F,
+    # GroupKeyManagement
+    0x003F
+  ]
+
   @sol_socket 1
   @so_bindtodevice 25
 
@@ -93,6 +104,8 @@ defmodule MatterEx.Node do
       :commissioning_service,
       :commissioning_instance,
       :operational_instance,
+      # {module, config} MatterEx.Storage backend for fabric persistence, or nil
+      storage: nil,
       # Periodic subscription poll interval (ms); the push path is primary
       # Set from @sub_check_interval in init/1; nil only if constructed directly.
       sub_check_interval: nil,
@@ -126,6 +139,12 @@ defmodule MatterEx.Node do
   - `:sub_check_interval` — fallback poll interval in ms (default 10_000). The
     push path reports changes immediately; this is the fallback for keep-alives
     and `min_interval`-throttled changes.
+  - `:storage` — a `{module, config}` `MatterEx.Storage` backend for persisting
+    fabric credentials across restarts (default `nil`, in-memory only). On start
+    the node restores any persisted fabrics and re-enables CASE for them.
+  - `:max_interval_cap` — upper bound (seconds) on the subscription `max_interval`
+    reported to controllers (default 120). Keeps the controller's liveness
+    timeout short so a rebooted device is re-subscribed to quickly.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -143,6 +162,24 @@ defmodule MatterEx.Node do
     GenServer.call(server, :get_port)
   end
 
+  @doc """
+  Factory reset — remove all fabrics and return the node to commissioning mode
+  without a restart.
+
+  Forgets every fabric (commissioning agent), resets the fabric-scoped clusters
+  (OperationalCredentials, AccessControl, GroupKeyManagement) to defaults, wipes
+  the persistent `:storage` backend, drops all CASE sessions and subscriptions,
+  and re-advertises the commissioning service so a controller can pair again.
+
+  Suitable for a hardware reset button. The controller that paired it is not
+  notified — it keeps a stale accessory entry until removed on its side, just
+  like any Matter device that is locally reset.
+  """
+  @spec factory_reset(GenServer.server()) :: :ok
+  def factory_reset(server) do
+    GenServer.call(server, :factory_reset)
+  end
+
   # ── GenServer Callbacks ──────────────────────────────────────────
 
   @impl true
@@ -151,6 +188,7 @@ defmodule MatterEx.Node do
     tcp_enabled = Keyword.get(opts, :tcp, true)
     device = Keyword.fetch!(opts, :device)
     sub_check_interval = Keyword.get(opts, :sub_check_interval, @sub_check_interval)
+    storage = Keyword.get(opts, :storage)
 
     # Start commissioning agent if not already running
     if !Process.whereis(Commissioning) do
@@ -183,24 +221,29 @@ defmodule MatterEx.Node do
             passcode: Keyword.fetch!(opts, :passcode),
             salt: Keyword.fetch!(opts, :salt),
             iterations: Keyword.fetch!(opts, :iterations),
-            local_session_id: local_session_id
+            local_session_id: local_session_id,
+            max_interval_cap: Keyword.get(opts, :max_interval_cap, 120)
           )
 
         Logger.info("Matter node listening on UDP port #{assigned_port}")
         Process.send_after(self(), :check_subscriptions, sub_check_interval)
 
-        {:ok,
-         %State{
-           handler: handler,
-           socket: socket,
-           socket6: socket6,
-           port: assigned_port,
-           tcp_sup: tcp_sup,
-           sub_check_interval: sub_check_interval,
-           mdns: Keyword.get(opts, :mdns),
-           commissioning_service: Keyword.get(opts, :commissioning_service),
-           commissioning_instance: Keyword.get(opts, :commissioning_instance)
-         }}
+        state =
+          %State{
+            handler: handler,
+            socket: socket,
+            socket6: socket6,
+            port: assigned_port,
+            tcp_sup: tcp_sup,
+            storage: storage,
+            sub_check_interval: sub_check_interval,
+            mdns: Keyword.get(opts, :mdns),
+            commissioning_service: Keyword.get(opts, :commissioning_service),
+            commissioning_instance: Keyword.get(opts, :commissioning_instance)
+          }
+
+        # Bring back any persisted fabrics: enable CASE + operational discovery.
+        {:ok, restore_from_storage(state)}
 
       {:error, reason} ->
         Logger.error("Failed to open UDP port #{udp_port}: #{inspect(reason)}")
@@ -211,6 +254,25 @@ defmodule MatterEx.Node do
   @impl true
   def handle_call(:get_port, _from, state) do
     {:reply, state.port, state}
+  end
+
+  def handle_call(:factory_reset, _from, state) do
+    Logger.info("Factory reset: removing all fabrics and returning to commissioning")
+
+    # Forget fabrics (agent), reset the fabric-scoped clusters to defaults, and
+    # wipe persistent storage. Cluster resets go through {:restore_state, …},
+    # which does not publish a change, so this does not re-trigger persistence.
+    Commissioning.reset()
+    FabricStore.clear(state.handler.device, state.storage)
+
+    # Drop all CASE sessions/subscriptions and their transports.
+    handler = MessageHandler.reset_operational(state.handler)
+    state = %{state | handler: handler, session_transports: %{}}
+
+    # Re-advertise commissioning now (rather than waiting for the next poll).
+    state = maybe_transition_to_commissioning(state)
+
+    {:reply, :ok, state}
   end
 
   # ── UDP messages ────────────────────────────────────────────────
@@ -409,6 +471,7 @@ defmodule MatterEx.Node do
     {actions, handler} = MessageHandler.report_targets(state.handler, targets)
     state = %{state | handler: handler}
     state = process_subscription_actions(actions, state)
+    maybe_persist_fabrics(state, targets)
     {:noreply, state}
   end
 
@@ -748,6 +811,56 @@ defmodule MatterEx.Node do
     end
   end
 
+  # ── Private: Fabric persistence ────────────────────────────
+
+  defp restore_from_storage(%State{storage: nil} = state), do: state
+
+  defp restore_from_storage(%State{storage: storage, handler: handler} = state) do
+    case FabricStore.load(handler.device, storage) do
+      [] ->
+        state
+
+      loaded ->
+        handler =
+          Enum.reduce(loaded, handler, fn creds, h ->
+            MessageHandler.update_case(h, Keyword.new(creds))
+          end)
+
+        handler = maybe_update_group_keys(handler)
+        state = %{state | handler: handler}
+        state = Enum.reduce(loaded, state, fn creds, s -> transition_mdns(s, creds) end)
+
+        Logger.info("Restored #{length(loaded)} fabric(s) from storage — CASE enabled")
+        state
+    end
+  end
+
+  # Re-persist when a fabric-scoped cluster changes (AddNOC/ACL write/group key
+  # write/RemoveFabric all land here via the reporting bus). Idempotent.
+  # Incremental path: a fabric-scoped cluster changed (an ACL or group write
+  # after commissioning). Durability does not rest on this — see the
+  # commissioning-complete persist in maybe_update_case/2 — but it keeps later
+  # edits current without waiting for another commissioning event.
+  defp maybe_persist_fabrics(%State{storage: nil}, _targets), do: :ok
+
+  defp maybe_persist_fabrics(%State{storage: storage, handler: handler}, targets) do
+    if Enum.any?(targets, fn {ep, cl} -> ep == 0 and cl in @fabric_scoped_clusters end) do
+      persist_fabrics(%State{storage: storage}, handler.device)
+    end
+
+    :ok
+  end
+
+  defp persist_fabrics(%State{storage: nil}, _device), do: :ok
+  defp persist_fabrics(_state, nil), do: :ok
+
+  defp persist_fabrics(%State{storage: storage}, device) do
+    # persist/3 logs its own failures; the node carries on either way, since a
+    # storage problem must not stop it serving the controller in front of it.
+    _ = FabricStore.persist(device, storage)
+    :ok
+  end
+
   # ── Private: Group key update ──────────────────────────────
 
   defp maybe_update_group_keys(handler) do
@@ -790,6 +903,13 @@ defmodule MatterEx.Node do
           end
 
           state = transition_mdns(state, creds)
+
+          # Persist here, not only from the reporting bus. This is the moment
+          # operational key material first exists, and it is reached on the
+          # message path — so it does not depend on the push-reporting Registry
+          # having been registered with, which retries with backoff and may not
+          # have succeeded yet on a slow boot.
+          persist_fabrics(state, handler.device)
 
           {handler, state}
         else

@@ -1119,6 +1119,43 @@ defmodule MatterEx.MessageHandlerTest do
       assert entry.session.local_session_id == 1
       assert entry.session.peer_session_id == 2
     end
+
+    test "reset_operational drops CASE, sessions, and group keys but keeps PASE" do
+      handler = new_handler(device: TestLight)
+      {_comm_session, handler} = run_pase_handshake(handler)
+
+      {pub, priv} = MatterEx.Crypto.Certificate.generate_keypair()
+      noc = MatterEx.CASE.Messages.encode_noc(1, 1, pub)
+
+      handler =
+        MessageHandler.update_case(handler,
+          noc: noc,
+          private_key: priv,
+          ipk: :crypto.strong_rand_bytes(16),
+          node_id: 1,
+          fabric_id: 1,
+          fabric_index: 1
+        )
+
+      handler =
+        MessageHandler.update_group_keys(handler, [
+          %{group_id: 1, session_id: 0xFF01, encrypt_key: :crypto.strong_rand_bytes(16)}
+        ])
+
+      assert map_size(handler.sessions) > 0
+      assert map_size(handler.case_states) > 0
+      assert map_size(handler.group_keys) > 0
+
+      reset = MessageHandler.reset_operational(handler)
+
+      assert reset.case_states == %{}
+      assert reset.sessions == %{}
+      assert reset.group_keys == %{}
+      # PASE responder + device preserved so the node can be re-commissioned.
+      assert reset.pase == handler.pase
+      assert reset.device == TestLight
+      assert reset.max_interval_cap == handler.max_interval_cap
+    end
   end
 
   # ── MRP timer handling ─────────────────────────────────────────
