@@ -326,17 +326,10 @@ defmodule MatterEx.CASE.Messages do
   defp normalize_cats(value) when is_integer(value), do: [value]
   defp normalize_cats(_), do: []
 
+  # A byte-aligned bitstring is already a binary, so it is handled by the
+  # is_binary/1 clause above. Any non-byte-aligned bitstring (or other value)
+  # cannot be normalized to a binary and falls through to nil.
   defp normalize_bitstring(bin) when is_binary(bin), do: bin
-
-  defp normalize_bitstring(bits) when is_bitstring(bits) do
-    size = bit_size(bits)
-
-    if rem(size, 8) == 0 do
-      bytes = div(size, 8)
-      <<bin::binary-size(bytes)>> = bits
-      bin
-    end
-  end
 
   defp normalize_bitstring(_), do: nil
 
@@ -484,7 +477,7 @@ defmodule MatterEx.CASE.Messages do
   def decrypt_tbe(which, key, data) when byte_size(data) > 16 do
     nonce = tbe_nonce(which)
     ct_len = byte_size(data) - 16
-    <<ciphertext::binary-size(ct_len), tag::binary-16>> = data
+    <<ciphertext::binary-size(^ct_len), tag::binary-16>> = data
     Session.decrypt(ciphertext, tag, key, nonce)
   end
 
