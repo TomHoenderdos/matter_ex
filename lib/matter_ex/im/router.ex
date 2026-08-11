@@ -187,12 +187,28 @@ defmodule MatterEx.IM.Router do
 
             case check_acl(device, context, privilege, target) do
               :allow ->
-                value =
-                  maybe_merge_fabric_scoped(gen_name, attr_name, write.value, attr_def, context)
-
-                case GenServer.call(gen_name, {:write_attribute, attr_name, value}) do
+                case validate_fabric_scoped_entries(write.value, attr_def) do
                   :ok ->
-                    %{path: write.path, status: Status.status_code(:success), cluster_status: nil}
+                    value =
+                      maybe_merge_fabric_scoped(
+                        gen_name,
+                        attr_name,
+                        write.value,
+                        attr_def,
+                        context
+                      )
+
+                    case GenServer.call(gen_name, {:write_attribute, attr_name, value}) do
+                      :ok ->
+                        %{
+                          path: write.path,
+                          status: Status.status_code(:success),
+                          cluster_status: nil
+                        }
+
+                      {:error, reason} ->
+                        error_status(write.path, reason)
+                    end
 
                   {:error, reason} ->
                     error_status(write.path, reason)
@@ -662,6 +678,27 @@ defmodule MatterEx.IM.Router do
   defp debug_value(value), do: value
 
   # ── Fabric-scoped attribute helpers ──────────────────────────────
+
+  # Reject a fabric-scoped list whose entries aren't maps before it reaches the
+  # cluster. Every consumer of these lists (ACL evaluation, fabric-index
+  # extraction, the persistence snapshot) assumes maps, and a stored non-map
+  # entry is durable: it is written back out by FabricStore and reloaded on
+  # boot. CONSTRAINT_ERROR is the honest answer — the write did not happen —
+  # where accepting it would report success for state nothing can use.
+  defp validate_fabric_scoped_entries(value, %{fabric_scoped: true}) when is_list(value) do
+    if Enum.all?(value, &is_map/1) do
+      :ok
+    else
+      Logger.warning(
+        "Rejecting fabric-scoped write: #{Enum.count(value, &(not is_map(&1)))} of " <>
+          "#{length(value)} entries are not maps"
+      )
+
+      {:error, :constraint_error}
+    end
+  end
+
+  defp validate_fabric_scoped_entries(_value, _attr_def), do: :ok
 
   # Filter a fabric-scoped list to only entries matching the requester's fabric
   defp maybe_filter_fabric_scoped(value, %{fabric_scoped: true}, %{fabric_index: fi})

@@ -180,6 +180,34 @@ defmodule MatterEx.IM.RouterTest do
       assert hd(fabric2).subjects == [200]
     end
 
+    test "writing non-map fabric-scoped entries is rejected, not stored" do
+      acl_name = FabricDevice.__process_name__(0, :access_control)
+
+      existing = %{privilege: 5, auth_mode: 2, subjects: [100], targets: nil, fabric_index: 1}
+      GenServer.call(acl_name, {:write_attribute, :acl, [existing]})
+
+      context = %{auth_mode: :case, subject: 100, fabric_index: 1}
+
+      write_req = %IM.WriteRequest{
+        write_requests: [
+          %{
+            path: %{endpoint: 0, cluster: 0x001F, attribute: 0},
+            value: [%{privilege: 3, auth_mode: 2, subjects: [100], fabric_index: 1}, :garbage]
+          }
+        ]
+      }
+
+      resp = Router.handle(FabricDevice, :write_request, write_req, context)
+
+      assert [%{status: status}] = resp.write_responses
+      assert status == MatterEx.IM.Status.status_code(:constraint_error)
+
+      # Nothing was stored — including the well-formed entry in the same write.
+      # A non-map entry here is durable: FabricStore writes it back out and
+      # reloads it on boot, where every consumer assumes maps.
+      assert {:ok, [^existing]} = GenServer.call(acl_name, {:read_attribute, :acl})
+    end
+
     test "writing ACL stamps missing fabric index on new entries" do
       acl_name = FabricDevice.__process_name__(0, :access_control)
 

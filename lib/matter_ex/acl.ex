@@ -53,7 +53,8 @@ defmodule MatterEx.ACL do
     required_level = Map.fetch!(@privilege_levels, required_privilege)
 
     if Enum.any?(acl_entries, fn entry ->
-         matches_fabric?(entry, context) &&
+         evaluable?(entry) &&
+           matches_fabric?(entry, context) &&
            matches_auth_mode?(entry, context) &&
            matches_subject?(entry, context) &&
            matches_target?(entry, target) &&
@@ -85,6 +86,20 @@ defmodule MatterEx.ACL do
   # ── Private matching helpers ──────────────────────────────────────
   # ACL entries may use atom keys (internal) or integer keys with tagged
   # values (TLV format: 1=privilege, 2=authMode, 3=subjects, 4=targets, 254=fabricIndex).
+
+  # An entry that isn't a map can't be evaluated, and every matcher below calls
+  # Map.get/2 on it. Skipping is fail-closed: it grants nothing.
+  #
+  # It has to happen per entry, before any matcher runs. Entries are read
+  # unfiltered across all fabrics and any raise here happens before
+  # matches_fabric?/2 can reject the entry, so one fabric's malformed entry
+  # would take down access control for every fabric on the node — and since the
+  # ACL is persisted, it would survive the reboot too.
+  #
+  # Writes of non-map entries are rejected in MatterEx.IM.Router, so this only
+  # catches state persisted before that check existed. Deliberately silent: it
+  # sits on the path of every IM operation, and a warning here would flood.
+  defp evaluable?(entry), do: is_map(entry)
 
   defp matches_fabric?(entry, context),
     do: get_field(entry, :fabric_index, 254) == context.fabric_index
