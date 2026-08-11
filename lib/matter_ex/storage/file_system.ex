@@ -56,9 +56,15 @@ defmodule MatterEx.Storage.FileSystem do
   end
 
   defp write_private(path, value) do
+    # :file.sync/1 before the close, not just the close. File.close/1 flushes to
+    # the OS; it does not fsync. Without this the rename can be visible while the
+    # data blocks are still dirty page cache, so a power cut leaves the directory
+    # entry pointing at a zero-length blob — the same lost commissioning the
+    # rename was added to prevent, through a narrower window.
     with {:ok, file} <- File.open(path, [:write, :binary]),
          :ok <- File.chmod(path, 0o600),
          :ok <- IO.binwrite(file, value),
+         :ok <- :file.sync(file),
          :ok <- File.close(file) do
       :ok
     else
