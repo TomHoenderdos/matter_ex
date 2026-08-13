@@ -860,11 +860,11 @@ defmodule MatterEx.MessageHandler do
   Release subscription reports the subscriber has acknowledged, sending any change
   that was suppressed while they were outstanding.
 
-  The completion event is the **MRP acknowledgement**, not a Status Response:
-  ongoing reports are built with `suppress_response: true`, which tells the
-  subscriber not to send one. (The priming report uses `suppress_response: false`
-  — if that inconsistency is ever resolved the completion event becomes a Status
-  Response carrying the ack, which lands here just the same.)
+  The completion event is the **MRP acknowledgement**, not a Status Response: an
+  unchunked ongoing report is built with `suppress_response: true`, which tells
+  the subscriber not to send one. (The priming report, and every chunk of a
+  chunked report, use `suppress_response: false` — the ack then arrives carried
+  on a Status Response, which lands here just the same.)
 
   Also the only place `exchange_to_sub` is pruned on the success path: before
   this it was popped solely on MRP give-up, so an entry accumulated for every
@@ -1388,8 +1388,8 @@ defmodule MatterEx.MessageHandler do
   end
 
   defp send_subscription_report(state, session_id, entry, sub_id, report, versions, now) do
-    report_data = %{report.data | attribute_reports: report.changed}
-    payload = IM.encode(report_data)
+    [first_chunk | rest] = chunks = chunk_ongoing_report(report.data, report.changed)
+    payload = IM.encode(first_chunk)
     im_protocol_id = ProtocolID.protocol_id(:interaction_model)
 
     # Relies on ExchangeManager.initiate/5 defaulting to reliable: true. The
@@ -1409,11 +1409,16 @@ defmodule MatterEx.MessageHandler do
       message_counter: message_counter,
       attribute_count: length(report.changed),
       payload_size: byte_size(payload),
+      chunk_count: length(chunks),
       paths: summarize_report_paths(report.changed),
       needs_ack: proto.needs_ack
     })
 
-    mgr = maybe_record_mrp_send(mgr, proto, frame, message_counter)
+    mgr =
+      mgr
+      |> maybe_record_mrp_send(proto, frame, message_counter)
+      |> ExchangeManager.queue_chunks(proto.exchange_id, rest)
+
     exchange_to_sub = entry |> Map.get(:exchange_to_sub, %{}) |> Map.put(message_counter, sub_id)
 
     sub_mgr =
@@ -1440,6 +1445,25 @@ defmodule MatterEx.MessageHandler do
       end)
 
     {send_actions ++ schedule_actions, %{state | sessions: sessions}}
+  end
+
+  # An ongoing report can exceed the UDP payload limit on its own: adding a
+  # fabric rewrites nocs, fabrics and trusted_root_certificates together, which
+  # is over 1 KB for a single fabric and grows with each one. Sent whole that is
+  # a datagram the subscriber never receives — and since the in-flight guard is
+  # released by the acknowledgement, the subscription then goes quiet until MRP
+  # gives up on it.
+  #
+  # `suppress_response` is forced off across a chunked sequence. Ongoing reports
+  # normally set it, but chunks are pulled by the subscriber's StatusResponse:
+  # suppressed, the report stops after chunk 1 and the guard — held for as long
+  # as the exchange has chunks pending — is never released. The last chunk needs
+  # it off too, since its StatusResponse is what closes the exchange out.
+  defp chunk_ongoing_report(report_data, changed) do
+    case ExchangeManager.chunk_report(%{report_data | attribute_reports: changed}) do
+      [single] -> [single]
+      chunks -> Enum.map(chunks, &%{&1 | suppress_response: false})
+    end
   end
 
   defp maybe_record_mrp_send(mgr, %{needs_ack: false}, _frame, _message_counter), do: mgr

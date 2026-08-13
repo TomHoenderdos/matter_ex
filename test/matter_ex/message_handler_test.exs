@@ -270,6 +270,160 @@ defmodule MatterEx.MessageHandlerTest do
 
   # ── Report serialization ────────────────────────────────────────
 
+  # Enough attribute payload in one cluster to push a report past the datagram
+  # limit across *several* attributes. In the field that shape comes from
+  # OperationalCredentials: adding a fabric rewrites nocs, fabrics and
+  # trusted_root_certificates together, which measures over 1 KB for one fabric
+  # and grows with each. Reproducing it through a real commissioning flow would
+  # need a CASE session, since two of those three are fabric-scoped.
+  defmodule BulkCluster do
+    use MatterEx.Cluster, id: 0xFFF1_0001, name: :bulk
+
+    attribute(0x0000, :blob_a, :string, default: "", writable: true)
+    attribute(0x0001, :blob_b, :string, default: "", writable: true)
+    attribute(0x0002, :blob_c, :string, default: "", writable: true)
+  end
+
+  defmodule BulkDevice do
+    use MatterEx.Device,
+      vendor_name: "TestCo",
+      product_name: "Bulk",
+      vendor_id: 0xFFF1,
+      product_id: 0x8001
+
+    endpoint 1, device_type: 0x0100 do
+      cluster(MatterEx.MessageHandlerTest.BulkCluster)
+    end
+  end
+
+  describe "chunking an ongoing subscription report" do
+    setup do
+      start_supervised!(BulkDevice)
+
+      handler = new_handler(device: BulkDevice)
+      {comm_session, handler} = run_pase_handshake(handler)
+      %{handler: handler, comm_session: comm_session}
+    end
+
+    test "an ongoing report too large for one datagram is chunked", %{
+      handler: handler,
+      comm_session: comm_session
+    } do
+      # A subscription report after the priming one is sent on an exchange the
+      # device opens, and went out whole however big it was. Over the datagram
+      # limit that is a message the subscriber never receives — and since the
+      # in-flight guard is released by the acknowledgement, the subscription then
+      # goes quiet until MRP gives up on it.
+      {handler, comm_session} =
+        subscribe(handler, comm_session, [%{endpoint: 1, cluster: 0xFFF1_0001}])
+
+      bulk = BulkDevice.__process_name__(1, :bulk)
+
+      for attr <- [:blob_a, :blob_b, :blob_c] do
+        :ok = GenServer.call(bulk, {:write_attribute, attr, String.duplicate("x", 500)})
+      end
+
+      {actions, handler} = MessageHandler.report_targets(handler, [{1, 0xFFF1_0001}])
+
+      assert [{:send, _session_id, frame}] = Enum.filter(actions, &match?({:send, _, _}, &1))
+      {:ok, chunk1, comm_session} = SecureChannel.open(comm_session, frame)
+      {:ok, report1} = IM.decode(:report_data, chunk1.proto.payload)
+
+      assert report1.more_chunked_messages,
+             "an ongoing report of #{byte_size(chunk1.proto.payload)}B went out unchunked"
+
+      refute report1.suppress_response,
+             "a suppressed chunk is never answered, so the rest of the report never goes out"
+
+      assert MatterEx.IM.SubscriptionManager.in_flight?(handler.sessions[1].subscription_mgr, 1)
+
+      # The subscriber's Status Response pulls the next chunk. It has to go out
+      # as the initiator: the device opened this exchange, unlike the priming
+      # report's.
+      {status_frame, _comm_session} =
+        SecureChannel.seal(comm_session, status_response(chunk1, chunk1.proto.exchange_id))
+
+      {actions, handler} = MessageHandler.handle_frame(handler, status_frame)
+
+      assert [{:send, chunk2_frame} | _] = Enum.filter(actions, &match?({:send, _}, &1))
+      {:ok, chunk2, _} = SecureChannel.open(comm_session, chunk2_frame)
+
+      assert chunk2.proto.initiator,
+             "chunk 2 claims the responder side of an exchange the device initiated; the " <>
+               "subscriber drops it and the report stops here"
+
+      assert chunk2.proto.exchange_id == chunk1.proto.exchange_id
+
+      assert MatterEx.IM.SubscriptionManager.in_flight?(handler.sessions[1].subscription_mgr, 1),
+             "guard released mid-chunk-sequence"
+    end
+
+    test "a report that fits is still sent whole and suppresses the response", %{
+      handler: handler,
+      comm_session: comm_session
+    } do
+      # The chunking path must not change the ordinary case: one message, no
+      # pending chunks, and no Status Response asked for.
+      {handler, comm_session} =
+        subscribe(handler, comm_session, [%{endpoint: 1, cluster: 0xFFF1_0001}])
+
+      bulk = BulkDevice.__process_name__(1, :bulk)
+      :ok = GenServer.call(bulk, {:write_attribute, :blob_a, "small"})
+
+      {actions, handler} = MessageHandler.report_targets(handler, [{1, 0xFFF1_0001}])
+
+      assert [{:send, _session_id, frame}] = Enum.filter(actions, &match?({:send, _, _}, &1))
+      {:ok, msg, _} = SecureChannel.open(comm_session, frame)
+      {:ok, report} = IM.decode(:report_data, msg.proto.payload)
+
+      refute report.more_chunked_messages
+      assert report.suppress_response
+      assert handler.sessions[1].exchange_mgr.pending_chunks == %{}
+    end
+
+    defp status_response(acked_msg, exchange_id) do
+      %ProtoHeader{
+        initiator: false,
+        needs_ack: true,
+        ack_counter: acked_msg.header.message_counter,
+        opcode: ProtocolID.opcode(:interaction_model, :status_response),
+        exchange_id: exchange_id,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: IM.encode(%IM.StatusResponse{status: 0})
+      }
+    end
+
+    # Subscribe and complete the handshake, so what follows is an *ongoing*
+    # report on a settled subscription with the guard clear.
+    defp subscribe(handler, comm_session, paths) do
+      request = %IM.SubscribeRequest{attribute_paths: paths, min_interval: 0, max_interval: 60}
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: IM.encode(request)
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
+      [{:send, priming_frame} | _] = actions
+      {:ok, priming_msg, comm_session} = SecureChannel.open(comm_session, priming_frame)
+
+      {status_frame, comm_session} =
+        SecureChannel.seal(comm_session, status_response(priming_msg, 1))
+
+      {_actions, handler} = MessageHandler.handle_frame(handler, status_frame)
+
+      refute MatterEx.IM.SubscriptionManager.in_flight?(handler.sessions[1].subscription_mgr, 1),
+             "subscribe handshake left a report outstanding"
+
+      {handler, comm_session}
+    end
+  end
+
   describe "report serialization (§8.5)" do
     setup do
       start_supervised!(TestLight)
