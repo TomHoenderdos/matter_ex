@@ -39,6 +39,12 @@ defmodule MatterEx.FabricStoreTest do
     case_admin_subject: 112_233
   }
 
+  @snapshot_modules %{
+    operational_credentials: MatterEx.Cluster.OperationalCredentials,
+    access_control: MatterEx.Cluster.AccessControl,
+    group_key_management: MatterEx.Cluster.GroupKeyManagement
+  }
+
   defp acl_name, do: Device.__process_name__(0, :access_control)
   defp opcreds_name, do: Device.__process_name__(0, :operational_credentials)
   defp gkm_name, do: Device.__process_name__(0, :group_key_management)
@@ -185,6 +191,53 @@ defmodule MatterEx.FabricStoreTest do
     gkm_state = GenServer.call(gkm_name(), :get_state)
     assert gkm_state.group_key_map == []
     assert gkm_state._key_sets == %{}
+  end
+
+  test "every snapshotted field exists on a freshly booted cluster" do
+    # A field named in the snapshot list that the cluster no longer has is
+    # skipped on reset rather than failing, so it would leave fabric state
+    # behind after a factory reset. Catch the drift here instead.
+    for {cluster, keys} <- FabricStore.snapshot_fields() do
+      {:ok, fresh} = @snapshot_modules[cluster].init(endpoint: 0, reporting: nil)
+
+      assert keys -- Map.keys(fresh) == [],
+             "#{cluster} is snapshotted on fields it does not have: " <>
+               inspect(keys -- Map.keys(fresh))
+    end
+  end
+
+  test "clear resets every snapshotted field to the cluster's own boot value", %{
+    backend: backend,
+    comm: comm
+  } do
+    seed_state(comm)
+    assert :ok = FabricStore.clear(Device, backend)
+
+    names = %{
+      operational_credentials: opcreds_name(),
+      access_control: acl_name(),
+      group_key_management: gkm_name()
+    }
+
+    for {cluster, keys} <- FabricStore.snapshot_fields() do
+      {:ok, fresh} = @snapshot_modules[cluster].init(endpoint: 0, reporting: nil)
+      state = GenServer.call(names[cluster], :get_state)
+
+      assert Map.take(state, keys) == Map.take(fresh, keys),
+             "#{cluster} did not come back to its boot values"
+    end
+  end
+
+  test "resetting a field the cluster does not have warns rather than passing quietly" do
+    # The drift the test above guards against, seen from the cluster's side. If
+    # it ever does slip through, a factory reset must not look like it worked.
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert :ok = GenServer.call(acl_name(), {:reset_fields, [:acl, :no_such_field]})
+      end)
+
+    assert log =~ "cannot reset unknown field(s)"
+    assert log =~ ":no_such_field"
   end
 
   test "clear with a nil backend still resets clusters", %{comm: comm} do

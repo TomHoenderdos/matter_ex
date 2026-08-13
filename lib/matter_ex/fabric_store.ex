@@ -63,21 +63,15 @@ defmodule MatterEx.FabricStore do
     group_key_management: [:group_key_map, :group_table, :_key_sets]
   }
 
-  # Values to restore each snapshotted cluster field to on a factory reset —
-  # the cluster's freshly-initialized defaults (attribute defaults plus the
-  # internal fields' init values). Keys mirror @cluster_snapshot.
-  @cluster_defaults %{
-    operational_credentials: %{
-      nocs: [],
-      fabrics: [],
-      trusted_root_certificates: [],
-      commissioned_fabrics: 0,
-      current_fabric_index: 0,
-      _next_fabric_index: 1
-    },
-    access_control: %{acl: [], extension: []},
-    group_key_management: %{group_key_map: [], group_table: [], _key_sets: %{}}
-  }
+  @doc """
+  Which fields of which clusters are snapshotted, and reset on `clear/2`.
+
+  Public so the list can be checked against what the clusters actually have —
+  a field named here that no longer exists is skipped on reset, which would
+  leave live fabric state behind after a factory reset.
+  """
+  @spec snapshot_fields() :: %{atom() => [atom()]}
+  def snapshot_fields, do: @cluster_snapshot
 
   @doc """
   Reconcile all fabric state to `backend`. Idempotent — safe to call after any
@@ -173,10 +167,12 @@ defmodule MatterEx.FabricStore do
   """
   @spec clear(module(), Storage.backend() | nil) :: :ok | {:error, term()}
   def clear(device, backend) do
-    for {cluster, defaults} <- @cluster_defaults do
+    # Reset exactly what gets snapshotted — the cluster supplies the values, so
+    # there is one list of fields here and no second copy of what they reset to.
+    for {cluster, keys} <- @cluster_snapshot do
       case cluster_pid(device, cluster) do
         nil -> :ok
-        name -> GenServer.call(name, {:restore_state, defaults})
+        name -> GenServer.call(name, {:reset_fields, keys})
       end
     end
 
