@@ -12,6 +12,8 @@
 
 ### Changed
 
+- Use Elixir 1.20.4 / OTP 29.1 for development and add it to CI alongside
+  Elixir 1.17 / OTP 27; the minimum supported Elixir version remains 1.17.
 - Subscription polling uses cluster DataVersion to avoid unnecessary reads, and
   idle subscriptions receive keep-alive reports within the negotiated interval.
 - Report data is chunked by encoded size, including ongoing subscription reports.
