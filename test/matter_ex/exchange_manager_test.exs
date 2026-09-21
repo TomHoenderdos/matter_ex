@@ -533,4 +533,96 @@ defmodule MatterEx.ExchangeManagerTest do
       assert mgr.exchanges[1].protocol == :interaction_model
     end
   end
+
+  describe "chunking a report we initiated" do
+    # A subscription report after the priming one is sent with initiate/5, not as
+    # a reply, so its continuation runs on an exchange we own. Everything else
+    # about the sequence is shared with a chunked reply.
+    defp status_response_proto(exchange_id) do
+      %ProtoHeader{
+        initiator: false,
+        needs_ack: true,
+        opcode: MatterEx.Protocol.ProtocolID.opcode(:interaction_model, :status_response),
+        exchange_id: exchange_id,
+        protocol_id: 0x0001,
+        payload: IM.encode(%IM.StatusResponse{status: 0})
+      }
+    end
+
+    defp initiated_report_with_chunks(chunks) do
+      {proto, _actions, mgr} =
+        ExchangeManager.initiate(new_manager(), 0x0001, :report_data, IM.encode(@read_response))
+
+      {proto, ExchangeManager.queue_chunks(mgr, proto.exchange_id, chunks)}
+    end
+
+    test "the continuation keeps the initiator flag of the exchange it belongs to" do
+      # With initiator: false here, the subscriber reads chunk 2 as coming from
+      # the responder side of an exchange that has no responder, and drops it.
+      # The report stops after chunk 1 with no error anywhere.
+      {proto, mgr} = initiated_report_with_chunks([@read_response])
+
+      {actions, _mgr} =
+        ExchangeManager.handle_message(mgr, status_response_proto(proto.exchange_id), 7)
+
+      assert [{:reply, chunk2} | _] = actions
+      assert chunk2.initiator == true
+      assert chunk2.exchange_id == proto.exchange_id
+    end
+
+    test "a chunked reply still goes out as the responder" do
+      # The same continuation code serves replies, and must not flip sides now
+      # that the flag is derived rather than hardcoded.
+      mgr = ExchangeManager.new(handler: fn :read_request, _req -> oversized_report() end)
+
+      {[{:reply, chunk1} | _], mgr} =
+        ExchangeManager.handle_message(mgr, read_request_proto(3), 1)
+
+      assert chunk1.initiator == false
+      assert Map.has_key?(mgr.pending_chunks, 3), "expected the reply to chunk"
+
+      {actions, _mgr} = ExchangeManager.handle_message(mgr, status_response_proto(3), 8)
+
+      assert [{:reply, chunk2} | _] = actions
+      assert chunk2.initiator == false
+    end
+
+    test "queue_chunks with nothing to queue leaves the exchange unchunked" do
+      # Callers read pending_chunks to tell a report still going out from a
+      # finished one, so an unchunked report must not register an empty entry.
+      {proto, _actions, mgr} =
+        ExchangeManager.initiate(new_manager(), 0x0001, :report_data, IM.encode(@read_response))
+
+      mgr = ExchangeManager.queue_chunks(mgr, proto.exchange_id, [])
+
+      refute Map.has_key?(mgr.pending_chunks, proto.exchange_id)
+    end
+
+    defp oversized_report do
+      %IM.ReportData{
+        attribute_reports:
+          for i <- 1..40 do
+            {:data,
+             %{
+               version: 0,
+               path: %{endpoint: 1, cluster: 6, attribute: i},
+               value: {:bytes, :binary.copy(<<0xAB>>, 100)}
+             }}
+          end
+      }
+    end
+
+    test "chunk_report splits only what does not fit" do
+      assert [@read_response] == ExchangeManager.chunk_report(@read_response)
+
+      big = oversized_report()
+      chunks = ExchangeManager.chunk_report(big)
+
+      assert length(chunks) > 1
+      assert Enum.all?(Enum.drop(chunks, -1), & &1.more_chunked_messages)
+      refute List.last(chunks).more_chunked_messages
+
+      assert Enum.flat_map(chunks, & &1.attribute_reports) == big.attribute_reports
+    end
+  end
 end

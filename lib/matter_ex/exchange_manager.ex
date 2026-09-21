@@ -202,6 +202,35 @@ defmodule MatterEx.ExchangeManager do
     {proto, actions, state}
   end
 
+  @doc """
+  Split `report` into messages that each fit the UDP payload limit, or return it
+  alone if it already does.
+
+  Public because a ReportData is not always a reply: subscription reports after
+  the priming one are sent with `initiate/5`, and have to be measured against
+  the same limit by the same packing rule. Pair with `queue_chunks/3`.
+  """
+  @spec chunk_report(%IM.ReportData{}) :: [%IM.ReportData{}]
+  def chunk_report(%IM.ReportData{} = report), do: maybe_chunk_report(report, :report_data)
+
+  @doc """
+  Hand over the chunks after the first of a report already sent on `exchange_id`.
+
+  From here the sequence runs exactly as it does for a chunked reply: each
+  StatusResponse the subscriber sends pulls the next chunk out through
+  `handle_message/3`, and the exchange stays open until the last one is
+  acknowledged.
+
+  Queueing nothing is a no-op — an unchunked report must leave `pending_chunks`
+  clear, since callers read it to tell a finished report from one still going
+  out.
+  """
+  @spec queue_chunks(t(), non_neg_integer(), [struct()]) :: t()
+  def queue_chunks(%__MODULE__{} = state, _exchange_id, []), do: state
+
+  def queue_chunks(%__MODULE__{} = state, exchange_id, [_ | _] = chunks),
+    do: %{state | pending_chunks: Map.put(state.pending_chunks, exchange_id, chunks)}
+
   # ── Private: IM handling ──────────────────────────────────────────
 
   defp handle_im_message(state, proto, opcode, message_counter) do
@@ -518,7 +547,7 @@ defmodule MatterEx.ExchangeManager do
     resp_opcode_num = ProtocolID.opcode(:interaction_model, :report_data)
 
     reply_proto = %ProtoHeader{
-      initiator: false,
+      initiator: initiator?(state, proto.exchange_id),
       needs_ack: true,
       ack_counter: if(proto.needs_ack, do: message_counter, else: nil),
       opcode: resp_opcode_num,
@@ -540,6 +569,15 @@ defmodule MatterEx.ExchangeManager do
 
     {[{:reply, reply_proto}, {:schedule_mrp, proto.exchange_id, 0, timeout}], state}
   end
+
+  # Chunk 1 either went out as a reply on an exchange the peer opened, or as a
+  # report we initiated ourselves. The continuation has to carry the same I
+  # flag: with `initiator: false` on an exchange we opened, the subscriber reads
+  # chunk 2 as a message from the responder side of an exchange that has no
+  # responder, and drops it — the report stops after one chunk, with the
+  # in-flight guard held until MRP gives up.
+  defp initiator?(state, exchange_id),
+    do: match?(%{role: :initiator}, Map.get(state.exchanges, exchange_id))
 
   # ── Private: Subscribe completion (phase 2) ────────────────────────
 
