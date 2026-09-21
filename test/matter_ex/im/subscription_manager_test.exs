@@ -195,6 +195,44 @@ defmodule MatterEx.IM.SubscriptionManagerTest do
     end
   end
 
+  describe "release_in_flight/2" do
+    test "clears the guard" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
+
+      mgr = SubscriptionManager.mark_in_flight(mgr, sub_id)
+      assert SubscriptionManager.in_flight?(mgr, sub_id)
+
+      mgr = SubscriptionManager.release_in_flight(mgr, sub_id)
+      refute SubscriptionManager.in_flight?(mgr, sub_id)
+    end
+
+    test "leaves a suppressed change owed, unlike complete_report/2" do
+      mgr = SubscriptionManager.new()
+      {sub_id, mgr} = SubscriptionManager.subscribe(mgr, @paths, 0, 60)
+
+      mgr =
+        mgr
+        |> SubscriptionManager.mark_in_flight(sub_id)
+        |> SubscriptionManager.mark_dirty(sub_id)
+
+      # complete_report/2 consumes dirty: the caller is told the report is owed
+      # and is expected to send it now.
+      assert {:owed, _} = SubscriptionManager.complete_report(mgr, sub_id)
+
+      # release_in_flight/2 has no such caller — the guard is being dropped
+      # because nothing will ever acknowledge it, so the change has to stay owed
+      # rather than be silently swallowed.
+      released = SubscriptionManager.release_in_flight(mgr, sub_id)
+      assert {:owed, _} = SubscriptionManager.complete_report(released, sub_id)
+    end
+
+    test "releasing a non-existent ID is a no-op" do
+      mgr = SubscriptionManager.new()
+      assert SubscriptionManager.release_in_flight(mgr, 999) == mgr
+    end
+  end
+
   describe "throttled?/3" do
     test "returns false when min_interval is 0" do
       mgr = SubscriptionManager.new()
