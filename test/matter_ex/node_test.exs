@@ -50,6 +50,13 @@ defmodule MatterEx.NodeTest do
   setup do
     start_supervised!(TestLight)
 
+    # A free UDP port may still be occupied by TCP (including TIME_WAIT).
+    # Reserve a TCP port until the node owns the matching UDP port; its
+    # acceptor retries once we release the reservation.
+    {:ok, reservation} = :gen_tcp.listen(0, [:binary, active: false])
+    {:ok, {_address, reserved_port}} = :inet.sockname(reservation)
+    on_exit(fn -> :gen_tcp.close(reservation) end)
+
     # Push-based reporting is primary; a long poll interval keeps tests
     # deterministic (a report arriving fast can only have come from the push).
     node =
@@ -59,11 +66,14 @@ defmodule MatterEx.NodeTest do
         passcode: @passcode,
         salt: @salt,
         iterations: @iterations,
-        port: 0,
+        port: reserved_port,
         sub_check_interval: 60_000
       })
 
     port = MatterEx.Node.port(node)
+    :gen_tcp.close(reservation)
+    assert eventually(fn -> tcp_ready?(port) end, 3_000)
+
     {:ok, client} = :gen_udp.open(0, [:binary, {:active, true}])
 
     on_exit(fn -> :gen_udp.close(client) end)
@@ -248,6 +258,13 @@ defmodule MatterEx.NodeTest do
   defp tcp_connect(port) do
     {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, {:active, true}])
     socket
+  end
+
+  defp tcp_ready?(port) do
+    case :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false], 100) do
+      {:ok, socket} -> :gen_tcp.close(socket) == :ok
+      {:error, _} -> false
+    end
   end
 
   # The acceptor is the sole child of the node's linked TCP supervisor.
@@ -1093,12 +1110,8 @@ defmodule MatterEx.NodeTest do
       # silently lose the transport.
       assert eventually(fn -> tcp_acceptor(node) not in [nil, acceptor] end)
 
-      assert eventually(fn ->
-               case :gen_tcp.connect(~c"127.0.0.1", port, [:binary], 100) do
-                 {:ok, socket} -> :gen_tcp.close(socket) == :ok
-                 {:error, _} -> false
-               end
-             end)
+      # Allow the old socket's accept timeout and the replacement's bind backoff.
+      assert eventually(fn -> tcp_ready?(port) end, 3_000)
     end
 
     test "a peer that vanishes before it is registered does not crash the node", %{node: node} do
