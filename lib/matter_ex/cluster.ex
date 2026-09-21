@@ -95,6 +95,56 @@ defmodule MatterEx.Cluster do
   end
 
   @doc false
+  # The state a cluster boots with: every attribute at its declared default
+  # (unless overridden in `opts`), plus runtime identity and the pub/sub bus for
+  # push-based reporting (see notify_changed/1).
+  #
+  # Clusters override init/1 to add their own internal fields on top of this, so
+  # this is the one definition of what "fresh" means — see apply_defaults/4.
+  def initial_state(attribute_defs, cluster_id, opts) do
+    attribute_defs
+    |> Enum.reduce(%{__data_version__: 0}, fn attr, acc ->
+      Map.put(acc, attr.name, Keyword.get(opts, attr.name, attr.default))
+    end)
+    |> Map.put(:__endpoint__, opts[:endpoint])
+    |> Map.put(:__cluster_id__, cluster_id)
+    |> Map.put(:__reporting__, opts[:reporting])
+  end
+
+  @doc false
+  # Merge the named fields of a freshly-initialised state back over the live one,
+  # for {:reset_fields, names} — factory reset. The values come from the
+  # cluster's own init/1, which clusters override to add internal fields
+  # (`_key_sets`, `_next_fabric_index`), so a newly added attribute is covered
+  # the day it is added; a table of defaults kept alongside would only be right
+  # until someone forgot it. Lives here rather than in the generated code to keep
+  # the quote block short.
+  #
+  # Deliberately no DataVersion bump and no notify_changed/1, matching
+  # {:restore_state, ...}: the caller is factory-resetting, which drops every
+  # session and subscription anyway, and publishing here would re-persist the
+  # state it is about to wipe.
+  def apply_defaults(module, state, defaults, names) do
+    case names -- Map.keys(defaults) do
+      [] ->
+        :ok
+
+      missing ->
+        # Asked to reset something this cluster does not have. Skipping in
+        # silence would leave live fabric state behind on a factory reset,
+        # which is exactly what must not happen quietly.
+        require Logger
+
+        Logger.warning(
+          "#{inspect(module)}: cannot reset unknown field(s) #{inspect(missing)}; " <>
+            "they will keep their current values"
+        )
+    end
+
+    Map.merge(state, Map.take(defaults, names))
+  end
+
+  @doc false
   # Publish an attribute-changed event on the device's reporting bus so the node
   # can report it immediately (push-based reporting). No-op when the cluster was
   # started without a `:reporting` registry (e.g. standalone in a unit test).
@@ -363,20 +413,7 @@ defmodule MatterEx.Cluster do
 
       @impl true
       def init(opts) do
-        state =
-          Enum.reduce(attribute_defs(), %{__data_version__: 0}, fn attr, acc ->
-            value = Keyword.get(opts, attr.name, attr.default)
-            Map.put(acc, attr.name, value)
-          end)
-
-        # Identity + pub/sub bus for push-based reporting (see notify_changed/1).
-        state =
-          state
-          |> Map.put(:__endpoint__, opts[:endpoint])
-          |> Map.put(:__cluster_id__, cluster_id())
-          |> Map.put(:__reporting__, opts[:reporting])
-
-        {:ok, state}
+        {:ok, MatterEx.Cluster.initial_state(attribute_defs(), cluster_id(), opts)}
       end
 
       @impl true
@@ -464,6 +501,12 @@ defmodule MatterEx.Cluster do
       # is loading, not a mutation, so it must not trigger reporting or re-persist.
       def handle_call({:restore_state, partial}, _from, state) when is_map(partial) do
         {:reply, :ok, Map.merge(state, partial)}
+      end
+
+      # Factory reset — see MatterEx.Cluster.apply_defaults/4.
+      def handle_call({:reset_fields, names}, _from, state) when is_list(names) do
+        {:ok, defaults} = init(endpoint: state.__endpoint__, reporting: state.__reporting__)
+        {:reply, :ok, MatterEx.Cluster.apply_defaults(__MODULE__, state, defaults, names)}
       end
 
       defp bump_data_version(state) do
