@@ -174,8 +174,14 @@ defmodule MatterEx.Node do
   Suitable for a hardware reset button. The controller that paired it is not
   notified — it keeps a stale accessory entry until removed on its side, just
   like any Matter device that is locally reset.
+
+  Returns `{:error, reason}` if the persistent storage could not be fully
+  wiped — a read-only or full `/data`, say. The in-memory reset still happened
+  and the node is back in commissioning, but operational key material may
+  remain on disk, so a caller wiping hardware before resale should treat this
+  as a failure rather than assume `:ok`.
   """
-  @spec factory_reset(GenServer.server()) :: :ok
+  @spec factory_reset(GenServer.server()) :: :ok | {:error, term()}
   def factory_reset(server) do
     GenServer.call(server, :factory_reset)
   end
@@ -263,7 +269,12 @@ defmodule MatterEx.Node do
     # wipe persistent storage. Cluster resets go through {:restore_state, …},
     # which does not publish a change, so this does not re-trigger persistence.
     Commissioning.reset()
-    FabricStore.clear(state.handler.device, state.storage)
+
+    # Reported, not discarded. A failed wipe means operational private keys are
+    # still on disk, and "factory reset" is a claim someone acts on when they
+    # resell or redeploy hardware. The live state is still reset either way —
+    # the device must not be left half-commissioned because storage failed.
+    wipe = FabricStore.clear(state.handler.device, state.storage)
 
     # Drop all CASE sessions/subscriptions and their transports.
     handler = MessageHandler.reset_operational(state.handler)
@@ -272,7 +283,7 @@ defmodule MatterEx.Node do
     # Re-advertise commissioning now (rather than waiting for the next poll).
     state = maybe_transition_to_commissioning(state)
 
-    {:reply, :ok, state}
+    {:reply, wipe, state}
   end
 
   # ── UDP messages ────────────────────────────────────────────────
