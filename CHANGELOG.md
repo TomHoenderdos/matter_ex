@@ -23,6 +23,8 @@
 
 ### Fixed
 
+- Retry occupied TCP listen ports after acceptor crashes instead of permanently
+  disabling TCP while the previous socket is still closing.
 - Serialize subscription reports across priming reports and chunk continuations;
   release in-flight guards correctly and clean up report tracking.
 - Reject malformed fabric-scoped writes and skip malformed ACL entries during

@@ -14,10 +14,9 @@ defmodule MatterEx.Node.TCPAcceptor do
   does mean "an acceptor crash never touches the node" holds for isolated
   failures, not for a sustained one.
 
-  Matter TCP is optional. If the listen socket can't be opened the acceptor
-  declines to start (`:ignore`) and the node continues on UDP only. Note this is
-  permanent for the life of the node: a transient bind failure at boot leaves TCP
-  off until restart.
+  Matter TCP is optional. An occupied listen port is retried with backoff, since
+  a crashed acceptor's socket may still be closing when its replacement starts.
+  Other listen errors disable TCP and the node continues on UDP only.
 
   ## Options
 
@@ -42,10 +41,27 @@ defmodule MatterEx.Node.TCPAcceptor do
     port = Keyword.fetch!(opts, :port)
     node = Keyword.fetch!(opts, :node)
 
+    start_listening(port, node, 25)
+  end
+
+  @impl true
+  def handle_info(:retry_listen, %{port: port, node: node, retry_delay: delay} = state) do
+    case start_listening(port, node, delay) do
+      {:ok, listening, continuation} -> {:noreply, listening, continuation}
+      {:ok, waiting} -> {:noreply, waiting}
+      :ignore -> {:noreply, state}
+    end
+  end
+
+  defp start_listening(port, node, delay) do
     case :gen_tcp.listen(port, [:binary, {:active, false}, {:reuseaddr, true}, {:backlog, 8}]) do
       {:ok, listen} ->
         Logger.info("Matter node TCP listener on port #{port}")
         {:ok, %{listen: listen, node: node}, {:continue, :accept}}
+
+      {:error, :eaddrinuse} ->
+        Process.send_after(self(), :retry_listen, delay)
+        {:ok, %{port: port, node: node, retry_delay: min(delay * 2, 1_000)}}
 
       {:error, reason} ->
         Logger.warning("Failed to start TCP listener on port #{port}: #{inspect(reason)}")
