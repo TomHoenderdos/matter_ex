@@ -33,7 +33,7 @@ Add MatterEx to your dependencies:
 ```elixir
 def deps do
   [
-    {:matter_ex, "~> 0.4.0"}
+    {:matter_ex, "~> 0.5.0"}
   ]
 end
 ```
