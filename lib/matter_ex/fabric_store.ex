@@ -171,7 +171,7 @@ defmodule MatterEx.FabricStore do
   in which case only the clusters are reset. The commissioning agent and the
   message handler's session state are reset separately by the caller.
   """
-  @spec clear(module(), Storage.backend() | nil) :: :ok
+  @spec clear(module(), Storage.backend() | nil) :: :ok | {:error, term()}
   def clear(device, backend) do
     for {cluster, defaults} <- @cluster_defaults do
       case cluster_pid(device, cluster) do

@@ -139,6 +139,37 @@ defmodule MatterEx.ACLTest do
 
   # ── Privilege helpers ───────────────────────────────────────
 
+  describe "malformed entries" do
+    # Entries are read unfiltered across all fabrics, so a raise while
+    # evaluating one lands before matches_fabric?/2 can reject it.
+    @malformed [[1, 2, 3], :bogus, {:array, []}, "str", nil, 7]
+
+    test "a non-map entry is skipped rather than raising" do
+      for bad <- @malformed do
+        assert :deny == ACL.check(@case_context, [bad], :view, {1, 0x0006}),
+               "expected #{inspect(bad)} to be skipped, fail-closed"
+      end
+    end
+
+    test "a non-map entry does not suppress a valid entry beside it" do
+      for bad <- @malformed do
+        assert :allow == ACL.check(@case_context, [bad, @admin_entry], :administer, {1, 0x0006})
+        assert :allow == ACL.check(@case_context, [@admin_entry, bad], :administer, {1, 0x0006})
+      end
+    end
+
+    test "one fabric's malformed entry does not break another fabric's access" do
+      fabric_2_admin = %{@admin_entry | fabric_index: 2, subjects: [99]}
+      fabric_2_context = %{auth_mode: :case, subject: 99, fabric_index: 2}
+
+      # Fabric 1 writes garbage; fabric 2 must still be evaluated normally.
+      entries = [:garbage_from_fabric_1, fabric_2_admin]
+
+      assert :allow == ACL.check(fabric_2_context, entries, :administer, {1, 0x0006})
+      assert :deny == ACL.check(@case_context, entries, :view, {1, 0x0006})
+    end
+  end
+
   describe "required_privilege" do
     test "read and subscribe require view" do
       assert :view == ACL.required_privilege(:read_request)

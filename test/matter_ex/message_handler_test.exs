@@ -495,6 +495,42 @@ defmodule MatterEx.MessageHandlerTest do
              "the change held during the priming round trip was never sent"
     end
 
+    test "a guard taken for the priming report is bound to something that can release it", %{
+      handler: handler,
+      comm_session: comm_session
+    } do
+      # mark_in_flight/2 happens during subscribe setup; the only thing that
+      # clears it is an ack matched through exchange_to_sub. If the two ever come
+      # apart the subscription goes silent for its whole life, with no symptom.
+      sub_req =
+        IM.encode(%IM.SubscribeRequest{
+          attribute_paths: [%{endpoint: 1, cluster: 6, attribute: 0}],
+          min_interval: 0,
+          max_interval: 60
+        })
+
+      proto = %ProtoHeader{
+        initiator: true,
+        needs_ack: true,
+        opcode: ProtocolID.opcode(:interaction_model, :subscribe_request),
+        exchange_id: 1,
+        protocol_id: ProtocolID.protocol_id(:interaction_model),
+        payload: sub_req
+      }
+
+      {frame, comm_session} = SecureChannel.seal(comm_session, proto)
+      {actions, handler} = MessageHandler.handle_frame(handler, frame)
+      [{:send, priming_frame} | _] = actions
+      {:ok, priming_msg, _comm_session} = SecureChannel.open(comm_session, priming_frame)
+
+      entry = handler.sessions[1]
+
+      assert MatterEx.IM.SubscriptionManager.in_flight?(entry.subscription_mgr, 1)
+
+      assert entry.exchange_to_sub[priming_msg.header.message_counter] == 1,
+             "the guard is held but no acknowledgement can release it"
+    end
+
     test "a chunked priming report holds the guard past its first chunk", %{
       handler: handler,
       comm_session: comm_session

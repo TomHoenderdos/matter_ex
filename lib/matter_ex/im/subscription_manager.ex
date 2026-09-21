@@ -200,6 +200,20 @@ defmodule MatterEx.IM.SubscriptionManager do
     end
   end
 
+  @doc """
+  Clear the outstanding-report flag for `sub_id` without consuming `dirty`.
+
+  For the case where a report was marked in flight but never bound to anything
+  that could acknowledge it — the report is not coming, so nothing will ever
+  call `complete_report/2` and the guard would stay set for the life of the
+  subscription. `complete_report/2` is the normal path; this exists so releasing
+  a guard that was never really taken does not also swallow a change that was
+  suppressed while it was set.
+  """
+  @spec release_in_flight(t(), non_neg_integer()) :: t()
+  def release_in_flight(%__MODULE__{} = state, sub_id),
+    do: put_sub(state, sub_id, %{in_flight: false})
+
   defp put_sub(%__MODULE__{} = state, sub_id, changes) do
     case Map.get(state.subscriptions, sub_id) do
       nil ->

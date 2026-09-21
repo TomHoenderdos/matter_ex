@@ -34,6 +34,25 @@ defmodule MatterEx.NodePersistenceTest do
 
   @acl_entry %{privilege: 5, auth_mode: 2, subjects: [112_233], targets: nil, fabric_index: 1}
 
+  # A FileSystem backend whose deletes fail, the way a read-only or full /data
+  # does. Everything else passes through so the node commissions normally and
+  # only the wipe fails.
+  defmodule ReadOnlyDelete do
+    @behaviour MatterEx.Storage
+
+    alias MatterEx.Storage.FileSystem
+
+    @impl true
+    defdelegate get(config, key), to: FileSystem
+    @impl true
+    defdelegate put(config, key, value), to: FileSystem
+    @impl true
+    defdelegate keys(config, prefix), to: FileSystem
+
+    @impl true
+    def delete(_config, _key), do: {:error, :erofs}
+  end
+
   setup %{tmp_dir: dir} do
     # Own the singleton commissioning agent for the test so its lifecycle is
     # deterministic; the Node reuses it rather than starting (and linking) its own.
@@ -148,6 +167,28 @@ defmodule MatterEx.NodePersistenceTest do
 
     opcreds = Device.__process_name__(0, :operational_credentials)
     assert {:ok, []} = GenServer.call(opcreds, {:read_attribute, :nocs})
+  end
+
+  test "factory_reset reports a failed wipe instead of claiming success", %{storage: storage} do
+    {_mod, config} = storage
+    failing = {ReadOnlyDelete, config}
+    node = start_node(failing)
+
+    Commissioning.restore_fabric(@fabric)
+    write_acl()
+    wait_until(fn -> match?({:ok, _}, Storage.get(storage, "matter/state")) end)
+    assert Commissioning.commissioned?()
+
+    assert {:error, :erofs} = MatterEx.Node.factory_reset(node)
+
+    # The in-memory reset still happened — a storage failure must not leave the
+    # device half-commissioned and unable to pair again.
+    refute Commissioning.commissioned?()
+    assert {:ok, []} = GenServer.call(acl_name(), {:read_attribute, :acl})
+
+    # And the finding itself: the blob the caller was previously told had been
+    # wiped is still on disk, operational private key included.
+    assert {:ok, _} = Storage.get(storage, "matter/state")
   end
 
   test "factory_reset works without a storage backend", %{storage: _storage} do

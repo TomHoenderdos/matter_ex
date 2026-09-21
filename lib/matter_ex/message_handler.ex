@@ -876,7 +876,7 @@ defmodule MatterEx.MessageHandler do
           {non_neg_integer(), non_neg_integer()} | nil
         ) ::
           {[action()], t()}
-  def complete_acked_reports(%__MODULE__{} = state, session_id, last_reliable \\ nil) do
+  def complete_acked_reports(%__MODULE__{} = state, session_id, last_reliable) do
     case Map.get(state.sessions, session_id) do
       nil ->
         {[], state}
@@ -957,14 +957,39 @@ defmodule MatterEx.MessageHandler do
   # changes, binding positionally would silently attach the guard to the wrong
   # counter — and nothing would release it, leaving the subscription dead with no
   # symptom but silence.
+  # No subscription was primed, so nothing was marked in flight either.
   defp associate_priming_report(entry, nil, _last_reliable, _exchange_id), do: entry
-  defp associate_priming_report(entry, _sub_id, nil, _exchange_id), do: entry
 
   defp associate_priming_report(entry, sub_id, {exchange_id, message_counter}, exchange_id) do
     map_report_counter(entry, message_counter, sub_id)
   end
 
-  defp associate_priming_report(entry, _sub_id, _last_reliable, _exchange_id), do: entry
+  # A subscription was primed and marked in flight, but there is nothing to bind
+  # the guard to: either no reliable send went out with this message, or the last
+  # one belonged to a different exchange. Either way the acknowledgement that
+  # would release the guard is never going to arrive, and every later report for
+  # this subscription is suppressed by in_flight? — for the life of the
+  # subscription, with no symptom but silence.
+  #
+  # No path reaches this today (dispatch_single/dispatch_chunked always reply
+  # with needs_ack, on the subscribe exchange). It is here because the failure is
+  # silent and permanent, which is the worst thing for a guard to be: releasing
+  # risks a duplicate report, keeping it risks a dead subscription.
+  #
+  # release_in_flight/2 rather than complete_report/2 — the guard was never
+  # really taken, so a change suppressed while it was set stays owed.
+  defp associate_priming_report(entry, sub_id, last_reliable, exchange_id) do
+    Logger.warning(
+      "Subscription #{sub_id}: priming report could not be bound to a message counter " <>
+        "(exchange #{exchange_id}, last reliable send #{inspect(last_reliable)}). " <>
+        "Releasing the in-flight guard so the subscription can still report."
+    )
+
+    %{
+      entry
+      | subscription_mgr: SubscriptionManager.release_in_flight(entry.subscription_mgr, sub_id)
+    }
+  end
 
   defp map_report_counter(entry, message_counter, sub_id) do
     exchange_to_sub = entry |> Map.get(:exchange_to_sub, %{}) |> Map.put(message_counter, sub_id)
@@ -1283,7 +1308,7 @@ defmodule MatterEx.MessageHandler do
     # the other reachable, and would leave every future caller to remember.
     #
     # A suppressed report isn't lost — the subscription is marked dirty, and
-    # completing the outstanding one flushes it (complete_acked_reports/2).
+    # completing the outstanding one flushes it (complete_acked_reports/3).
     if SubscriptionManager.in_flight?(entry.subscription_mgr, sub_id) do
       {[], mark_subscription_dirty(state, session_id, sub_id)}
     else
