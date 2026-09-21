@@ -4,7 +4,7 @@ defmodule MatterEx.MixProject do
   def project do
     [
       app: :matter_ex,
-      version: "0.4.0",
+      version: "0.5.0",
       elixir: "~> 1.17",
       description: "A Matter (smart home) protocol stack in pure Elixir",
       start_permanent: Mix.env() == :prod,
@@ -14,7 +14,7 @@ defmodule MatterEx.MixProject do
       homepage_url: "https://github.com/TomHoenderdos/matter_ex",
       docs: [
         main: "readme",
-        extras: ["README.md", "docs/advanced-matter-ids.md", "LICENSE"]
+        extras: ["README.md", "CHANGELOG.md", "docs/advanced-matter-ids.md", "LICENSE"]
       ]
     ]
   end
@@ -23,7 +23,7 @@ defmodule MatterEx.MixProject do
     [
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => "https://github.com/TomHoenderdos/matter_ex"},
-      files: ~w(lib docs mix.exs README.md LICENSE)
+      files: ~w(lib docs mix.exs README.md CHANGELOG.md LICENSE)
     ]
   end
 

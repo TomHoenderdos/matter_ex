@@ -33,7 +33,7 @@ Add MatterEx to your dependencies:
 ```elixir
 def deps do
   [
-    {:matter_ex, "~> 0.4.0"}
+    {:matter_ex, "~> 0.5.0"}
   ]
 end
 ```
@@ -355,7 +355,8 @@ mix run test_chip_tool.exs -- --retest
 
 ## Requirements
 
-- Elixir ~> 1.17
+- Elixir ~> 1.17; development uses Elixir 1.20.4 / OTP 29.1 (`.tool-versions`).
+- CI tests both Elixir 1.17 / OTP 27 and Elixir 1.20.4 / OTP 29.1.
 - Erlang/OTP 26+
 - No external dependencies
 
