@@ -1,6 +1,7 @@
 # MatterEx
 
 [![CI](https://github.com/TomHoenderdos/matter_ex/actions/workflows/ci.yml/badge.svg)](https://github.com/TomHoenderdos/matter_ex/actions/workflows/ci.yml)
+[![Nerves compatibility](https://compatibility.nerves-project.org/badge/matter_ex.svg)](https://compatibility.nerves-project.org/packages/matter_ex)
 [![Hex.pm](https://img.shields.io/hexpm/v/matter_ex.svg?cacheSeconds=300)](https://hex.pm/packages/matter_ex)
 [![Docs](https://img.shields.io/badge/docs-hexdocs-blue.svg)](https://hexdocs.pm/matter_ex)
 
